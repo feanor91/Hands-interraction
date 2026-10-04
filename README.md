@@ -17,7 +17,7 @@ pour piloter le cockpit avec les mains (Meta Quest 3). **Projet en cours : étap
 
 | Élément | Statut |
 |---|---|
-| Cœur portable (INI, config à chaud, journal asynchrone, utilitaires) : compilation + 13 tests unitaires | **Vérifié** (Linux, g++ 13) |
+| Cœur portable (INI, config à chaud, journal asynchrone, utilitaires) : compilation + 15 tests unitaires | **Vérifié** (Linux, g++ 13) |
 | Compilation de la couche avec MinGW-w64 ; la DLL exporte `xrNegotiateLoaderApiLayerInterface` | **Vérifié** (syntaxe/édition de liens uniquement, pas MSVC) |
 | Compilation avec Visual Studio 2022 / MSVC | **Non vérifié** |
 | Scripts PowerShell (install / uninstall / check-process) | **Non vérifiés** (aucun PowerShell disponible ici ; relus à la main) |
