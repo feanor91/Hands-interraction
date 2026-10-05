@@ -10,7 +10,7 @@ pour piloter le cockpit avec les mains (Meta Quest 3). **Projet en cours : étap
 | 0 | Couche transparente qui journalise (extensions, profils, actions, suivi des mains) | Écrite, **non testée en VR** |
 | 1 | Contrôleur émulé au bout de l'index + appui | à faire |
 | 2 | Swipe / maintien | à faire |
-| 3 | Mains en surimpression (DX12) | à faire |
+| 3 | Mains en surimpression (DX12) : 3a squelette, 3b mains stylisées skinnées (style `bare` / `glove`), 3c modèles réalistes plus tard | à faire |
 | 4 | Finitions | à faire |
 
 ## Ce qui est vérifié, ce qui ne l'est pas (étape 0)
