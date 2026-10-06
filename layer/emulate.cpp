@@ -19,6 +19,7 @@
 #include <unordered_map>
 
 #include "emulate.h"
+#include "hands_overlay.h"
 #include "emulation/Pinch.h"
 #include "emulation/PoseMath.h"
 
@@ -45,6 +46,14 @@ template <class H>
 uint64_t Key(H h) { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(h)); }
 
 enum class ActionKind { None, AimPose, GripPose, TriggerBool, TriggerFloat };
+
+// Articulation que le pouce doit toucher pour cliquer (indices OpenXR : 8 = index intermédiaire,
+// 10 = bout de l'index, 15 = bout du majeur).
+int ClickJointFor(const std::string& mode) {
+    if (mode == "pinch") return XR_HAND_JOINT_INDEX_TIP_EXT;
+    if (mode == "middle") return XR_HAND_JOINT_MIDDLE_TIP_EXT;
+    return XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT;  // "side"
+}
 
 // --- Conversions OpenXR <-> maths portables ---------------------------------------------------
 em::Pose ToPose(const XrPosef& p) {
@@ -194,8 +203,12 @@ bool Refresh(int h, XrSpace base, XrTime time) {
                           static_cast<unsigned long long>(thumb.locationFlags));
     }
 
+    const bool handMode = cfg->pointerMode == "hand";
+    const XrHandJointLocationEXT& knuckle = joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
+    // Mode "hand" : le pointeur est rigide à la paume (axe de la main, origine à la base de l'index) ;
+    // mode "finger" : il suit le bout de l'index. Dans les deux cas le bout de l'index sert au clic.
     const bool usable = XR_SUCCEEDED(r) && loc.isActive && JointUsable(palm, true, cfg->requireTracked) &&
-                        JointUsable(idx, true, cfg->requireTracked);
+                        JointUsable(idx, true, cfg->requireTracked) && (!handMode || JointUsable(knuckle, false, cfg->requireTracked));
     if (usable != hs.wasValid && hs.lossLogsLeft > 0) {
         --hs.lossLogsLeft;
         Logger::Get().Log(LogLevel::Info, "emulation : main %s : suivi %s", h == 0 ? "gauche" : "droite",
@@ -208,7 +221,15 @@ bool Refresh(int h, XrSpace base, XrTime time) {
     if (!usable) return false;
 
     const em::Pose palmPose = ToPose(palm.pose);
-    const em::Pose rawRel = em::Multiply(em::Inverse(palmPose), ToPose(idx.pose));
+    em::Pose pointerWorld = ToPose(idx.pose);
+    if (handMode) pointerWorld = {palmPose.q, ToPose(knuckle.pose).p};
+    em::Pose rawRel = em::Multiply(em::Inverse(palmPose), pointerWorld);
+    if (cfg->pointerPitchDeg != 0.0 || cfg->pointerYawDeg != 0.0) {  // réglage fin de la direction (repère de la paume)
+        const float kDeg = 3.14159265f / 180.0f;
+        const float hp = static_cast<float>(cfg->pointerPitchDeg) * kDeg * 0.5f, hy = static_cast<float>(cfg->pointerYawDeg) * kDeg * 0.5f;
+        const em::Quat qx{std::sin(hp), 0, 0, std::cos(hp)}, qy{0, std::sin(hy), 0, std::cos(hy)};
+        rawRel.q = em::Normalize(em::Multiply(rawRel.q, em::Multiply(qy, qx)));
+    }
 
     if (time > hs.relTime) {  // nouvel instant : on fait avancer le filtre, le pincement et le verrouillage
         float dt = hs.relTime < 0 ? 0.0f : static_cast<float>(time - hs.relTime) * 1e-9f;
@@ -225,10 +246,11 @@ bool Refresh(int h, XrSpace base, XrTime time) {
         hs.relTime = time;
         PushHistory(hs, time, hs.relOut);
 
-        if (JointUsable(thumb, false, cfg->requireTracked)) {
+        const XrHandJointLocationEXT& target = joints[ClickJointFor(cfg->clickMode)];
+        if (JointUsable(thumb, false, cfg->requireTracked) && JointUsable(target, false, cfg->requireTracked)) {
             const bool was = hs.pressed;
-            const float dist = em::Length(ToPose(idx.pose).p - ToPose(thumb.pose).p);
-            hs.pressed = hs.pinch.Update(dist, static_cast<float>(cfg->pinchOnMm / 1000.0), static_cast<float>(cfg->pinchOffMm / 1000.0));
+            const float dist = em::Length(ToPose(target.pose).p - ToPose(thumb.pose).p);
+            hs.pressed = hs.pinch.Update(dist, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
             if (hs.pressed && !was) {
                 hs.latched = true;
                 hs.latchedRel = HistoryAt(hs, time - static_cast<XrTime>(cfg->latchMs * 1e6));
@@ -262,7 +284,10 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_spaces.find(Key(space));
         if (it == g_spaces.end()) return;
-        if (it->second.kind == ActionKind::GripPose && !cfg->overrideGrip) return;
+        if (it->second.kind == ActionKind::GripPose && cfg->hideControllerModel) {
+            if (HandIndex(it->second.subaction) >= 0) location->locationFlags = 0;  // le jeu ne dessine pas de manette
+            return;
+        }
         const int h = HandIndex(it->second.subaction);
         if (h < 0 || !Refresh(h, baseSpace, time)) return;  // main non suivie : pose du runtime conservée
         HandState& hs = g_hand[h];
@@ -359,8 +384,12 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStatePose(XrSession session, cons
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end()) return;
-        if (it->second != ActionKind::AimPose && !(it->second == ActionKind::GripPose && cfg->overrideGrip)) return;
         const XrPath sub = getInfo->subactionPath;
+        if (it->second == ActionKind::GripPose && cfg->hideControllerModel) {
+            for (int h = 0; h < 2; ++h)
+                if ((sub == XR_NULL_PATH || HandIndex(sub) == h) && Fresh(h)) { state->isActive = XR_FALSE; return; }
+            return;
+        }
         for (int h = 0; h < 2; ++h) {
             if (sub != XR_NULL_PATH && HandIndex(sub) != h) continue;
             if (Fresh(h)) { state->isActive = XR_TRUE; return; }
@@ -394,8 +423,9 @@ const HookEntry kHooks[] = {
 
 bool Emu_Start(XrInstance instance, XrSession session) {
     Logger& log = Logger::Get();
-    if (!CurrentConfig()->emulationEnabled) {
-        log.Log(LogLevel::Info, "emulation : desactivee dans hands.ini ([emulation] enabled = false)");
+    // Les hand trackers servent à l'émulation (étape 1) ET au dessin des mains (étape 3a).
+    if (!CurrentConfig()->emulationEnabled && !CurrentConfig()->handsEnabled) {
+        log.Log(LogLevel::Info, "emulation et mains : desactivees dans hands.ini ([emulation] et [hands] enabled = false)");
         return false;
     }
     const Dispatch& d = g_dispatch;
@@ -427,15 +457,36 @@ bool Emu_Start(XrInstance instance, XrSession session) {
     g_started = true;
     g_live.store(true, std::memory_order_release);
     const auto cfg = CurrentConfig();
-    log.Log(LogLevel::Info,
-            "emulation : ACTIVE (pose aim%s ancree a la paume ; gachette = pincement pouce-index %.0f/%.0f mm ; "
-            "verrouillage %.0f ms ; lissage %s ; suivi exige : %s)",
-            cfg->overrideGrip ? " et grip" : "", cfg->pinchOnMm, cfg->pinchOffMm, cfg->latchMs, cfg->smoothing ? "oui" : "non",
-            cfg->requireTracked ? "oui" : "non");
+    if (cfg->emulationEnabled)
+        log.Log(LogLevel::Info,
+                "emulation : ACTIVE (pointeur : %s ; clic : %s %.0f/%.0f mm ; verrouillage %.0f ms ; lissage %s ; suivi exige : %s ; "
+                "manettes du jeu %s)",
+                cfg->pointerMode.c_str(), cfg->clickMode.c_str(), cfg->clickOnMm, cfg->clickOffMm, cfg->latchMs,
+                cfg->smoothing ? "oui" : "non", cfg->requireTracked ? "oui" : "non", cfg->hideControllerModel ? "masquees" : "visibles");
+    else
+        log.Log(LogLevel::Info, "emulation : desactivee (hand trackers ouverts pour le dessin des mains)");
+    return true;
+}
+
+bool Emu_LocateForRender(int hand, XrSpace base, XrTime time, XrHandJointLocationEXT* out, bool* pressed, int* clickJoint) {
+    if (!g_live.load(std::memory_order_acquire) || hand < 0 || hand > 1 || !out) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    HandState& hs = g_hand[hand];
+    if (!hs.tracker || !g_dispatch.LocateHandJointsEXT) return false;
+    XrHandJointsLocateInfoEXT info{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+    info.baseSpace = base;
+    info.time = time;
+    XrHandJointLocationsEXT loc{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+    loc.jointCount = XR_HAND_JOINT_COUNT_EXT;
+    loc.jointLocations = out;
+    if (XR_FAILED(g_dispatch.LocateHandJointsEXT(hs.tracker, &info, &loc)) || !loc.isActive) return false;
+    if (pressed) *pressed = hs.pressed && Fresh(hand);
+    if (clickJoint) *clickJoint = ClickJointFor(CurrentConfig()->clickMode);
     return true;
 }
 
 void Emu_Stop(XrSession session) {
+    Overlay_Stop();  // les swapchains de la surimpression dépendent de la session : on les détruit d'abord
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_started || (session != XR_NULL_HANDLE && session != g_session)) return;
     g_live.store(false, std::memory_order_release);

@@ -29,12 +29,24 @@ TEST(Config_defauts_si_ini_vide) {
 TEST(Config_emulation_defauts_et_seuils_corriges) {
     Config d = Config::FromIni(IniFile::Parse(""));
     CHECK(d.emulationEnabled);
-    CHECK(d.overrideGrip);
-    CHECK(d.pinchOnMm == 22.0);
-    Config c = Config::FromIni(IniFile::Parse("[emulation]\nenabled = false\npinch_on_mm = 30\npinch_off_mm = 10\n"));
+    CHECK(d.clickOnMm == 22.0);
+    Config c = Config::FromIni(IniFile::Parse("[emulation]\nenabled = false\nclick_on_mm = 30\nclick_off_mm = 10\n"));
     CHECK(!c.emulationEnabled);
-    CHECK(c.pinchOnMm == 30.0);
-    CHECK(c.pinchOffMm > c.pinchOnMm);
+    CHECK(c.clickOnMm == 30.0);
+    CHECK(c.clickOffMm > c.clickOnMm);
+    // anciens noms toujours lus
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\npinch_on_mm = 18\n")).clickOnMm == 18.0);
+}
+
+TEST(Config_mains_defauts_et_bornes) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.handsEnabled);
+    CHECK(d.handsRenderScale == 0.75);
+    Config c = Config::FromIni(IniFile::Parse("[hands]\nenabled = false\nrender_scale = 9\nbone_mm = 0\njoint_scale = 99\n"));
+    CHECK(!c.handsEnabled);
+    CHECK(c.handsRenderScale == 1.0);
+    CHECK(c.handsBoneMm == 1.0);
+    CHECK(c.handsJointScale == 5.0);
 }
 
 TEST(Config_MatchesProcess_insensible_casse_et_chemin) {
@@ -75,4 +87,23 @@ TEST(Config_rechargement_a_chaud) {
     CHECK(changed);
     CHECK(store.Get()->logLevel == hands::log::LogLevel::Debug);
     CHECK(notified.load() >= 1);
+}
+
+TEST(Config_click_mode_defaut_et_validation) {
+    CHECK_EQ(Config::FromIni(IniFile::Parse("")).clickMode, std::string("side"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = PINCH\n")).clickMode, std::string("pinch"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = middle\n")).clickMode, std::string("middle"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = n_importe_quoi\n")).clickMode, std::string("side"));
+    CHECK(!Config::FromIni(IniFile::Parse("")).hideControllerModel);
+}
+
+TEST(Config_pointeur_mode_et_bornes) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK_EQ(d.pointerMode, std::string("hand"));
+    CHECK(d.pointerPitchDeg == 0.0);
+    Config c = Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = FINGER\npointer_pitch_deg = 99\npointer_yaw_deg = -99\n"));
+    CHECK_EQ(c.pointerMode, std::string("finger"));
+    CHECK(c.pointerPitchDeg == 45.0);
+    CHECK(c.pointerYawDeg == -45.0);
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = bizarre\n")).pointerMode, std::string("hand"));
 }

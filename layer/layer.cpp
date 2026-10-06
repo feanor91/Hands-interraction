@@ -304,6 +304,8 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
         LOAD(ResultToString); LOAD(GetSystemProperties); LOAD(GetInstanceProperties);
         LOAD(CreateHandTrackerEXT); LOAD(DestroyHandTrackerEXT); LOAD(LocateHandJointsEXT);
         LOAD(DestroySession); LOAD(LocateSpace); LOAD(GetActionStateBoolean); LOAD(GetActionStateFloat); LOAD(GetActionStatePose);
+        LOAD(EndFrame); LOAD(EnumerateSwapchainFormats); LOAD(CreateSwapchain); LOAD(DestroySwapchain);
+        LOAD(EnumerateSwapchainImages); LOAD(AcquireSwapchainImage); LOAD(WaitSwapchainImage); LOAD(ReleaseSwapchainImage);
 #undef LOAD
         const bool coreOk = d.DestroyInstance && d.CreateSession && d.SuggestInteractionProfileBindings &&
                             d.CreateActionSet && d.CreateAction && d.AttachSessionActionSets && d.CreateActionSpace &&

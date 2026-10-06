@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <cstdio>
+#include <cwchar>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -34,7 +36,11 @@ constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT_PTR kTimerId = 1;
 constexpr UINT kTrayId = 1;
 
-enum Cmd : UINT { ID_TOGGLE = 100, ID_INSTALL, ID_UNINSTALL, ID_LOGS, ID_INI, ID_AUTOSTART, ID_QUIT };
+enum Cmd : UINT {
+    ID_TOGGLE = 100, ID_INSTALL, ID_UNINSTALL, ID_LOGS, ID_INI, ID_AUTOSTART, ID_QUIT,
+    ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
+    ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET
+};
 
 HWND g_hwnd = nullptr;
 HICON g_iconOn = nullptr, g_iconOff = nullptr, g_iconWarn = nullptr;
@@ -44,6 +50,13 @@ struct State {
     bool installed = false;  // DLL présente et couche déclarée dans le registre
     bool enabled = true;     // valeur de `enabled` dans hands.ini
     bool gameRunning = false;
+    // Réglages de [emulation] et [hands] (relus à chaud par la couche, sauf mention contraire)
+    std::string clickMode = "side";  // side | pinch | middle
+    bool hideModel = false;          // masquer les modèles de manettes du jeu (expérimental)
+    bool emulationOn = true;         // pointeur au bout de l'index + clic
+    bool handsDraw = true;           // squelette des mains en surimpression
+    std::string pointerMode = "hand";  // hand | finger
+    double pointerPitch = 0.0, pointerYaw = 0.0;  // degrés
 };
 
 std::wstring IniPath() { return std::wstring(kInstallDir) + L"\\hands.ini"; }
@@ -85,27 +98,35 @@ bool GameRunning() {
     return found;
 }
 
-bool ReadEnabled() {
-    std::string text;
-    if (!ReadTextFile(IniPath(), &text)) return true;  // pas de fichier = valeur par défaut de la couche
-    return hands::config::IniFile::Parse(text).GetBool("general", "enabled", true);
-}
-
 State ReadState() {
     State s;
     s.installed = FileExists(std::wstring(kInstallDir) + L"\\XR_APILAYER_HANDS_bare.dll") && LayerRegistered();
-    s.enabled = ReadEnabled();
     s.gameRunning = GameRunning();
+    std::string text;
+    if (ReadTextFile(IniPath(), &text)) {  // pas de fichier = valeurs par défaut de la couche
+        const hands::config::IniFile ini = hands::config::IniFile::Parse(text);
+        s.enabled = ini.GetBool("general", "enabled", true);
+        s.clickMode = ini.GetString("emulation", "click_mode", "side");
+        if (s.clickMode != "side" && s.clickMode != "pinch" && s.clickMode != "middle") s.clickMode = "side";
+        s.hideModel = ini.GetBool("emulation", "hide_controller_model", false);
+        s.emulationOn = ini.GetBool("emulation", "enabled", true);
+        s.handsDraw = ini.GetBool("hands", "enabled", true);
+        s.pointerMode = ini.GetString("emulation", "pointer_mode", "hand");
+        if (s.pointerMode != "hand" && s.pointerMode != "finger") s.pointerMode = "hand";
+        s.pointerPitch = ini.GetDouble("emulation", "pointer_pitch_deg", 0.0);
+        s.pointerYaw = ini.GetDouble("emulation", "pointer_yaw_deg", 0.0);
+    }
     return s;
 }
 
-bool WriteEnabled(bool enabled, std::wstring* error) {
+// Écrit `section`/`key` = `value` dans hands.ini en ne touchant qu'à cette ligne.
+bool WriteIniValue(const char* section, const char* key, const std::string& value, std::wstring* error) {
     std::string text;
     if (!ReadTextFile(IniPath(), &text)) {
         *error = L"hands.ini est introuvable : installez d'abord la couche.";
         return false;
     }
-    const std::string out = hands::config::IniSetValue(text, "general", "enabled", enabled ? "true" : "false");
+    const std::string out = hands::config::IniSetValue(text, section, key, value);
     // Écriture en place : le dossier n'est pas modifiable par un utilisateur standard, le fichier l'est.
     std::ofstream f(std::filesystem::path(IniPath()), std::ios::binary | std::ios::trunc);
     if (!f) {
@@ -283,13 +304,40 @@ void ToggleTracking() {
         return;
     }
     std::wstring err;
-    if (!WriteEnabled(!s.enabled, &err)) {
+    if (!WriteIniValue("general", "enabled", !s.enabled ? "true" : "false", &err)) {
         MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
         return;
     }
     AddOrUpdateTray(false);
     std::wstring msg = !s.enabled ? L"Suivi activé." : L"Suivi désactivé.";
     msg += s.gameRunning ? L" Effectif au prochain lancement de MSFS." : L" Effectif au prochain lancement du jeu.";
+    Balloon(msg);
+}
+
+// Applique un réglage de [emulation] / [hands] (relu à chaud par la couche) et le confirme par une bulle.
+void ApplySetting(const char* section, const char* key, const std::string& value, const wchar_t* confirmation) {
+    std::wstring err;
+    if (!WriteIniValue(section, key, value, &err)) {
+        MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
+        return;
+    }
+    Balloon(confirmation);
+}
+
+// Ajoute (dpitch, dyaw) degrés à l'inclinaison du pointeur (bornée à ±45°) et l'enregistre.
+void AdjustPointer(const State& s, double dpitch, double dyaw) {
+    auto clamp = [](double v) { return v < -45.0 ? -45.0 : (v > 45.0 ? 45.0 : v); };
+    const double pitch = clamp(s.pointerPitch + dpitch), yaw = clamp(s.pointerYaw + dyaw);
+    std::wstring err;
+    char b1[32], b2[32];
+    std::snprintf(b1, sizeof(b1), "%.1f", pitch);
+    std::snprintf(b2, sizeof(b2), "%.1f", yaw);
+    if (!WriteIniValue("emulation", "pointer_pitch_deg", b1, &err) || !WriteIniValue("emulation", "pointer_yaw_deg", b2, &err)) {
+        MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
+        return;
+    }
+    wchar_t msg[96];
+    swprintf(msg, 96, L"Inclinaison du pointeur : %+.1f° haut/bas, %+.1f° gauche/droite.", pitch, yaw);
     Balloon(msg);
 }
 
@@ -302,7 +350,43 @@ void ShowMenu() {
     AppendMenuW(m, MF_STRING | MF_DISABLED, 0, s.gameRunning ? L"MSFS : en cours" : L"MSFS : arrêté");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (s.enabled ? MF_CHECKED : 0) | (s.installed ? 0 : MF_GRAYED), ID_TOGGLE,
-                L"Suivi des mains activé");
+                L"Couche activée (au prochain lancement du jeu)");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+
+    // Réglages ci-dessous : relus à chaud par la couche, aucun redémarrage du jeu nécessaire.
+    const UINT cfgGray = s.installed ? 0 : MF_GRAYED;
+    const UINT emuGray = (s.installed && s.emulationOn) ? 0 : MF_GRAYED;  // sans émulation, ces choix n'ont aucun effet
+
+    // --- Sous-menu « Pointeur » : tout ce qui concerne viser et cliquer -------------------------
+    HMENU pointer = CreatePopupMenu();
+    AppendMenuW(pointer, MF_STRING | (s.emulationOn ? MF_CHECKED : 0) | cfgGray, ID_EMULATION, L"Pointeur piloté par la main");
+    AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Rayon (pour viser) :");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "hand" ? MF_CHECKED : 0), ID_PTR_HAND, L"   Axe de la main (stable, recommandé)");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "finger" ? MF_CHECKED : 0), ID_PTR_FINGER, L"   Orientation du bout de l'index");
+    AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Clic (geste du pouce) :");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "side" ? MF_CHECKED : 0), ID_CLICK_SIDE, L"   Sur le côté de l'index (l'index reste fixe)");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "pinch" ? MF_CHECKED : 0), ID_CLICK_PINCH, L"   Sur le bout de l'index (pincement)");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "middle" ? MF_CHECKED : 0), ID_CLICK_MIDDLE, L"   Sur le bout du majeur");
+    AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
+    HMENU tilt = CreatePopupMenu();
+    wchar_t adj[96];
+    swprintf(adj, 96, L"Actuel : %+.0f° haut/bas, %+.0f° gauche/droite", s.pointerPitch, s.pointerYaw);
+    AppendMenuW(tilt, MF_STRING | MF_DISABLED, 0, adj);
+    AppendMenuW(tilt, MF_STRING, ID_PTR_UP, L"Vers le haut (+2°)");
+    AppendMenuW(tilt, MF_STRING, ID_PTR_DOWN, L"Vers le bas (−2°)");
+    AppendMenuW(tilt, MF_STRING, ID_PTR_LEFT, L"Vers la gauche (+2°)");
+    AppendMenuW(tilt, MF_STRING, ID_PTR_RIGHT, L"Vers la droite (−2°)");
+    AppendMenuW(tilt, MF_STRING, ID_PTR_RESET, L"Réinitialiser");
+    AppendMenuW(pointer, MF_POPUP | emuGray, reinterpret_cast<UINT_PTR>(tilt), L"Inclinaison du rayon");
+    AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(pointer), L"Pointeur");
+
+    // --- Sous-menu « Affichage » ----------------------------------------------------------------
+    HMENU display = CreatePopupMenu();
+    AppendMenuW(display, MF_STRING | (s.handsDraw ? MF_CHECKED : 0) | cfgGray, ID_HANDS_DRAW, L"Squelette des mains");
+    AppendMenuW(display, MF_STRING | (s.hideModel ? MF_CHECKED : 0) | cfgGray, ID_HIDE_MODEL, L"Masquer les manettes du jeu (expérimental)");
+    AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(display), L"Affichage");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_INSTALL, L"Installer / réparer la couche…");
     AppendMenuW(m, MF_STRING | (s.installed ? 0 : MF_GRAYED), ID_UNINSTALL, L"Désinstaller la couche…");
@@ -322,6 +406,28 @@ void ShowMenu() {
 
     switch (cmd) {
         case ID_TOGGLE: ToggleTracking(); break;
+        case ID_CLICK_SIDE: ApplySetting("emulation", "click_mode", "side", L"Clic : pouce sur le côté de l'index."); break;
+        case ID_CLICK_PINCH: ApplySetting("emulation", "click_mode", "pinch", L"Clic : pouce sur le bout de l'index."); break;
+        case ID_CLICK_MIDDLE: ApplySetting("emulation", "click_mode", "middle", L"Clic : pouce sur le bout du majeur."); break;
+        case ID_PTR_HAND: ApplySetting("emulation", "pointer_mode", "hand", L"Rayon : axe de la main."); break;
+        case ID_PTR_FINGER: ApplySetting("emulation", "pointer_mode", "finger", L"Rayon : orientation du bout de l'index."); break;
+        case ID_PTR_UP: AdjustPointer(s, 2.0, 0.0); break;
+        case ID_PTR_DOWN: AdjustPointer(s, -2.0, 0.0); break;
+        case ID_PTR_LEFT: AdjustPointer(s, 0.0, 2.0); break;
+        case ID_PTR_RIGHT: AdjustPointer(s, 0.0, -2.0); break;
+        case ID_PTR_RESET: AdjustPointer(s, -s.pointerPitch, -s.pointerYaw); break;
+        case ID_EMULATION:
+            ApplySetting("emulation", "enabled", s.emulationOn ? "false" : "true",
+                         s.emulationOn ? L"Pointeur piloté par la main : désactivé." : L"Pointeur piloté par la main : activé.");
+            break;
+        case ID_HANDS_DRAW:
+            ApplySetting("hands", "enabled", s.handsDraw ? "false" : "true",
+                         s.handsDraw ? L"Squelette des mains masqué." : L"Squelette des mains affiché.");
+            break;
+        case ID_HIDE_MODEL:
+            ApplySetting("emulation", "hide_controller_model", s.hideModel ? "false" : "true",
+                         s.hideModel ? L"Manettes du jeu affichées." : L"Manettes du jeu masquées (expérimental).");
+            break;
         case ID_INSTALL: RunElevatedScript(L"install.ps1", L""); break;
         case ID_UNINSTALL: RunElevatedScript(L"uninstall.ps1", L"-RemoveFiles"); break;
         case ID_LOGS: OpenPath(std::wstring(kInstallDir) + L"\\logs"); break;

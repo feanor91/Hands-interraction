@@ -17,7 +17,7 @@
 #include "loader_negotiation.h"
 
 #define HANDS_LAYER_NAME "XR_APILAYER_HANDS_bare"
-#define HANDS_LAYER_VERSION "0.2.0-etape1"
+#define HANDS_LAYER_VERSION "0.3.0-etape3a"
 
 namespace layer {
 
@@ -50,6 +50,15 @@ struct Dispatch {
     PFN_xrGetActionStateBoolean GetActionStateBoolean = nullptr;
     PFN_xrGetActionStateFloat GetActionStateFloat = nullptr;
     PFN_xrGetActionStatePose GetActionStatePose = nullptr;
+    // Etape 3a (surimpression des mains) : optionnelles.
+    PFN_xrEndFrame EndFrame = nullptr;
+    PFN_xrEnumerateSwapchainFormats EnumerateSwapchainFormats = nullptr;
+    PFN_xrCreateSwapchain CreateSwapchain = nullptr;
+    PFN_xrDestroySwapchain DestroySwapchain = nullptr;
+    PFN_xrEnumerateSwapchainImages EnumerateSwapchainImages = nullptr;
+    PFN_xrAcquireSwapchainImage AcquireSwapchainImage = nullptr;
+    PFN_xrWaitSwapchainImage WaitSwapchainImage = nullptr;
+    PFN_xrReleaseSwapchainImage ReleaseSwapchainImage = nullptr;
 };
 
 extern PFN_xrGetInstanceProcAddr g_nextGetInstanceProcAddr;  // couche suivante

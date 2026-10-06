@@ -22,6 +22,11 @@ void Emu_Stop(XrSession session);
 void Emu_OnAction(XrAction action, const std::string& fullName);
 void Emu_OnActionSpace(XrAction action, XrPath subactionPath, XrSpace space);
 
+// Localise les 26 articulations de la main `hand` (0 gauche, 1 droite) dans `base` à l'instant `time`,
+// pour le dessin. `out` doit pouvoir contenir XR_HAND_JOINT_COUNT_EXT éléments. `pressed` (facultatif)
+// reçoit l'état du pincement. Retourne faux si la main n'est pas suivie ou si le suivi n'est pas démarré.
+bool Emu_LocateForRender(int hand, XrSpace base, XrTime time, XrHandJointLocationEXT* out, bool* pressed, int* clickJoint);
+
 // Fournis par emulate.cpp : hooks supplémentaires de l'étape 1 (nullptr si inconnu).
 PFN_xrVoidFunction FindEmulationHook(const char* name);
 

@@ -8,9 +8,9 @@ pour piloter le cockpit avec les mains (Meta Quest 3). **Projet en cours : étap
 | Étape | Contenu | État |
 |---|---|---|
 | 0 | Couche transparente qui journalise (extensions, profils, actions, suivi des mains) | **Testée en VR** (MSFS 2024 Store + VDXR + Quest 3, option « forward tracking » de Virtual Desktop requise) |
-| 1 | Contrôleur émulé au bout de l'index + appui (pincement pouce-index) | Écrite, **non testée en VR** |
+| 1 | Contrôleur émulé au bout de l'index + appui (pincement pouce-index) | **Testée en VR** : pointeur stable, clic fonctionnel (glisser des boutons rotatifs à reconfirmer) |
 | 2 | Swipe / maintien | à faire |
-| 3 | Mains en surimpression (DX12) : 3a squelette, 3b mains stylisées skinnées (style `bare` / `glove`), 3c modèles réalistes plus tard | à faire |
+| 3 | Mains en surimpression (DX12) : 3a squelette (**écrit, rendu D3D12 vérifié hors VR, non testé en VR**), 3b mains stylisées skinnées (style `bare` / `glove`), 3c modèles réalistes plus tard | à faire |
 | 4 | Finitions | à faire |
 
 ## Ce qui est vérifié, ce qui ne l'est pas (étape 0)

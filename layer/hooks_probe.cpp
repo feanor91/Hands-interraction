@@ -18,6 +18,7 @@
 #include <unordered_map>
 
 #include "emulate.h"
+#include "hands_overlay.h"
 #include "state.h"
 
 namespace layer {
@@ -195,6 +196,13 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateSession(XrInstance instance, const X
                 static_cast<unsigned long long>(createInfo->createFlags));
         for (const auto* n = static_cast<const XrBaseInStructure*>(createInfo->next); n; n = n->next) {
             const int t = static_cast<int>(n->type);
+            if (t == 1000028000) {
+                // XrGraphicsBindingD3D12KHR : {type, next, device, queue} — le périphérique et la file du jeu,
+                // dont la surimpression des mains (hands_overlay.cpp) a besoin pour dessiner.
+                struct D3D12Binding { XrStructureType type; const void* next; void* device; void* queue; };
+                const auto* b = reinterpret_cast<const D3D12Binding*>(n);
+                Overlay_OnGraphicsBinding(b->device, b->queue);
+            }
             if (const char* g = GraphicsBindingName(t))
                 log.Log(LogLevel::Info, "  API graphique du jeu : %s (type de structure %d)", g, t);
             else
@@ -376,7 +384,8 @@ const HookEntry kHooks[] = {
 PFN_xrVoidFunction FindHook(const char* name) {
     for (const HookEntry& h : kHooks)
         if (std::strcmp(h.name, name) == 0) return h.fn;
-    return FindEmulationHook(name);  // hooks de l'étape 1 (emulate.cpp)
+    if (PFN_xrVoidFunction f = FindEmulationHook(name)) return f;  // étape 1 (emulate.cpp)
+    return FindOverlayHook(name);                                  // étape 3a (hands_overlay.cpp)
 }
 
 }  // namespace layer

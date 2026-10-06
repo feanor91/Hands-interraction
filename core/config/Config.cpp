@@ -19,10 +19,31 @@ Config Config::FromIni(const IniFile& ini) {
     c.probeHandTracker = ini.GetBool("probe", "probe_hand_tracker", c.probeHandTracker);
     c.logBindings = ini.GetBool("probe", "log_bindings", c.logBindings);
     c.emulationEnabled = ini.GetBool("emulation", "enabled", c.emulationEnabled);
-    c.overrideGrip = ini.GetBool("emulation", "override_grip", c.overrideGrip);
-    c.pinchOnMm = ini.GetDouble("emulation", "pinch_on_mm", c.pinchOnMm);
-    c.pinchOffMm = ini.GetDouble("emulation", "pinch_off_mm", c.pinchOffMm);
+    c.pointerMode = hands::util::ToLower(std::string(ini.GetString("emulation", "pointer_mode", c.pointerMode)));
+    if (c.pointerMode != "hand" && c.pointerMode != "finger") c.pointerMode = "hand";
+    c.pointerPitchDeg = ini.GetDouble("emulation", "pointer_pitch_deg", c.pointerPitchDeg);
+    c.pointerYawDeg = ini.GetDouble("emulation", "pointer_yaw_deg", c.pointerYawDeg);
+    if (c.pointerPitchDeg < -45.0) c.pointerPitchDeg = -45.0;
+    if (c.pointerPitchDeg > 45.0) c.pointerPitchDeg = 45.0;
+    if (c.pointerYawDeg < -45.0) c.pointerYawDeg = -45.0;
+    if (c.pointerYawDeg > 45.0) c.pointerYawDeg = 45.0;
+    c.clickMode = hands::util::ToLower(std::string(ini.GetString("emulation", "click_mode", c.clickMode)));
+    if (c.clickMode != "side" && c.clickMode != "pinch" && c.clickMode != "middle") c.clickMode = "side";
+    c.hideControllerModel = ini.GetBool("emulation", "hide_controller_model", c.hideControllerModel);
+    // Anciens noms (pinch_*) acceptés : les réglages existants continuent de fonctionner.
+    c.clickOnMm = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", c.clickOnMm));
+    c.clickOffMm = ini.GetDouble("emulation", "click_off_mm", ini.GetDouble("emulation", "pinch_off_mm", c.clickOffMm));
     c.latchMs = ini.GetDouble("emulation", "latch_ms", c.latchMs);
+    c.handsEnabled = ini.GetBool("hands", "enabled", c.handsEnabled);
+    c.handsRenderScale = ini.GetDouble("hands", "render_scale", c.handsRenderScale);
+    c.handsJointScale = ini.GetDouble("hands", "joint_scale", c.handsJointScale);
+    c.handsBoneMm = ini.GetDouble("hands", "bone_mm", c.handsBoneMm);
+    if (c.handsRenderScale < 0.25) c.handsRenderScale = 0.25;
+    if (c.handsRenderScale > 1.0) c.handsRenderScale = 1.0;
+    if (c.handsJointScale < 0.2) c.handsJointScale = 0.2;
+    if (c.handsJointScale > 5.0) c.handsJointScale = 5.0;
+    if (c.handsBoneMm < 1.0) c.handsBoneMm = 1.0;
+    if (c.handsBoneMm > 30.0) c.handsBoneMm = 30.0;
     c.requireTracked = ini.GetBool("emulation", "require_tracked", c.requireTracked);
     c.smoothing = ini.GetBool("emulation", "smoothing", c.smoothing);
     c.smoothRotHz = ini.GetDouble("emulation", "smooth_rot_hz", c.smoothRotHz);
@@ -31,8 +52,8 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.latchMs > 400.0) c.latchMs = 400.0;  // l'historique conservé couvre 500 ms
     if (c.smoothRotHz < 0.05) c.smoothRotHz = 0.05;
     if (c.smoothRotBeta < 0.0) c.smoothRotBeta = 0.0;
-    if (c.pinchOnMm < 1.0) c.pinchOnMm = 1.0;
-    if (c.pinchOffMm <= c.pinchOnMm) c.pinchOffMm = c.pinchOnMm + 5.0;  // l'hystérésis doit exister
+    if (c.clickOnMm < 1.0) c.clickOnMm = 1.0;
+    if (c.clickOffMm <= c.clickOnMm) c.clickOffMm = c.clickOnMm + 5.0;  // l'hystérésis doit exister
     return c;
 }
 

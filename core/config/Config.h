@@ -48,11 +48,26 @@ struct Config {
     // Remplace, pour le jeu, la pose des actions aim/grip par le bout de l'index suivi
     // (XR_EXT_hand_tracking) et simule la gâchette par un pincement pouce-index.
     bool emulationEnabled = true;
-    // Remplacer aussi la pose « grip » (le modèle de manette suit alors le bout de l'index).
-    bool overrideGrip = true;
-    // Distances pouce-index (millimètres) : appui sous `pinchOnMm`, relâchement au-dessus de `pinchOffMm`.
-    double pinchOnMm = 22.0;
-    double pinchOffMm = 35.0;
+    // Origine du pointeur :
+    //   "hand"   = rigide à la paume : le rayon suit l'axe de la main (origine à la base de l'index) ; plier ou
+    //              bouger les doigts ne le déplace pas (recommandé pour les commandes fines) ;
+    //   "finger" = suit l'orientation du bout de l'index.
+    std::string pointerMode = "hand";
+    // Réglage fin de la direction du pointeur, en degrés, dans le repère de la paume
+    // (pitch positif = vers le haut, yaw positif = vers la gauche).
+    double pointerPitchDeg = 0.0;
+    double pointerYawDeg = 0.0;
+    // Geste de clic : le pouce touche
+    //   "side"   = le côté de l'index (articulation intermédiaire) : l'index reste fixe, le pointeur ne bouge pas ;
+    //   "pinch"  = le bout de l'index (le pointeur bouge au moment du clic) ;
+    //   "middle" = le bout du majeur.
+    std::string clickMode = "side";
+    // Masque les modèles de manettes du jeu (pose « grip » déclarée invalide). EXPÉRIMENTAL : si le jeu
+    // cesse alors de réagir, remettre à false.
+    bool hideControllerModel = false;
+    // Distances pouce-cible (millimètres) : clic sous `clickOnMm`, relâchement au-dessus de `clickOffMm`.
+    double clickOnMm = 22.0;
+    double clickOffMm = 35.0;
     // Pendant un pincement, le pointeur reste ancré à la pose d'AVANT le pincement (le bout de l'index
     // bouge quand on pince) : on prend la pose telle qu'elle était `latchMs` millisecondes plus tôt.
     double latchMs = 150.0;
@@ -63,6 +78,12 @@ struct Config {
     bool smoothing = true;
     double smoothRotHz = 1.5;    // plus petit = plus stable à l'arrêt, mais plus de retard
     double smoothRotBeta = 0.8;  // plus grand = moins de retard en mouvement rapide
+
+    // --- [hands] (étape 3a) : squelette des mains dessiné en surimpression (Direct3D 12) ---
+    bool handsEnabled = true;
+    double handsRenderScale = 0.75;  // résolution de la surimpression par rapport à celle du jeu
+    double handsJointScale = 0.5;    // taille des articulations
+    double handsBoneMm = 8.0;        // épaisseur des os (millimètres)
 
     static Config FromIni(const IniFile& ini);
 };
