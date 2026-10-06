@@ -18,6 +18,20 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
                                                    const XrApiLayerCreateInfo* layerInfo, XrInstance* instance);
 }  // namespace layer
 
+// Trace de secours, indépendante du logger : une ligne dans logs\trace.txt à chaque étape
+// de la négociation. Sert uniquement à savoir jusqu'où le loader va (étape 0).
+// Win32 pur, aucune exception ; sans effet si le fichier est inaccessible.
+static void Trace(const char* msg, unsigned a = 0, unsigned b = 0) noexcept {
+    char line[256];
+    const int n = wsprintfA(line, "[pid %lu] %s %u %u\r\n", GetCurrentProcessId(), msg, a, b);
+    HANDLE h = CreateFileA("C:\\ProgramData\\HandsLayer\\logs\\trace.txt", FILE_APPEND_DATA,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    WriteFile(h, line, static_cast<DWORD>(n), &w, nullptr);
+    CloseHandle(h);
+}
+
 // DllMain est appelée par Windows à chaque (dé)chargement de la DLL, SOUS le
 // « loader lock » : on n'y fait RIEN d'autre que mémoriser le module. Surtout
 // pas de log, de thread, de LoadLibrary ni d'allocation importante.
@@ -36,6 +50,8 @@ extern "C" __declspec(dllexport) XrResult XRAPI_CALL xrNegotiateLoaderApiLayerIn
     const XrNegotiateLoaderInfo* loaderInfo, const char* layerName, XrNegotiateApiLayerRequest* request) {
     // Fail-open : en cas de doute on REFUSE la négociation ; le loader ignore
     // alors simplement notre couche et le jeu continue sans elle.
+    Trace("negociation appelee, tailles", loaderInfo ? static_cast<unsigned>(loaderInfo->structSize) : 0,
+          request ? static_cast<unsigned>(request->structSize) : 0);
     if (!loaderInfo || !request) return XR_ERROR_INITIALIZATION_FAILED;
     if (loaderInfo->structType != XR_LOADER_INTERFACE_STRUCT_LOADER_INFO ||
         loaderInfo->structVersion != XR_NEGOTIATE_LOADER_INFO_STRUCT_VERSION ||
@@ -56,5 +72,6 @@ extern "C" __declspec(dllexport) XrResult XRAPI_CALL xrNegotiateLoaderApiLayerIn
     request->layerApiVersion = XR_CURRENT_API_VERSION;
     request->getInstanceProcAddr = layer::Layer_xrGetInstanceProcAddr;
     request->createApiLayerInstance = layer::Layer_xrCreateApiLayerInstance;
+    Trace("negociation acceptee, interfaces", loaderInfo->minInterfaceVersion, loaderInfo->maxInterfaceVersion);
     return XR_SUCCESS;
 }

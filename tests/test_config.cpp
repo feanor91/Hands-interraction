@@ -23,6 +23,18 @@ TEST(Config_defauts_si_ini_vide) {
     CHECK(c.discoveryMode);
     CHECK_EQ(c.processAllowlist.size(), size_t(1));
     CHECK(c.enableHandTrackingExtension);
+    CHECK(c.enabled);
+}
+
+TEST(Config_emulation_defauts_et_seuils_corriges) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.emulationEnabled);
+    CHECK(d.overrideGrip);
+    CHECK(d.pinchOnMm == 22.0);
+    Config c = Config::FromIni(IniFile::Parse("[emulation]\nenabled = false\npinch_on_mm = 30\npinch_off_mm = 10\n"));
+    CHECK(!c.emulationEnabled);
+    CHECK(c.pinchOnMm == 30.0);
+    CHECK(c.pinchOffMm > c.pinchOnMm);
 }
 
 TEST(Config_MatchesProcess_insensible_casse_et_chemin) {

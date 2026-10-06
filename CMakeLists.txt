@@ -20,6 +20,7 @@ add_library(hands_core STATIC
   core/util/StringUtil.cpp
   core/config/IniFile.cpp
   core/config/Config.cpp
+  core/config/IniEdit.cpp
   core/log/Logger.cpp)
 target_include_directories(hands_core PUBLIC core)
 find_package(Threads REQUIRED)
@@ -35,4 +36,5 @@ endif()
 # --- Couche OpenXR (Windows uniquement) --------------------------------------
 if(WIN32)
   add_subdirectory(layer)
+  add_subdirectory(tray)
 endif()

@@ -11,12 +11,28 @@ namespace hands::config {
 Config Config::FromIni(const IniFile& ini) {
     Config c;  // les valeurs par défaut sont celles des initialisateurs de la struct
     c.processAllowlist = ini.GetList("general", "process_allowlist", c.processAllowlist);
+    c.enabled = ini.GetBool("general", "enabled", c.enabled);
     c.discoveryMode = ini.GetBool("general", "discovery_mode", c.discoveryMode);
     c.logLevel = hands::log::ParseLogLevel(ini.GetString("general", "log_level", "info"), c.logLevel);
     c.enableHandTrackingExtension =
         ini.GetBool("probe", "enable_hand_tracking_extension", c.enableHandTrackingExtension);
     c.probeHandTracker = ini.GetBool("probe", "probe_hand_tracker", c.probeHandTracker);
     c.logBindings = ini.GetBool("probe", "log_bindings", c.logBindings);
+    c.emulationEnabled = ini.GetBool("emulation", "enabled", c.emulationEnabled);
+    c.overrideGrip = ini.GetBool("emulation", "override_grip", c.overrideGrip);
+    c.pinchOnMm = ini.GetDouble("emulation", "pinch_on_mm", c.pinchOnMm);
+    c.pinchOffMm = ini.GetDouble("emulation", "pinch_off_mm", c.pinchOffMm);
+    c.latchMs = ini.GetDouble("emulation", "latch_ms", c.latchMs);
+    c.requireTracked = ini.GetBool("emulation", "require_tracked", c.requireTracked);
+    c.smoothing = ini.GetBool("emulation", "smoothing", c.smoothing);
+    c.smoothRotHz = ini.GetDouble("emulation", "smooth_rot_hz", c.smoothRotHz);
+    c.smoothRotBeta = ini.GetDouble("emulation", "smooth_rot_beta", c.smoothRotBeta);
+    if (c.latchMs < 0.0) c.latchMs = 0.0;
+    if (c.latchMs > 400.0) c.latchMs = 400.0;  // l'historique conservé couvre 500 ms
+    if (c.smoothRotHz < 0.05) c.smoothRotHz = 0.05;
+    if (c.smoothRotBeta < 0.0) c.smoothRotBeta = 0.0;
+    if (c.pinchOnMm < 1.0) c.pinchOnMm = 1.0;
+    if (c.pinchOffMm <= c.pinchOnMm) c.pinchOffMm = c.pinchOnMm + 5.0;  // l'hystérésis doit exister
     return c;
 }
 

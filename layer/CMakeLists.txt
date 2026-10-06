@@ -2,7 +2,8 @@
 add_library(XR_APILAYER_HANDS_bare SHARED
   entry.cpp
   layer.cpp
-  hooks_probe.cpp)
+  hooks_probe.cpp
+  emulate.cpp)
 
 # XR_NO_PROTOTYPES : on n'appelle JAMAIS les fonctions xr* directement (donc pas
 # de dépendance à openxr_loader.lib) ; on passe par les pointeurs de la couche suivante.

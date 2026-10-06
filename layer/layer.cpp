@@ -117,12 +117,23 @@ std::vector<std::string> EnumerateRuntimeExtensions() {
     std::vector<std::string> out;
     auto fn = reinterpret_cast<PFN_xrEnumerateInstanceExtensionProperties>(
         GetNext(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties"));
-    if (!fn) return out;
+    if (!fn) {
+        Logger::Get().Log(LogLevel::Warn, "enumeration des extensions : xrEnumerateInstanceExtensionProperties introuvable via la couche suivante");
+        return out;
+    }
     uint32_t count = 0;
-    if (XR_FAILED(fn(nullptr, 0, &count, nullptr)) || count == 0) return out;
+    const XrResult r1 = fn(nullptr, 0, &count, nullptr);
+    if (XR_FAILED(r1) || count == 0) {
+        Logger::Get().Log(LogLevel::Warn, "enumeration des extensions : code %d, nombre %u", static_cast<int>(r1), count);
+        return out;
+    }
     std::vector<XrExtensionProperties> props(count);
     for (auto& p : props) { p.type = XR_TYPE_EXTENSION_PROPERTIES; p.next = nullptr; }
-    if (XR_FAILED(fn(nullptr, count, &count, props.data()))) return out;
+    const XrResult r2 = fn(nullptr, count, &count, props.data());
+    if (XR_FAILED(r2)) {
+        Logger::Get().Log(LogLevel::Warn, "enumeration des extensions (2e appel) : code %d", static_cast<int>(r2));
+        return out;
+    }
     for (uint32_t i = 0; i < count; ++i) out.emplace_back(props[i].extensionName);
     return out;
 }
@@ -193,7 +204,7 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
     Safe("activation", [&] {
         LoadConfigOnce();
         const auto cfg = CurrentConfig();
-        active = cfg->discoveryMode || hands::config::MatchesProcess(cfg->processAllowlist, g_exePath);
+        active = cfg->enabled && (cfg->discoveryMode || hands::config::MatchesProcess(cfg->processAllowlist, g_exePath));
     });
     if (!active || g_instance.load() != XR_NULL_HANDLE) {
         // Processus non concerné (ou 2e instance dans le même processus) : on laisse
@@ -251,8 +262,10 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
 
     XrResult result = XR_ERROR_INITIALIZATION_FAILED;
     bool created = false;
+    // Liste vide = énumération impossible (liste inconnue) : on tente quand même, le repli
+    // ci-dessous rétablit la création d'origine si le runtime refuse l'extension.
     const bool wantInject = info && !g_handExtensionEnabled && CurrentConfig()->enableHandTrackingExtension &&
-                            Contains(runtimeExts, XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+                            (runtimeExts.empty() || Contains(runtimeExts, XR_EXT_HAND_TRACKING_EXTENSION_NAME));
     if (wantInject) {
         // On ajoute le nom de l'extension à une COPIE de la liste du jeu ; la structure
         // d'origine n'est jamais modifiée. En cas d'échec on retente avec l'original.
@@ -289,7 +302,8 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
         LOAD(CreateActionSet); LOAD(CreateAction); LOAD(AttachSessionActionSets); LOAD(CreateActionSpace);
         LOAD(PollEvent); LOAD(GetCurrentInteractionProfile); LOAD(PathToString); LOAD(StringToPath);
         LOAD(ResultToString); LOAD(GetSystemProperties); LOAD(GetInstanceProperties);
-        LOAD(CreateHandTrackerEXT); LOAD(DestroyHandTrackerEXT);
+        LOAD(CreateHandTrackerEXT); LOAD(DestroyHandTrackerEXT); LOAD(LocateHandJointsEXT);
+        LOAD(DestroySession); LOAD(LocateSpace); LOAD(GetActionStateBoolean); LOAD(GetActionStateFloat); LOAD(GetActionStatePose);
 #undef LOAD
         const bool coreOk = d.DestroyInstance && d.CreateSession && d.SuggestInteractionProfileBindings &&
                             d.CreateActionSet && d.CreateAction && d.AttachSessionActionSets && d.CreateActionSpace &&

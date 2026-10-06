@@ -17,7 +17,7 @@
 #include "loader_negotiation.h"
 
 #define HANDS_LAYER_NAME "XR_APILAYER_HANDS_bare"
-#define HANDS_LAYER_VERSION "0.1.0-etape0"
+#define HANDS_LAYER_VERSION "0.2.0-etape1"
 
 namespace layer {
 
@@ -43,6 +43,13 @@ struct Dispatch {
     // Extension XR_EXT_hand_tracking : peut être absente (nullptr).
     PFN_xrCreateHandTrackerEXT CreateHandTrackerEXT = nullptr;
     PFN_xrDestroyHandTrackerEXT DestroyHandTrackerEXT = nullptr;
+    PFN_xrLocateHandJointsEXT LocateHandJointsEXT = nullptr;
+    // Etape 1 (emulation) : optionnelles, l'emulation est desactivee si l'une manque.
+    PFN_xrDestroySession DestroySession = nullptr;
+    PFN_xrLocateSpace LocateSpace = nullptr;
+    PFN_xrGetActionStateBoolean GetActionStateBoolean = nullptr;
+    PFN_xrGetActionStateFloat GetActionStateFloat = nullptr;
+    PFN_xrGetActionStatePose GetActionStatePose = nullptr;
 };
 
 extern PFN_xrGetInstanceProcAddr g_nextGetInstanceProcAddr;  // couche suivante

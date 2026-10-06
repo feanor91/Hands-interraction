@@ -17,6 +17,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "emulate.h"
 #include "state.h"
 
 namespace layer {
@@ -151,7 +152,10 @@ void ProbeHandTracking(XrInstance instance, XrSession session, XrSystemId system
             props.graphicsProperties.maxSwapchainImageHeight, props.graphicsProperties.maxLayerCount);
     log.Log(LogLevel::Info, "*** supportsHandTracking = %s ***", hand.supportsHandTracking ? "OUI" : "NON");
 
-    if (!hand.supportsHandTracking || !cfg->probeHandTracker) return;
+    if (!hand.supportsHandTracking) return;
+    // Etape 1 : si l'emulation demarre, elle garde ses propres hand trackers ouverts ; la sonde n'a plus rien a faire.
+    if (Emu_Start(instance, session)) return;
+    if (!cfg->probeHandTracker) return;
     if (!d.CreateHandTrackerEXT || !d.DestroyHandTrackerEXT) {
         log.Log(LogLevel::Warn, "sonde mains : fonctions xrCreate/DestroyHandTrackerEXT absentes");
         return;
@@ -173,6 +177,7 @@ void ProbeHandTracking(XrInstance instance, XrSession session, XrSystemId system
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrDestroyInstance(XrInstance instance) {
     Safe("xrDestroyInstance", [&] { Logger::Get().Log(LogLevel::Info, "xrDestroyInstance"); });
+    Safe("emulation(arret)", [&] { Emu_Stop(XR_NULL_HANDLE); });
     const auto destroy = g_dispatch.DestroyInstance;
     g_active.store(false, std::memory_order_release);  // les appels suivants passent tels quels
     const XrResult r = destroy(instance);
@@ -238,6 +243,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateAction(XrActionSet actionSet, const 
             std::lock_guard<std::mutex> lock(g_namesMutex);
             g_actionNames[Key(*action)] = set + "/" + createInfo->actionName;
         }
+        if (XR_SUCCEEDED(r) && action) Emu_OnAction(*action, set + "/" + createInfo->actionName);
     });
     return r;
 }
@@ -278,6 +284,8 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrAttachSessionActionSets(XrSession session,
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateActionSpace(XrSession session, const XrActionSpaceCreateInfo* createInfo,
                                                         XrSpace* space) {
     const XrResult r = g_dispatch.CreateActionSpace(session, createInfo, space);
+    if (XR_SUCCEEDED(r) && createInfo && space)
+        Safe("emulation(espace)", [&] { Emu_OnActionSpace(createInfo->action, createInfo->subactionPath, *space); });
     Safe("xrCreateActionSpace", [&] {
         if (!createInfo) return;
         // poseInActionSpace = décalage que le jeu applique à la pose de l'action. C'est un
@@ -368,7 +376,7 @@ const HookEntry kHooks[] = {
 PFN_xrVoidFunction FindHook(const char* name) {
     for (const HookEntry& h : kHooks)
         if (std::strcmp(h.name, name) == 0) return h.fn;
-    return nullptr;
+    return FindEmulationHook(name);  // hooks de l'étape 1 (emulate.cpp)
 }
 
 }  // namespace layer
