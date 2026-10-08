@@ -38,11 +38,12 @@ constexpr UINT kTrayId = 1;
 
 enum Cmd : UINT {
     ID_TOGGLE = 100, ID_INSTALL, ID_UNINSTALL, ID_LOGS, ID_INI, ID_AUTOSTART, ID_QUIT,
-    ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
-    ID_PTR_PALM, ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET,
+    ID_CLICK_ANY, ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
+    ID_PTR_SHOULDER, ID_PTR_CONTACT, ID_PTR_PALM, ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET,
     ID_UPDATE,
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
-    ID_FINGER_INDEX, ID_FINGER_MIDDLE
+    ID_FINGER_INDEX, ID_FINGER_MIDDLE,
+    ID_SHARED
 };
 
 HWND g_hwnd = nullptr;
@@ -67,14 +68,15 @@ struct State {
     bool enabled = true;     // valeur de `enabled` dans hands.ini
     bool gameRunning = false;
     // Réglages de [emulation] et [hands] (relus à chaud par la couche, sauf mention contraire)
-    std::string clickMode = "side";  // side | pinch | middle
+    std::string clickMode = "any";  // any | side | pinch | middle
     bool hideModel = false;          // masquer les modèles de manettes du jeu (expérimental)
     bool emulationOn = true;         // pointeur au bout de l'index + clic
     bool handsDraw = true;           // squelette des mains en surimpression
-    std::string pointerMode = "palm";  // palm | hand | finger
+    std::string pointerMode = "shoulder";  // shoulder | contact | palm | hand | finger
     double pointerPitch = 0.0, pointerYaw = 0.0;  // degrés
     double clickOn = 21.0, clickOff = 27.0;       // millimètres : seuils de clic / relâchement
     std::string pointerFinger = "index";          // index | middle : doigt qui porte le pointeur
+    bool sharedPointer = false;                   // les deux mains actives : la main qui clique prend la main
 };
 
 std::wstring IniPath() { return std::wstring(kInstallDir) + L"\\hands.ini"; }
@@ -125,16 +127,17 @@ State ReadState() {
     if (ReadTextFile(IniPath(), &text)) {  // pas de fichier = valeurs par défaut de la couche
         const hands::config::IniFile ini = hands::config::IniFile::Parse(text);
         s.enabled = ini.GetBool("general", "enabled", true);
-        s.clickMode = ini.GetString("emulation", "click_mode", "side");
-        if (s.clickMode != "side" && s.clickMode != "pinch" && s.clickMode != "middle") s.clickMode = "side";
+        s.clickMode = ini.GetString("emulation", "click_mode", "any");
+        if (s.clickMode != "side" && s.clickMode != "pinch" && s.clickMode != "middle" && s.clickMode != "any") s.clickMode = "any";
         s.hideModel = ini.GetBool("emulation", "hide_controller_model", false);
         s.emulationOn = ini.GetBool("emulation", "enabled", true);
         s.handsDraw = ini.GetBool("hands", "enabled", true);
-        s.pointerMode = ini.GetString("emulation", "pointer_mode", "palm");
-        if (s.pointerMode != "palm" && s.pointerMode != "hand" && s.pointerMode != "finger") s.pointerMode = "palm";
+        s.pointerMode = ini.GetString("emulation", "pointer_mode", "shoulder");
+        if (s.pointerMode != "shoulder" && s.pointerMode != "contact" && s.pointerMode != "palm" && s.pointerMode != "hand" && s.pointerMode != "finger") s.pointerMode = "shoulder";
         s.clickOn = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", 21.0));
         s.clickOff = ini.GetDouble("emulation", "click_off_mm", ini.GetDouble("emulation", "pinch_off_mm", 27.0));
         s.pointerFinger = ini.GetString("emulation", "pointer_finger", "index");
+        s.sharedPointer = ini.GetBool("emulation", "shared_pointer", false);
         if (s.pointerFinger != "index" && s.pointerFinger != "middle") s.pointerFinger = "index";
         s.pointerPitch = ini.GetDouble("emulation", "pointer_pitch_deg", 0.0);
         s.pointerYaw = ini.GetDouble("emulation", "pointer_yaw_deg", 0.0);
@@ -475,17 +478,21 @@ void ShowMenu() {
     // --- Sous-menu « Pointeur » : tout ce qui concerne viser et cliquer -------------------------
     HMENU pointer = CreatePopupMenu();
     AppendMenuW(pointer, MF_STRING | (s.emulationOn ? MF_CHECKED : 0) | cfgGray, ID_EMULATION, L"Pointeur piloté par la main");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.sharedPointer ? MF_CHECKED : 0), ID_SHARED, L"Deux mains actives (la main qui clique prend la main)");
     AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Doigt du pointeur :");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerFinger == "index" ? MF_CHECKED : 0), ID_FINGER_INDEX, L"   Index");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerFinger == "middle" ? MF_CHECKED : 0), ID_FINGER_MIDDLE, L"   Majeur (bouge moins quand l'index clique)");
     AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Rayon (pour viser) :");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "shoulder" ? MF_CHECKED : 0), ID_PTR_SHOULDER, L"   Comme le casque : de l'épaule, par le point de contact");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "contact" ? MF_CHECKED : 0), ID_PTR_CONTACT, L"   Par le point de contact, depuis le poignet");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "palm" ? MF_CHECKED : 0), ID_PTR_PALM, L"   Depuis la paume, dans l'axe du doigt (comme le casque)");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "hand" ? MF_CHECKED : 0), ID_PTR_HAND, L"   Axe de la main (rigide à la paume)");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "finger" ? MF_CHECKED : 0), ID_PTR_FINGER, L"   Orientation du bout du doigt");
     AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Clic (geste du pouce) :");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "any" ? MF_CHECKED : 0), ID_CLICK_ANY, L"   Index ou majeur, au plus proche (recommandé)");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "side" ? MF_CHECKED : 0), ID_CLICK_SIDE, L"   Sur le côté de l'index (l'index reste fixe)");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "pinch" ? MF_CHECKED : 0), ID_CLICK_PINCH, L"   Sur le bout de l'index (pincement)");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "middle" ? MF_CHECKED : 0), ID_CLICK_MIDDLE, L"   Sur le bout du majeur");
@@ -540,20 +547,27 @@ void ShowMenu() {
 
     switch (cmd) {
         case ID_TOGGLE: ToggleTracking(); break;
+        case ID_CLICK_ANY: ApplySetting("emulation", "click_mode", "any", L"Clic : pouce sur l'index ou le majeur."); break;
         case ID_CLICK_SIDE: ApplySetting("emulation", "click_mode", "side", L"Clic : pouce sur le côté de l'index."); break;
         case ID_CLICK_PINCH: ApplySetting("emulation", "click_mode", "pinch", L"Clic : pouce sur le bout de l'index."); break;
         case ID_CLICK_MIDDLE: ApplySetting("emulation", "click_mode", "middle", L"Clic : pouce sur le bout du majeur."); break;
+        case ID_PTR_SHOULDER: ApplySetting("emulation", "pointer_mode", "shoulder", L"Rayon : comme le casque, de l'épaule par le point de contact."); break;
+        case ID_PTR_CONTACT: ApplySetting("emulation", "pointer_mode", "contact", L"Rayon : par le point de contact du clic."); break;
         case ID_PTR_PALM: ApplySetting("emulation", "pointer_mode", "palm", L"Rayon : depuis la paume, dans l'axe du doigt."); break;
         case ID_PTR_HAND: ApplySetting("emulation", "pointer_mode", "hand", L"Rayon : axe de la main."); break;
         case ID_PTR_FINGER: ApplySetting("emulation", "pointer_mode", "finger", L"Rayon : orientation du bout du doigt."); break;
         case ID_SENS_FAST: ApplySensitivity(20, 24, L"rapide"); break;
         case ID_SENS_NORMAL: ApplySensitivity(21, 27, L"normal"); break;
         case ID_SENS_TOLERANT: ApplySensitivity(22, 35, L"tolérant"); break;
+        case ID_SHARED:
+            ApplySetting("emulation", "shared_pointer", s.sharedPointer ? "false" : "true",
+                         s.sharedPointer ? L"Deux mains actives : désactivé." : L"Deux mains actives : la main dont le pouce s'approche prend la main.");
+            break;
         case ID_FINGER_INDEX: ApplySetting("emulation", "pointer_finger", "index", L"Le pointeur est sur l'index."); break;
         case ID_FINGER_MIDDLE:
             // Avec le pointeur sur le majeur, le clic doit se faire avec l'index (il ne déplace plus le pointeur).
             ApplySetting("emulation", "pointer_finger", "middle", L"Le pointeur est sur le majeur. Clic : pouce sur le bout de l'index.");
-            if (s.clickMode != "pinch") ApplySetting("emulation", "click_mode", "pinch", L"Le pointeur est sur le majeur. Clic : pouce sur le bout de l'index.");
+            if (s.clickMode != "any") ApplySetting("emulation", "click_mode", "any", L"Le pointeur est sur le majeur. Clic : pouce sur l'index ou le majeur.");
             break;
         case ID_PTR_UP: AdjustPointer(s, 2.0, 0.0); break;
         case ID_PTR_DOWN: AdjustPointer(s, -2.0, 0.0); break;
@@ -583,6 +597,26 @@ void ShowMenu() {
     }
 }
 
+// --- Relance automatique : le fichier du tray a été remplacé par une nouvelle version ---------------------------------
+// Un programme en cours d'exécution garde son ancienne version en mémoire. Le tray surveille donc son propre fichier ; quand il change
+// (et reste stable 2 contrôles de suite, pour ne pas lancer un fichier encore en cours d'écriture), il lance la nouvelle version avec
+// `--replace` puis se ferme : la nouvelle attend que l'ancienne ait libéré l'instance unique.
+std::wstring g_selfPath;
+FileStamp g_selfStamp;
+FileStamp g_selfPending;
+
+bool SelfReplacedAndStable() {
+    if (g_selfPath.empty()) return false;
+    const FileStamp now = StampOf(g_selfPath);
+    if (!now.ok || now == g_selfStamp) {
+        g_selfPending = FileStamp{};
+        return false;
+    }
+    if (g_selfPending == now) return true;  // même état que la fois précédente : le fichier est fini
+    g_selfPending = now;
+    return false;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_taskbarCreated != 0 && msg == g_taskbarCreated) {  // l'Explorateur a redémarré
         AddOrUpdateTray(true);
@@ -601,6 +635,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_TIMER: {
+            if (SelfReplacedAndStable()) {
+                ShellExecuteW(nullptr, L"open", g_selfPath.c_str(), L"--replace", nullptr, SW_HIDE);
+                DestroyWindow(hwnd);  // libère l'instance unique pour la nouvelle version
+                return 0;
+            }
             AddOrUpdateTray(false);  // rafraîchit icône et infobulle (jeu lancé, config modifiée à la main...)
             // Une nouvelle version vient d'apparaître (recompilation) : une seule bulle par version, jamais pendant le jeu.
             const State st = ReadState();
@@ -627,9 +666,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;  // déjà lancée : une seule icône
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    // `--replace` : lancée par l'ancienne version qui se ferme ; on attend (jusqu'à 10 s) qu'elle libère l'instance unique.
+    const bool replace = cmdLine && wcsstr(cmdLine, L"--replace") != nullptr;
+    HANDLE mutex = nullptr;
+    for (int i = 0; i < (replace ? 100 : 1); ++i) {
+        mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+        if (GetLastError() != ERROR_ALREADY_EXISTS) break;
+        CloseHandle(mutex);
+        mutex = nullptr;
+        if (!replace) return 0;  // déjà lancée : une seule icône
+        Sleep(100);
+    }
+    if (!mutex) return 0;
+    {
+        wchar_t self[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, self, MAX_PATH);
+        g_selfPath.assign(self, n);
+        g_selfStamp = StampOf(g_selfPath);
+    }
+
 
     g_iconOn = MakeIcon(RGB(46, 160, 67));     // vert : actif
     g_iconOff = MakeIcon(RGB(128, 128, 128));  // gris : désactivé
@@ -648,6 +704,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     AddOrUpdateTray(true);
     SetTimer(g_hwnd, kTimerId, 3000, nullptr);
+    if (replace) Balloon(L"Application relancée : nouvelle version chargée.");
 
     // Invites au démarrage. Rien ne s'installe sans clic de l'utilisateur sur la bulle (puis validation UAC).
     {

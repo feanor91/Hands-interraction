@@ -4,7 +4,7 @@
 // profondeur du jeu) et une liste de petites zones à copier. Une requête à la fois : on soumet, puis on interroge
 // plus tard (TryCollect) sans jamais bloquer le rendu du jeu.
 //
-// Format attendu : ressource R32G8X24_TYPELESS (D32_FLOAT_S8X24), plan 0 = profondeur en 32 bits flottants.
+// Formats : voir DepthRequestEye::format (plan profondeur d'une ressource R32G8X24, ou image couleur 8 bits).
 #pragma once
 
 #include <d3d12.h>
@@ -20,8 +20,13 @@ struct DepthBox {
 };
 
 struct DepthRequestEye {
-    ID3D12Resource* depth = nullptr;  // ressource de profondeur (nullptr = œil ignoré)
+    ID3D12Resource* depth = nullptr;  // ressource a lire (nullptr = oeil ignore)
     std::vector<DepthBox> boxes;
+    // Etat dans lequel la ressource se trouve (elle est passee en COPY_SOURCE le temps de la copie, puis remise dans cet etat).
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    // Format de lecture : R32_TYPELESS pour le plan profondeur de R32G8X24 ; R8G8B8A8_UNORM pour une image couleur 8 bits.
+    // Dans tous les cas 4 octets par pixel, rendus tels quels dans `boxes` (un flottant de 32 bits = un mot de 4 octets).
+    DXGI_FORMAT format = DXGI_FORMAT_R32_TYPELESS;
 };
 
 struct DepthResultEye {
@@ -38,10 +43,8 @@ public:
 
     bool Init(ID3D12Device* device, ID3D12CommandQueue* queue, const char** error);
 
-    // Soumet les copies à la file de commandes. `stateBefore` = état dans lequel les ressources se trouvent (elles sont
-    // passées en COPY_SOURCE le temps de la copie, puis remises dans cet état). Retourne faux si une requête précédente
-    // n'est pas encore terminée ou en cas d'erreur.
-    bool Submit(const std::vector<DepthRequestEye>& eyes, D3D12_RESOURCE_STATES stateBefore);
+    // Soumet les copies à la file de commandes. Retourne faux si une requête précédente n'est pas encore terminée ou en cas d'erreur.
+    bool Submit(const std::vector<DepthRequestEye>& eyes);
 
     bool Pending() const;
 

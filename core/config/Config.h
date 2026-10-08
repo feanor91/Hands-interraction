@@ -49,11 +49,39 @@ struct Config {
     // (XR_EXT_hand_tracking) et simule la gâchette par un pincement pouce-index.
     bool emulationEnabled = true;
     // Origine du pointeur :
+    //   "shoulder" = comme l'interface du casque : le rayon part du POINT DE CONTACT (là où le pouce touche le doigt) et sa direction va de
+    //              l'ÉPAULE estimée vers ce point. La droite est longue (40 à 60 cm) : le rayon est très peu sensible aux doigts ;
+    //              il suit la position de la main par rapport au corps ;
+    //   "contact" = le rayon passe par le POINT DE CONTACT du clic (là où le pouce touche le doigt) : au clic il est aligné avec
+    //              l'endroit visé ; direction du poignet vers ce point, origine ramenée vers la paume ;
     //   "palm"   = comme l'interface du casque : le rayon part de la PAUME et suit l'axe du doigt choisi dans sa pose naturelle ;
     //              la direction est lissée lentement, donc plier le doigt brièvement (clic) ne la déplace pas ;
     //   "hand"   = rigide à la paume : le rayon suit l'axe de la main (origine à la base du doigt) ;
     //   "finger" = suit l'orientation du bout du doigt.
-    std::string pointerMode = "palm";
+    std::string pointerMode = "shoulder";
+    // Mode "shoulder" : position estimée de l'épaule par rapport à la tête, en millimètres (écart latéral, hauteur sous la tête, recul).
+    double shoulderSideMm = 180.0;
+    double shoulderDropMm = 170.0;
+    double shoulderBackMm = 50.0;
+    // Mode "shoulder" : le rayon part d'un point rigide de la main : base du doigt avancée de ce nombre de millimètres le long de l'os de la main.
+    double anchorForwardMm = 70.0;
+    // Mode "shoulder" : d'où part le rayon. "fingertip" (défaut) = le bout du doigt du pointeur (pointer_finger) : le rayon part de la
+    // pointe de la main, ce qui rapproche le focus du contact ; "bone" = point rigide sur l'os (anchor_forward_mm), pour un départ qui
+    // ne dépend d'aucun doigt. Avec le majeur comme doigt du pointeur et un clic au pouce sur l'index, la pointe ne bouge pas au clic.
+    std::string anchorSource = "fingertip";
+    // Mode "shoulder" : quand les doigts pointent dans une autre direction que le bras (main verticale, bouton sur le côté ou en bas), la
+    // direction du rayon bascule progressivement vers celle du doigt : 100 % épaule sous `fingerBlendStartDeg` d'écart, 100 % doigt au-delà de
+    // `fingerBlendEndDeg`. Faux : le rayon ne dépend jamais de l'orientation des doigts.
+    // Mode "shoulder" : filtre One Euro sur la direction du rayon. `shoulderSmoothHz` plus petit = plus stable a l'arret (0 = pas de filtre) ;
+    // `shoulderSmoothBeta` plus grand = moins de retard quand la main bouge vite.
+    double shoulderSmoothHz = 0.8;
+    double shoulderSmoothBeta = 3.0;
+    bool fingerBlend = true;
+    double fingerBlendStartDeg = 30.0;
+    double fingerBlendEndDeg = 70.0;
+    // Mode "shoulder" : constante de temps (secondes) avec laquelle l'estimation du torse suit la rotation de la tête. Les épaules
+    // restent en place quand on tourne la tête pour regarder un bouton sur le côté. 0 = les épaules suivent la tête instantanément.
+    double torsoFollowS = 3.0;
     // Mode "palm" : articulation visée depuis la paume, "proximal", "intermediate" (défaut), "distal" ou "tip" du doigt choisi.
     std::string palmAim = "intermediate";
     // Mode "palm" : vitesse de suivi de la direction (Hz). Petit = très stable mais la direction réagit lentement à un changement de pose.
@@ -61,6 +89,12 @@ struct Config {
     // Doigt qui porte le pointeur : "index" (défaut) ou "majeur" (`middle`). Le majeur bouge moins quand l'index sert au clic ;
     // dans ce cas préférer click_mode = pinch (pouce sur le bout de l'index).
     std::string pointerFinger = "index";
+    // Pointeur partagé : MSFS ne gère qu'un contrôleur actif à la fois. Quand c'est activé, la main « engagée » (celle dont le pouce
+    // s'approche de la cible du clic, ou qui clique) fournit la pose et le clic aux DEUX emplacements du jeu : plus besoin de cacher
+    // une main pour utiliser l'autre.
+    bool sharedPointer = false;
+    // Distance pouce-cible (mm) sous laquelle une main peut devenir « engagée » (doit dépasser click_on_mm).
+    double engageMm = 34.0;
     // Réglage fin de la direction du pointeur, en degrés, dans le repère de la paume
     // (pitch positif = vers le haut, yaw positif = vers la gauche).
     double pointerPitchDeg = 0.0;
@@ -69,13 +103,13 @@ struct Config {
     //   "side"   = le côté de l'index (articulation intermédiaire) : l'index reste fixe, le pointeur ne bouge pas ;
     //   "pinch"  = le bout de l'index (le pointeur bouge au moment du clic) ;
     //   "middle" = le bout du majeur.
-    std::string clickMode = "side";
+    std::string clickMode = "any";
     // Masque les modèles de manettes du jeu (pose « grip » déclarée invalide). EXPÉRIMENTAL : si le jeu
     // cesse alors de réagir, remettre à false.
     bool hideControllerModel = false;
     // Distances pouce-cible (millimètres) : clic sous `clickOnMm`, relâchement au-dessus de `clickOffMm`.
-    double clickOnMm = 21.0;
-    double clickOffMm = 27.0;
+    double clickOnMm = 20.0;
+    double clickOffMm = 23.0;
     // Pendant un pincement, le pointeur reste ancré à la pose d'AVANT le pincement (le bout de l'index
     // bouge quand on pince) : on prend la pose telle qu'elle était `latchMs` millisecondes plus tôt.
     double latchMs = 150.0;
@@ -99,6 +133,17 @@ struct Config {
     int depthProbeIntervalMs = 500;
     // État dans lequel le jeu laisse ses images de profondeur : depth_write (défaut), depth_read, common, shader, copy_source.
     std::string depthProbeState = "depth_write";
+    // Captures d'écran du rendu du jeu autour de la main (pour comprendre ce que MSFS dessine : flèche, rayon, point d'impact) :
+    // au plus `captureMax` images par session (0 = aucune), enregistrées dans logs\captures, au plus une toutes les `captureIntervalMs`
+    // (et à chaque début de clic).
+    int captureMax = 16;
+    int captureIntervalMs = 3000;
+    std::string colorState = "render_target";  // état des images couleur du jeu (render_target, common, shader, copy_source)
+
+    // --- [menu] : menu des réglages affiché dans le casque ---
+    // Ouverture et fermeture : pincer les DEUX mains en même temps pendant `menuHoldMs`.
+    bool menuEnabled = true;
+    int menuHoldMs = 1200;
 
     // --- [hands] (étape 3a) : squelette des mains dessiné en surimpression (Direct3D 12) ---
     bool handsEnabled = true;

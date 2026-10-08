@@ -12,6 +12,7 @@
 //  * Si quoi que ce soit manque (main perdue, fonction absente, exception) : rien n'est modifié.
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -55,6 +56,20 @@ int ClickJointFor(const std::string& mode) {
     return XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT;  // "side"
 }
 
+// Comme ClickJointFor ; en mode "any" (n'importe quel contact du pouce avec l'index ou le majeur), l'articulation la plus proche du pouce.
+int ClickJointNearest(const std::string& mode, const XrHandJointLocationEXT* j) {
+    if (mode != "any") return ClickJointFor(mode);
+    const float tx = j[XR_HAND_JOINT_THUMB_TIP_EXT].pose.position.x, ty = j[XR_HAND_JOINT_THUMB_TIP_EXT].pose.position.y, tz = j[XR_HAND_JOINT_THUMB_TIP_EXT].pose.position.z;
+    int best = XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT;
+    float bestD = 1e9f;
+    for (int k : {static_cast<int>(XR_HAND_JOINT_INDEX_INTERMEDIATE_EXT), static_cast<int>(XR_HAND_JOINT_INDEX_TIP_EXT), static_cast<int>(XR_HAND_JOINT_MIDDLE_TIP_EXT)}) {
+        const XrVector3f& q = j[k].pose.position;
+        const float d = (q.x - tx) * (q.x - tx) + (q.y - ty) * (q.y - ty) + (q.z - tz) * (q.z - tz);
+        if (d < bestD) { bestD = d; best = k; }
+    }
+    return best;
+}
+
 // --- Conversions OpenXR <-> maths portables ---------------------------------------------------
 em::Pose ToPose(const XrPosef& p) {
     return {{p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w}, {p.position.x, p.position.y, p.position.z}};
@@ -77,7 +92,7 @@ struct HandState {
     XrHandTrackerEXT tracker = XR_NULL_HANDLE;
 
     // Pointeur relatif à la paume
-    em::OneEuro rotFilter, posFilter;
+    em::OneEuro rotFilter, posFilter, worldRotFilter, worldPosFilter;
     em::Pose relOut;       // dernière valeur lissée
     XrTime relTime = -1;   // instant de la dernière mise à jour du filtre
     RelSample history[kHistory];
@@ -87,6 +102,7 @@ struct HandState {
 
     // Pincement
     em::PinchDetector pinch;
+    float clickDist = 1.0f;  // distance pouce - cible du clic (metres) ; 1 m = inutilisable. Sert a choisir la main engagee.
     bool pressed = false;
 
     // Cache de la dernière localisation (par espace de base et instant)
@@ -106,6 +122,7 @@ struct HandState {
 
 std::mutex g_mutex;  // protège tout ce qui suit ; sections courtes
 XrSession g_session = XR_NULL_HANDLE;
+XrSpace g_viewSpace = XR_NULL_HANDLE;  // espace VIEW (la tete), utilise par le mode "shoulder"
 HandState g_hand[2];
 XrPath g_handPath[2] = {XR_NULL_PATH, XR_NULL_PATH};
 bool g_started = false;
@@ -145,6 +162,49 @@ bool JointUsable(const XrHandJointLocationEXT& j, bool needOrientation, bool req
     return (j.locationFlags & need) == need;
 }
 
+// Pose de la tete (espace VIEW) dans `base` a l'instant `time`, mise en cache par (base, instant). Faux si indisponible.
+// Torse estime : son lacet suit celui de la tete avec une constante de temps (torso_follow_s), pour que les epaules ne tournent pas
+// avec la tete quand on regarde un bouton sur le cote.
+float g_torsoYaw = 0.0f;
+bool g_torsoInit = false;
+XrTime g_torsoTime = -1;
+
+void UpdateTorso(const em::Pose& head, XrTime time) {
+    const float yawHead = em::HeadYaw(head.q, g_torsoYaw);
+    const float tau = static_cast<float>(CurrentConfig()->torsoFollowS);
+    if (!g_torsoInit || tau < 0.05f) {
+        g_torsoYaw = yawHead;
+        g_torsoInit = true;
+        g_torsoTime = time;
+        return;
+    }
+    float dt = static_cast<float>(time - g_torsoTime) * 1e-9f;
+    if (dt <= 0.0f) return;  // instant deja traite (ou en arriere)
+    if (dt > 1.0f) dt = 1.0f;
+    g_torsoTime = time;
+    g_torsoYaw = em::WrapAngle(g_torsoYaw + em::WrapAngle(yawHead - g_torsoYaw) * (1.0f - std::exp(-dt / tau)));
+}
+
+bool HeadPose(XrSpace base, XrTime time, em::Pose* out) {
+    static XrSpace cBase = XR_NULL_HANDLE;
+    static XrTime cTime = -1;
+    static bool cOk = false;
+    static em::Pose cPose;
+    if (g_viewSpace == XR_NULL_HANDLE || !g_dispatch.LocateSpace) return false;
+    if (cBase != base || cTime != time) {
+        XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+        cOk = XR_SUCCEEDED(g_dispatch.LocateSpace(g_viewSpace, base, time, &loc)) && (loc.locationFlags & kPoseValid) == kPoseValid;
+        cBase = base;
+        cTime = time;
+        if (cOk) {
+            cPose = ToPose(loc.pose);
+            UpdateTorso(cPose, time);
+        }
+    }
+    *out = cPose;
+    return cOk;
+}
+
 void PushHistory(HandState& hs, XrTime t, const em::Pose& rel) {
     hs.history[hs.histHead] = {t, rel};
     hs.histHead = (hs.histHead + 1) % kHistory;
@@ -166,12 +226,18 @@ em::Pose HistoryAt(const HandState& hs, XrTime target) {
 void ResetPointer(HandState& hs) {
     hs.rotFilter.Reset();
     hs.posFilter.Reset();
+    hs.worldRotFilter.Reset();
+    hs.worldPosFilter.Reset();
     hs.relTime = -1;
     hs.histCount = hs.histHead = 0;
     hs.latched = false;
     hs.pressed = false;
+    hs.clickDist = 1.0f;
     hs.pinch.Reset();
 }
+
+bool Fresh(int h);
+void UpdateEngaged(const hands::config::Config& cfg);  // defini plus bas
 
 // Localise les articulations de la main `h` dans `base` à l'instant `time` (verrou déjà pris).
 // Met à jour pointeur relatif, pincement, verrouillage. Retourne vrai si la main est exploitable.
@@ -205,10 +271,18 @@ bool Refresh(int h, XrSpace base, XrTime time) {
 
     const bool handMode = cfg->pointerMode == "hand";
     const bool palmMode = cfg->pointerMode == "palm";
+    const bool contactMode = cfg->pointerMode == "contact";
+    const bool shoulderMode = cfg->pointerMode == "shoulder";
+    const XrHandJointLocationEXT& wrist = joints[XR_HAND_JOINT_WRIST_EXT];
+    const XrHandJointLocationEXT& clickTarget = joints[ClickJointNearest(cfg->clickMode, joints)];  // ce que le pouce touche pour cliquer
     // Doigt qui porte le pointeur : l'index (défaut) ou le majeur, qui bouge moins quand l'index sert au clic.
     const bool middleFinger = cfg->pointerFinger == "middle";
     const XrHandJointLocationEXT& ptrTip = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_TIP_EXT : XR_HAND_JOINT_INDEX_TIP_EXT];
     const XrHandJointLocationEXT& knuckle = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT : XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
+    // Mode "shoulder" : ancre RIGIDE sur la main = base du doigt choisi, avancee le long de l'os metacarpien. Ne depend pas du geste
+    // de clic (le bout de l'index bouge de 2-3 cm en pincant : partir de lui deplacait le rayon au moment du clic).
+    const XrHandJointLocationEXT& metaJoint = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_METACARPAL_EXT : XR_HAND_JOINT_INDEX_METACARPAL_EXT];
+    const XrHandJointLocationEXT& proxJoint = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT : XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
     // Mode "palm" : articulation du doigt vers laquelle on vise depuis la paume (proximal, intermédiaire, distal, bout).
     const int aimOffset = cfg->palmAim == "proximal" ? 0 : (cfg->palmAim == "distal" ? 2 : (cfg->palmAim == "tip" ? 3 : 1));
     const XrHandJointLocationEXT& aimJoint = joints[(middleFinger ? XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT : XR_HAND_JOINT_INDEX_PROXIMAL_EXT) + aimOffset];
@@ -217,7 +291,11 @@ bool Refresh(int h, XrSpace base, XrTime time) {
     // Le geste de clic est indépendant (click_mode).
     const bool usable = XR_SUCCEEDED(r) && loc.isActive && JointUsable(palm, true, cfg->requireTracked) &&
                         JointUsable(ptrTip, true, cfg->requireTracked) && (!handMode || JointUsable(knuckle, false, cfg->requireTracked)) &&
-                        (!palmMode || JointUsable(aimJoint, false, cfg->requireTracked));
+                        (!palmMode || JointUsable(aimJoint, false, cfg->requireTracked)) &&
+                        (!contactMode || (JointUsable(wrist, false, cfg->requireTracked) && JointUsable(clickTarget, false, cfg->clickRequireTracked) &&
+                                          JointUsable(thumb, false, cfg->clickRequireTracked))) &&
+                        (!shoulderMode || (JointUsable(metaJoint, false, cfg->requireTracked) && JointUsable(proxJoint, false, cfg->requireTracked) &&
+                                            JointUsable(knuckle, false, cfg->requireTracked)));
     if (usable != hs.wasValid && hs.lossLogsLeft > 0) {
         --hs.lossLogsLeft;
         Logger::Get().Log(LogLevel::Info, "emulation : main %s : suivi %s", h == 0 ? "gauche" : "droite",
@@ -232,6 +310,49 @@ bool Refresh(int h, XrSpace base, XrTime time) {
     const em::Pose palmPose = ToPose(palm.pose);
     em::Pose pointerWorld = ToPose(ptrTip.pose);
     if (handMode) pointerWorld = {palmPose.q, ToPose(knuckle.pose).p};
+    if (contactMode) {
+        // Le rayon passe par le POINT DE CONTACT du clic : la surface de la cible (index, majeur...) du côté du pouce. Au clic, le
+        // rayon est donc aligné avec l'endroit où le pouce touche le doigt. Direction : du poignet vers ce point (origine reculée, donc
+        // peu sensible aux petits écarts) ; l'origine visible est ramenée vers la paume, sur la même droite.
+        const em::Vec3 t = ToPose(clickTarget.pose).p, th = ToPose(thumb.pose).p, wr = ToPose(wrist.pose).p;
+        const float rad = std::max(0.004f, std::min(clickTarget.radius, 0.012f));
+        const em::Vec3 c = t + em::Normalized(th - t) * rad;
+        const em::Vec3 d = em::Normalized(c - wr);
+        const float len = std::max(0.04f, std::min(em::Length(c - palmPose.p), 0.16f));
+        pointerWorld = {em::LookAlong(d, em::Rotate(palmPose.q, em::Vec3{0.0f, 1.0f, 0.0f})), c - d * len};
+    }
+    if (shoulderMode) {
+        // Comme l'interface du casque : la direction va de l'EPAULE estimee vers un point de la main, et le rayon part de ce point (la ou se
+        // rejoignent le pouce et l'index). Ce point est RIGIDE sur la main (base du doigt + `anchor_forward_mm` le long de l'os) : plier ou
+        // pincer ne le deplace pas. La droite epaule -> main est longue (40 a 60 cm) : le rayon suit la position de la main par rapport au
+        // corps et reste insensible au bruit des doigts. Sans position de tete : repli sur la direction poignet -> ancre.
+        const em::Vec3 meta = ToPose(metaJoint.pose).p, prox = ToPose(proxJoint.pose).p, wr = ToPose(wrist.pose).p;
+        const em::Vec3 a = cfg->anchorSource == "bone" ? prox + em::Normalized(prox - meta) * static_cast<float>(cfg->anchorForwardMm / 1000.0)
+                                                       : ToPose(ptrTip.pose).p;  // "fingertip" : le bout du doigt du pointeur
+        const em::Vec3 up{0.0f, 1.0f, 0.0f};
+        em::Vec3 d = em::Normalized(a - wr);
+        em::Pose head;
+        if (HeadPose(base, time, &head)) {
+            const em::Vec3 shoulder = em::EstimateShoulderYaw(head.p, g_torsoYaw, h == 1, static_cast<float>(cfg->shoulderSideMm / 1000.0),
+                                                              static_cast<float>(cfg->shoulderDropMm / 1000.0), static_cast<float>(cfg->shoulderBackMm / 1000.0));
+            d = em::Normalized(a - shoulder);
+            // Doigt dans une autre direction que le bras (main verticale, bouton sur le cote) : le rayon bascule vers la direction du doigt.
+            if (cfg->fingerBlend) {
+                const em::Vec3 f = em::Normalized(ToPose(ptrTip.pose).p - ToPose(knuckle.pose).p);
+                const float cosA = std::max(-1.0f, std::min(1.0f, em::Dot(f, d)));
+                const float angleDeg = std::acos(cosA) * 57.29578f;
+                const float s0 = static_cast<float>(cfg->fingerBlendStartDeg), s1 = static_cast<float>(cfg->fingerBlendEndDeg);
+                float w = (angleDeg - s0) / (s1 - s0);
+                w = std::max(0.0f, std::min(1.0f, w));
+                w = w * w * (3.0f - 2.0f * w);  // transition douce
+                if (w > 0.0f && em::Length(f) > 0.5f) {
+                    const em::Vec3 mixed = em::Normalized(d * (1.0f - w) + f * w);
+                    if (em::Length(mixed) > 0.5f) d = mixed;
+                }
+            }
+        }
+        pointerWorld = {em::LookAlong(d, up), a};
+    }
     if (palmMode) {
         // Origine = centre de la paume ; avant = de la paume vers le doigt visé ; haut = haut de la paume (sans effet sur le rayon).
         const em::Vec3 from = palmPose.p, to = ToPose(aimJoint.pose).p;
@@ -251,10 +372,19 @@ bool Refresh(int h, XrSpace base, XrTime time) {
             ResetPointer(hs);
             dt = 0.0f;
         }
-        if (cfg->smoothing) {
+        if (shoulderMode && cfg->shoulderSmoothHz > 0.0) {
+            // Mode shoulder : la direction epaule -> doigt est filtree DANS LE MONDE (One Euro : tres stable a l'arret pour viser un petit
+            // bouton, reactive quand la main bouge vite). Le tremblement de la main ne fait plus bouger le rayon.
+            em::Pose w = pointerWorld;
+            w.q = hs.worldRotFilter.Filter(w.q, dt, static_cast<float>(cfg->shoulderSmoothHz), static_cast<float>(cfg->shoulderSmoothBeta));
+            w.p = hs.worldPosFilter.Filter(w.p, dt, 4.0f, 40.0f);
+            hs.relOut = em::Multiply(em::Inverse(palmPose), w);
+            if (cfg->pointerPitchDeg != 0.0 || cfg->pointerYawDeg != 0.0) hs.relOut.q = rawRel.q;  // reglage fin : pas de filtre
+        } else if (cfg->smoothing && !shoulderMode) {  // mode shoulder : la droite epaule -> contact est deja stable, pas de lissage retardant
             // Mode palm : suivi lent de la direction (le doigt qui bouge pour cliquer ne déplace pas le rayon).
-            const float rotHz = palmMode ? static_cast<float>(cfg->palmFollowHz) : static_cast<float>(cfg->smoothRotHz);
-            const float rotBeta = static_cast<float>(cfg->smoothRotBeta) * (palmMode ? 0.4f : 1.0f);
+            const bool slowDirection = palmMode || contactMode;
+            const float rotHz = slowDirection ? static_cast<float>(cfg->palmFollowHz) : static_cast<float>(cfg->smoothRotHz);
+            const float rotBeta = static_cast<float>(cfg->smoothRotBeta) * (slowDirection ? 0.4f : 1.0f);
             hs.relOut.q = hs.rotFilter.Filter(rawRel.q, dt, rotHz, rotBeta);
             hs.relOut.p = hs.posFilter.Filter(rawRel.p, dt, 6.0f, 30.0f);
         } else {
@@ -263,10 +393,11 @@ bool Refresh(int h, XrSpace base, XrTime time) {
         hs.relTime = time;
         PushHistory(hs, time, hs.relOut);
 
-        const XrHandJointLocationEXT& target = joints[ClickJointFor(cfg->clickMode)];
+        const XrHandJointLocationEXT& target = joints[ClickJointNearest(cfg->clickMode, joints)];
         if (JointUsable(thumb, false, cfg->clickRequireTracked) && JointUsable(target, false, cfg->clickRequireTracked)) {
             const bool was = hs.pressed;
             const float dist = em::Length(ToPose(target.pose).p - ToPose(thumb.pose).p);
+            hs.clickDist = dist;
             hs.pressed = hs.pinch.Update(dist, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
             if (hs.pressed && !was) {
                 hs.latched = true;
@@ -277,17 +408,60 @@ bool Refresh(int h, XrSpace base, XrTime time) {
             if (hs.pressed != was)
                 Logger::Get().Log(LogLevel::Info, "emulation : main %s -> %s (distance %.1f mm)", h == 0 ? "gauche" : "droite",
                                   hs.pressed ? "APPUI (pincement)" : "relache", dist * 1000.0f);
+        } else {
+            hs.clickDist = 1.0f;  // pouce ou cible inutilisable : cette main ne peut pas s engager
         }
     }
 
     hs.outTip = em::Multiply(palmPose, hs.latched ? hs.latchedRel : hs.relOut);
     hs.lastValidTick = GetTickCount64();
     hs.lastValidTime = time;
+    UpdateEngaged(*cfg);
     return true;
 }
 
 bool Fresh(int h) {
     return g_hand[h].tracker && g_hand[h].lastValidTick != 0 && GetTickCount64() - g_hand[h].lastValidTick < kFreshMs;
+}
+
+std::atomic<bool> g_menuOpen{false};  // menu des reglages ouvert dans le casque : le jeu ne recoit plus de clic
+
+int g_engaged = -1;  // main engagee (0 gauche, 1 droite) quand le pointeur partage est actif ; -1 = aucune
+
+// Pointeur partage : MSFS ne gere qu un controleur actif a la fois. On lui donne donc, aux DEUX emplacements (gauche et droite),
+// les donnees de la main engagee : celle qui s apprete a cliquer (pouce proche de la cible) ou qui clique deja.
+int SourceFor(int slot, const hands::config::Config& cfg) {
+    if (!cfg.sharedPointer || g_engaged < 0 || !Fresh(g_engaged)) return slot;
+    return g_engaged;
+}
+
+void UpdateEngaged(const hands::config::Config& cfg) {
+    if (!cfg.sharedPointer) {
+        g_engaged = -1;
+        return;
+    }
+    const bool f[2] = {Fresh(0), Fresh(1)};
+    int next = g_engaged;
+    if (!f[0] && !f[1]) {
+        g_engaged = -1;
+        return;
+    }
+    if (next < 0 || !f[next]) {  // aucune main engagee, ou celle-ci est perdue : on prend la meilleure disponible
+        next = !f[0] ? 1 : (!f[1] ? 0 : (g_hand[0].clickDist <= g_hand[1].clickDist ? 0 : 1));
+    } else if (!g_hand[next].pressed) {  // une main en plein clic garde la main ; sinon on regarde l autre
+        const int o = 1 - next;
+        const float engage = static_cast<float>(cfg.engageMm / 1000.0), margin = 0.006f;
+        if (f[o] && (g_hand[o].pressed || (g_hand[o].clickDist < engage && g_hand[o].clickDist + margin < g_hand[next].clickDist))) next = o;
+    }
+    if (next != g_engaged) {
+        g_engaged = next;
+        static int logsLeft = 60;
+        if (logsLeft > 0) {
+            --logsLeft;
+            Logger::Get().Log(LogLevel::Info, "emulation : pointeur partage -> main %s engagee (distances pouce-cible : gauche %.0f mm, droite %.0f mm)",
+                              next == 0 ? "gauche" : "droite", g_hand[0].clickDist * 1000.0f, g_hand[1].clickDist * 1000.0f);
+        }
+    }
 }
 
 // --- Hooks ---------------------------------------------------------------------------------
@@ -301,8 +475,13 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_spaces.find(Key(space));
         if (it == g_spaces.end()) return;
-        const int h = HandIndex(it->second.subaction);
-        if (h < 0 || !Refresh(h, baseSpace, time)) return;  // main non suivie : pose du runtime conservée
+        const int slot = HandIndex(it->second.subaction);
+        if (slot < 0) return;
+        bool ok[2] = {false, false};
+        ok[slot] = Refresh(slot, baseSpace, time);
+        if (cfg->sharedPointer) ok[1 - slot] = Refresh(1 - slot, baseSpace, time);  // l'autre main doit rester à jour pour pouvoir s'engager
+        const int h = SourceFor(slot, *cfg);  // main dont les données sont fournies à cet emplacement
+        if (!ok[h]) return;  // main non suivie : pose du runtime conservée
         HandState& hs = g_hand[h];
         if (hs.logsLeft > 0) {
             --hs.logsLeft;
@@ -327,21 +506,25 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
 
 // Main(s) concernée(s) par une lecture d'action : la sous-action, ou les deux si elle est absente.
 // Retourne l'état « appuyé » combiné ; `any` indique qu'au moins une main est suivie.
-bool PressedFor(XrPath subaction, bool* any, int* firstHand) {
+bool PressedFor(XrPath subaction, const hands::config::Config& cfg, bool* any, int* firstHand) {
+    const bool menuOpen = g_menuOpen.load(std::memory_order_acquire);
     bool pressed = false;
     *any = false;
     *firstHand = -1;
     for (int h = 0; h < 2; ++h) {
         if (subaction != XR_NULL_PATH && HandIndex(subaction) != h) continue;
-        if (!Fresh(h)) {
-            if (g_hand[h].pressed || g_hand[h].latched) ResetPointer(g_hand[h]);  // pas d'appui fantôme au retour
+        const int src = SourceFor(h, cfg);  // pointeur partage : l emplacement h recoit les donnees de la main engagee
+        if (!Fresh(src)) {
+            if (g_hand[src].pressed || g_hand[src].latched) ResetPointer(g_hand[src]);  // pas d appui fantome au retour
             continue;
         }
         *any = true;
-        if (*firstHand < 0) *firstHand = h;
-        pressed = pressed || g_hand[h].pressed;
+        if (*firstHand < 0) *firstHand = src;
+        pressed = pressed || g_hand[src].pressed;
     }
-    return pressed;
+    // Les deux mains pincees ensemble = geste d'ouverture du menu : le jeu ne doit pas y voir un clic.
+    const bool bothPressed = Fresh(0) && Fresh(1) && g_hand[0].pressed && g_hand[1].pressed;
+    return pressed && !menuOpen && !bothPressed;
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateBoolean(XrSession session, const XrActionStateGetInfo* getInfo,
@@ -349,13 +532,14 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateBoolean(XrSession session, c
     const XrResult r = g_dispatch.GetActionStateBoolean(session, getInfo, state);
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !getInfo || !state) return r;
     Safe("xrGetActionStateBoolean", [&] {
-        if (!CurrentConfig()->emulationEnabled) return;
+        const auto cfg = CurrentConfig();
+        if (!cfg->emulationEnabled) return;
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end() || it->second != ActionKind::TriggerBool) return;
         bool any = false;
         int h = -1;
-        const bool pressed = PressedFor(getInfo->subactionPath, &any, &h);
+        const bool pressed = PressedFor(getInfo->subactionPath, *cfg, &any, &h);
         if (!any) return;  // aucune main suivie : état du runtime conservé
         uint8_t& last = g_reported[Key(getInfo->action) * 4 + static_cast<uint64_t>(h + 1)];
         state->changedSinceLastSync = (last != static_cast<uint8_t>(pressed)) ? XR_TRUE : XR_FALSE;
@@ -372,13 +556,14 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateFloat(XrSession session, con
     const XrResult r = g_dispatch.GetActionStateFloat(session, getInfo, state);
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !getInfo || !state) return r;
     Safe("xrGetActionStateFloat", [&] {
-        if (!CurrentConfig()->emulationEnabled) return;
+        const auto cfg = CurrentConfig();
+        if (!cfg->emulationEnabled) return;
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end() || it->second != ActionKind::TriggerFloat) return;
         bool any = false;
         int h = -1;
-        const bool pressed = PressedFor(getInfo->subactionPath, &any, &h);
+        const bool pressed = PressedFor(getInfo->subactionPath, *cfg, &any, &h);
         if (!any) return;
         uint8_t& last = g_reported[Key(getInfo->action) * 4 + static_cast<uint64_t>(h + 1)];
         state->changedSinceLastSync = (last != static_cast<uint8_t>(pressed)) ? XR_TRUE : XR_FALSE;
@@ -404,7 +589,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStatePose(XrSession session, cons
         const XrPath sub = getInfo->subactionPath;
         for (int h = 0; h < 2; ++h) {
             if (sub != XR_NULL_PATH && HandIndex(sub) != h) continue;
-            if (Fresh(h)) { state->isActive = XR_TRUE; return; }
+            if (Fresh(SourceFor(h, *cfg))) { state->isActive = XR_TRUE; return; }
         }
     });
     return r;
@@ -467,6 +652,13 @@ bool Emu_Start(XrInstance instance, XrSession session) {
     if (ok == 0) return false;
     g_session = session;
     g_started = true;
+    if (d.CreateReferenceSpace && d.DestroySpace) {  // position de la tete, pour le pointeur depuis l'epaule
+        XrReferenceSpaceCreateInfo rci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        rci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+        rci.poseInReferenceSpace.orientation.w = 1.0f;
+        if (XR_FAILED(d.CreateReferenceSpace(session, &rci, &g_viewSpace))) g_viewSpace = XR_NULL_HANDLE;
+        log.Log(LogLevel::Info, "emulation : espace de la tete (pointeur depuis l'epaule) : %s", g_viewSpace ? "ok" : "INDISPONIBLE (repli poignet)");
+    }
     g_live.store(true, std::memory_order_release);
     const auto cfg = CurrentConfig();
     if (cfg->emulationEnabled)
@@ -477,6 +669,26 @@ bool Emu_Start(XrInstance instance, XrSession session) {
                 cfg->smoothing ? "oui" : "non", cfg->requireTracked ? "oui" : "non", cfg->hideControllerModel ? "masquees" : "visibles");
     else
         log.Log(LogLevel::Info, "emulation : desactivee (hand trackers ouverts pour le dessin des mains)");
+    return true;
+}
+
+// Derniere pose de pointeur calculee pour la main (dans l'espace de base du dernier appel), si la main est suivie.
+bool Emu_LastPointerPose(int hand, XrPosef* out) {
+    if (!g_live.load(std::memory_order_acquire) || hand < 0 || hand > 1 || !out) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!Fresh(hand)) return false;
+    *out = ToXr(g_hand[hand].outTip);
+    return true;
+}
+
+void Emu_SetMenuOpen(bool open) { g_menuOpen.store(open, std::memory_order_release); }
+
+bool Emu_HeadPose(XrSpace base, XrTime time, XrPosef* out) {
+    if (!g_live.load(std::memory_order_acquire) || !out) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    em::Pose p;
+    if (!HeadPose(base, time, &p)) return false;
+    *out = ToXr(p);
     return true;
 }
 
@@ -493,7 +705,7 @@ bool Emu_LocateForRender(int hand, XrSpace base, XrTime time, XrHandJointLocatio
     loc.jointLocations = out;
     if (XR_FAILED(g_dispatch.LocateHandJointsEXT(hs.tracker, &info, &loc)) || !loc.isActive) return false;
     if (pressed) *pressed = hs.pressed && Fresh(hand);
-    if (clickJoint) *clickJoint = ClickJointFor(CurrentConfig()->clickMode);
+    if (clickJoint) *clickJoint = ClickJointNearest(CurrentConfig()->clickMode, out);
     return true;
 }
 
@@ -506,8 +718,11 @@ void Emu_Stop(XrSession session) {
         if (g_hand[h].tracker && g_dispatch.DestroyHandTrackerEXT) g_dispatch.DestroyHandTrackerEXT(g_hand[h].tracker);
         g_hand[h] = HandState{};
     }
+    if (g_viewSpace != XR_NULL_HANDLE && g_dispatch.DestroySpace) g_dispatch.DestroySpace(g_viewSpace);
+    g_viewSpace = XR_NULL_HANDLE;
     g_spaces.clear();
     g_reported.clear();
+    g_torsoInit = false;
     g_session = XR_NULL_HANDLE;
     g_started = false;
     Logger::Get().Log(LogLevel::Info, "emulation : arretee (hand trackers detruits)");

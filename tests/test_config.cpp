@@ -29,8 +29,8 @@ TEST(Config_defauts_si_ini_vide) {
 TEST(Config_emulation_defauts_et_seuils_corriges) {
     Config d = Config::FromIni(IniFile::Parse(""));
     CHECK(d.emulationEnabled);
-    CHECK(d.clickOnMm == 21.0);
-    CHECK(d.clickOffMm == 27.0);
+    CHECK(d.clickOnMm == 20.0);
+    CHECK(d.clickOffMm == 23.0);
     Config c = Config::FromIni(IniFile::Parse("[emulation]\nenabled = false\nclick_on_mm = 30\nclick_off_mm = 10\n"));
     CHECK(!c.emulationEnabled);
     CHECK(c.clickOnMm == 30.0);
@@ -91,16 +91,22 @@ TEST(Config_rechargement_a_chaud) {
 }
 
 TEST(Config_click_mode_defaut_et_validation) {
-    CHECK_EQ(Config::FromIni(IniFile::Parse("")).clickMode, std::string("side"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("")).clickMode, std::string("any"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = PINCH\n")).clickMode, std::string("pinch"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = middle\n")).clickMode, std::string("middle"));
-    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = n_importe_quoi\n")).clickMode, std::string("side"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nclick_mode = n_importe_quoi\n")).clickMode, std::string("any"));
     CHECK(!Config::FromIni(IniFile::Parse("")).hideControllerModel);
 }
 
 TEST(Config_pointeur_mode_et_bornes) {
     Config d = Config::FromIni(IniFile::Parse(""));
-    CHECK_EQ(d.pointerMode, std::string("palm"));
+    CHECK_EQ(d.pointerMode, std::string("shoulder"));
+    CHECK(d.shoulderSideMm == 180.0 && d.shoulderDropMm == 170.0 && d.shoulderBackMm == 50.0);
+    CHECK(d.anchorForwardMm == 70.0);
+    CHECK_EQ(d.anchorSource, std::string("fingertip"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nanchor_source = BONE\n")).anchorSource, std::string("bone"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\nanchor_source = n_importe_quoi\n")).anchorSource, std::string("fingertip"));
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\nanchor_forward_mm = 999\n")).anchorForwardMm == 150.0);
     CHECK_EQ(d.palmAim, std::string("intermediate"));
     CHECK(d.palmFollowHz == 0.6);
     CHECK(d.pointerPitchDeg == 0.0);
@@ -108,7 +114,11 @@ TEST(Config_pointeur_mode_et_bornes) {
     CHECK_EQ(c.pointerMode, std::string("finger"));
     CHECK(c.pointerPitchDeg == 45.0);
     CHECK(c.pointerYawDeg == -45.0);
-    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = bizarre\n")).pointerMode, std::string("palm"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = bizarre\n")).pointerMode, std::string("shoulder"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = contact\n")).pointerMode, std::string("contact"));
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\nshoulder_side_mm = 5\n")).shoulderSideMm == 50.0);
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\nshoulder_drop_mm = 9999\n")).shoulderDropMm == 500.0);
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = palm\n")).pointerMode, std::string("palm"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = hand\n")).pointerMode, std::string("hand"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npalm_aim = TIP\n")).palmAim, std::string("tip"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npalm_aim = n_importe_quoi\n")).palmAim, std::string("intermediate"));
@@ -127,6 +137,39 @@ TEST(Config_doigt_du_pointeur) {
     CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_finger = pouce\n")).pointerFinger, std::string("index"));
 }
 
+TEST(Config_melange_doigt_et_torse) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.fingerBlend);
+    CHECK(d.fingerBlendStartDeg == 30.0 && d.fingerBlendEndDeg == 70.0);
+    CHECK(d.torsoFollowS == 3.0);
+    Config c = Config::FromIni(IniFile::Parse("[emulation]\nfinger_blend = false\nfinger_blend_start_deg = 50\nfinger_blend_end_deg = 10\ntorso_follow_s = 999\n"));
+    CHECK(!c.fingerBlend);
+    CHECK(c.fingerBlendEndDeg >= c.fingerBlendStartDeg + 5.0);
+    CHECK(c.torsoFollowS == 30.0);
+}
+
+TEST(Config_menu_dans_le_casque) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.menuEnabled);
+    CHECK_EQ(d.menuHoldMs, 1200);
+    Config c = Config::FromIni(IniFile::Parse("[menu]\nenabled = false\nopen_hold_ms = 10\n"));
+    CHECK(!c.menuEnabled);
+    CHECK_EQ(c.menuHoldMs, 400);
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[menu]\nopen_hold_ms = 99999\n")).menuHoldMs, 5000);
+}
+
+TEST(Config_captures) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK_EQ(d.captureMax, 16);
+    CHECK_EQ(d.captureIntervalMs, 3000);
+    CHECK_EQ(d.colorState, std::string("render_target"));
+    Config c = Config::FromIni(IniFile::Parse("[touch]\ncapture_max = 999\ncapture_interval_ms = 1\ncolor_state = n_importe_quoi\n"));
+    CHECK_EQ(c.captureMax, 100);
+    CHECK_EQ(c.captureIntervalMs, 500);
+    CHECK_EQ(c.colorState, std::string("render_target"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[touch]\ncapture_max = 0\n")).captureMax, 0);
+}
+
 TEST(Config_sonde_de_profondeur) {
     Config d = Config::FromIni(IniFile::Parse(""));
     CHECK(d.depthProbe);
@@ -137,4 +180,14 @@ TEST(Config_sonde_de_profondeur) {
     CHECK_EQ(c.depthProbeIntervalMs, 100);
     CHECK_EQ(c.depthProbeState, std::string("shader"));
     CHECK_EQ(Config::FromIni(IniFile::Parse("[touch]\ndepth_state = n_importe_quoi\n")).depthProbeState, std::string("depth_write"));
+}
+
+TEST(Config_pointeur_partage) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(!d.sharedPointer);
+    CHECK(d.engageMm == 34.0);
+    Config c = Config::FromIni(IniFile::Parse("[emulation]\nshared_pointer = true\nengage_mm = 5\n"));
+    CHECK(c.sharedPointer);
+    CHECK(c.engageMm == 22.0);
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\nengage_mm = 500\n")).engageMm == 80.0);
 }

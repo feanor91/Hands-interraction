@@ -95,7 +95,7 @@ struct DepthReader::Impl {
         return true;
     }
 
-    bool Submit(const std::vector<DepthRequestEye>& eyes, D3D12_RESOURCE_STATES stateBefore) {
+    bool Submit(const std::vector<DepthRequestEye>& eyes) {
         if (pending) return false;
         HRESULT hr = alloc->Reset();
         if (FAILED(hr)) return Fail("allocator->Reset", hr);
@@ -113,7 +113,7 @@ struct DepthReader::Impl {
             D3D12_RESOURCE_BARRIER b{};
             b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             b.Transition.pResource = e.depth;
-            b.Transition.StateBefore = stateBefore;
+            b.Transition.StateBefore = e.state;
             b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
             b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             barriers.push_back(b);
@@ -140,7 +140,7 @@ struct DepthReader::Impl {
                 dst.pResource = readback.Get();
                 dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                 dst.PlacedFootprint.Offset = cursor;
-                dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_TYPELESS;  // plan « profondeur » de R32G8X24
+                dst.PlacedFootprint.Footprint.Format = e.format;
                 dst.PlacedFootprint.Footprint.Width = b.w;
                 dst.PlacedFootprint.Footprint.Height = b.h;
                 dst.PlacedFootprint.Footprint.Depth = 1;
@@ -204,8 +204,8 @@ bool DepthReader::Init(ID3D12Device* device, ID3D12CommandQueue* queue, const ch
     if (!ok && error) *error = impl_->error.c_str();
     return ok;
 }
-bool DepthReader::Submit(const std::vector<DepthRequestEye>& eyes, D3D12_RESOURCE_STATES stateBefore) {
-    return impl_->Submit(eyes, stateBefore);
+bool DepthReader::Submit(const std::vector<DepthRequestEye>& eyes) {
+    return impl_->Submit(eyes);
 }
 bool DepthReader::Pending() const { return impl_->pending; }
 bool DepthReader::TryCollect(std::vector<DepthResultEye>* out) { return impl_->TryCollect(out); }

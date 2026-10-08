@@ -96,6 +96,53 @@ inline Quat LookAlong(Vec3 forward, Vec3 up) {
     return QuatFromBasis(x, Cross(z, x), z);
 }
 
+// Position estimée de l'épaule d'une main, à partir de la pose de la tête (repère monde, +Y vers le haut) : décalée de `side`
+// mètres sur le côté de la main, de `drop` mètres sous la tête et de `back` mètres vers l'arrière, selon la direction du regard
+// projetée sur l'horizontale (seul le lacet de la tête compte : lever ou baisser les yeux ne déplace pas l'épaule).
+// Lacet (rotation autour de la verticale, en radians) de la direction du regard : 0 = regard vers -Z ; positif vers la gauche.
+// Retourne `fallback` si le regard est presque vertical (le lacet n'a alors plus de sens).
+inline float HeadYaw(const Quat& q, float fallback) {
+    const Vec3 fwd = Rotate(q, Vec3{0.0f, 0.0f, -1.0f});
+    if (std::sqrt(fwd.x * fwd.x + fwd.z * fwd.z) < 0.5f) return fallback;
+    return std::atan2(-fwd.x, -fwd.z);
+}
+
+// Ramène un angle dans [-pi, pi].
+inline float WrapAngle(float a) {
+    const float kPi = 3.14159265f;
+    while (a > kPi) a -= 2.0f * kPi;
+    while (a < -kPi) a += 2.0f * kPi;
+    return a;
+}
+
+// Épaule estimée à partir de la position de la tête et d'un lacet de TORSE donné (le torse tourne moins vite que la tête).
+inline Vec3 EstimateShoulderYaw(const Vec3& headPos, float torsoYaw, bool rightHand, float side, float drop, float back) {
+    const Vec3 up{0.0f, 1.0f, 0.0f};
+    const Vec3 fh{-std::sin(torsoYaw), 0.0f, -std::cos(torsoYaw)};  // avant horizontal du torse (lacet positif = vers la gauche)
+    const Vec3 rightH = Cross(fh, up);
+    return headPos + rightH * ((rightHand ? 1.0f : -1.0f) * side) - up * drop - fh * back;
+}
+
+inline Vec3 EstimateShoulder(const Pose& head, bool rightHand, float side, float drop, float back) {
+    return EstimateShoulderYaw(head.p, HeadYaw(head.q, 0.0f), rightHand, side, drop, back);
+}
+
+// Intersection d'un rayon (origine `o`, direction unitaire `d`) avec le plan d'un panneau de pose `quad` (le panneau regarde vers
+// son +Z ; +X à sa droite, +Y vers le haut). Si le rayon le touche devant lui, remplit les coordonnées locales du point d'impact
+// (`lx` vers la droite, `ly` vers le haut, en mètres, origine au centre du panneau) et la distance `t` ; sinon retourne faux.
+inline bool RayQuadHit(Vec3 o, Vec3 d, const Pose& quad, float* lx, float* ly, float* t) {
+    const Vec3 n = Rotate(quad.q, Vec3{0.0f, 0.0f, 1.0f});
+    const float denom = Dot(d, n);
+    if (std::fabs(denom) < 1e-5f) return false;  // rayon parallèle au panneau
+    const float dist = Dot(quad.p - o, n) / denom;
+    if (dist <= 0.0f) return false;  // le panneau est derrière l'origine du rayon
+    const Vec3 hit = o + d * dist - quad.p;
+    *lx = Dot(hit, Rotate(quad.q, Vec3{1.0f, 0.0f, 0.0f}));
+    *ly = Dot(hit, Rotate(quad.q, Vec3{0.0f, 1.0f, 0.0f}));
+    *t = dist;
+    return true;
+}
+
 // Interpolation linéaire normalisée, du côté le plus court (suffisante pour de petits angles).
 inline Quat Nlerp(Quat a, Quat b, float t) {
     if (Dot(a, b) < 0) b = {-b.x, -b.y, -b.z, -b.w};

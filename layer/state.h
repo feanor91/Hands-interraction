@@ -50,6 +50,8 @@ struct Dispatch {
     PFN_xrGetActionStateBoolean GetActionStateBoolean = nullptr;
     PFN_xrGetActionStateFloat GetActionStateFloat = nullptr;
     PFN_xrGetActionStatePose GetActionStatePose = nullptr;
+    PFN_xrCreateReferenceSpace CreateReferenceSpace = nullptr;  // espace VIEW : position de la tête (pointeur depuis l'épaule)
+    PFN_xrDestroySpace DestroySpace = nullptr;
     // Etape 3a (surimpression des mains) : optionnelles.
     PFN_xrEndFrame EndFrame = nullptr;
     PFN_xrEnumerateSwapchainFormats EnumerateSwapchainFormats = nullptr;
@@ -78,6 +80,12 @@ extern LoaderNegotiationInfo g_loaderInfo;
 
 // Configuration courante (lecture sans verrou). Jamais nullptr une fois initialisée.
 std::shared_ptr<const hands::config::Config> CurrentConfig();
+
+// Dossier de la DLL (configuration, journaux) : defini par layer.cpp apres l'initialisation.
+std::filesystem::path LayerBaseDir();
+
+// Ecrit `section`/`key` = `value` dans hands.ini (une seule ligne modifiee) et recharge la configuration aussitot.
+bool Layer_SetConfigValue(const char* section, const char* key, const std::string& value);
 
 // Fournis par layer.cpp
 XrResult XRAPI_CALL Layer_xrGetInstanceProcAddr(XrInstance instance, const char* name, PFN_xrVoidFunction* function);

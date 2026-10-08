@@ -25,6 +25,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -36,6 +37,7 @@
 #include "emulate.h"
 #include "hand_renderer.h"
 #include "hands_overlay.h"
+#include "vr_menu.h"
 
 namespace layer {
 
@@ -227,9 +229,11 @@ struct SwapchainInfo {
     std::vector<ID3D12Resource*> images;  // images D3D12 de la swapchain (connues après xrEnumerateSwapchainImages)
     int acquired = -1;                    // dernier indice rendu par xrAcquireSwapchainImage
     int lastReleased = -1;                // indice de l'image que le jeu vient de terminer (la plus récente)
+    uint64_t acquireCount = 0;            // nombre d'images prises par le jeu : 0 = swapchain créée mais jamais utilisée
 };
 std::unordered_map<uint64_t, SwapchainInfo> g_gameSwapchains;  // XrSwapchain -> infos (uniquement celles du jeu)
 std::vector<uint64_t> g_depthChains;  // swapchains de profondeur du jeu, dans l'ordre de création (œil gauche puis droit)
+std::vector<uint64_t> g_colorChains;  // swapchains couleur du jeu, dans l ordre de creation (oeil gauche puis droit)
 std::mutex g_swapMutex;
 
 std::string UsageText(uint64_t u) {
@@ -258,6 +262,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateSwapchain(XrSession session, const X
             si.arraySize = ci->arraySize;
             g_gameSwapchains[reinterpret_cast<uint64_t>(*sc)] = si;
             if (ci->usageFlags & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) g_depthChains.push_back(reinterpret_cast<uint64_t>(*sc));
+            else if (ci->usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT) g_colorChains.push_back(reinterpret_cast<uint64_t>(*sc));
         }
         Logger::Get().Log(LogLevel::Info, "swapchain du jeu : format DXGI %lld, %ux%u, tableau %u, mips %u, echantillons %u, usage = %s",
                           static_cast<long long>(ci->format), ci->width, ci->height, ci->arraySize, ci->mipCount, ci->sampleCount,
@@ -303,7 +308,10 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrAcquireSwapchainImage(XrSwapchain sc, cons
     if (XR_SUCCEEDED(r) && index) {
         std::lock_guard<std::mutex> lock(g_swapMutex);
         const auto it = g_gameSwapchains.find(reinterpret_cast<uint64_t>(sc));
-        if (it != g_gameSwapchains.end()) it->second.acquired = static_cast<int>(*index);
+        if (it != g_gameSwapchains.end()) {
+            it->second.acquired = static_cast<int>(*index);
+            ++it->second.acquireCount;
+        }
     }
     return r;
 }
@@ -320,14 +328,18 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrReleaseSwapchainImage(XrSwapchain sc, cons
 
 std::unique_ptr<DepthReader> g_depthReader;  // créé à la première sonde ; détruit avec la session
 bool g_depthReaderFailed = false;
+std::unique_ptr<DepthReader> g_colorReader;  // lecteur des captures couleur (meme classe, autre format)
+bool g_colorReaderFailed = false;
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrDestroySwapchain(XrSwapchain sc) {
     Safe("xrDestroySwapchain", [&] {
+        if (g_colorReader) g_colorReader->WaitIdle();
         if (g_depthReader) g_depthReader->WaitIdle();  // une copie en cours pourrait lire une image sur le point d'être libérée
         std::lock_guard<std::mutex> lock(g_swapMutex);
         const uint64_t h = reinterpret_cast<uint64_t>(sc);
         g_gameSwapchains.erase(h);
         g_depthChains.erase(std::remove(g_depthChains.begin(), g_depthChains.end(), h), g_depthChains.end());
+        g_colorChains.erase(std::remove(g_colorChains.begin(), g_colorChains.end(), h), g_colorChains.end());
     });
     return g_dispatch.DestroySwapchain(sc);
 }
@@ -439,7 +451,19 @@ void DepthProbeFrame(const XrFrameEndInfo* info) {
             if (sc.lastReleased >= 0 && static_cast<size_t>(sc.lastReleased) < sc.images.size()) depth[e] = sc.images[sc.lastReleased];
         }
     }
-    if (!depth[0] && !depth[1]) return;
+    if (!depth[0] && !depth[1]) {
+        // Rien à lire : on journalise l'état des swapchains (rarement) pour savoir si le jeu s'en sert.
+        if (g_probeCount++ % 20 == 0) {
+            std::lock_guard<std::mutex> lock(g_swapMutex);
+            for (const auto& kv : g_gameSwapchains) {
+                const SwapchainInfo& s = kv.second;
+                Logger::Get().Log(LogLevel::Info, "sonde de profondeur : rien a lire. swapchain %s : %zu images, prises par le jeu %llu fois, derniere terminee = %d",
+                                  (s.usage & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) ? "PROFONDEUR" : "couleur", s.images.size(),
+                                  static_cast<unsigned long long>(s.acquireCount), s.lastReleased);
+            }
+        }
+        return;
+    }
 
     HandsFrame frame;
     bool any = false;
@@ -449,6 +473,8 @@ void DepthProbeFrame(const XrFrameEndInfo* info) {
     for (int e = 0; e < 2; ++e) {
         g_probeItems[e].clear();
         req[e].depth = depth[e];
+        req[e].state = StateFromName(cfg->depthProbeState);
+        req[e].format = DXGI_FORMAT_R32_TYPELESS;
         if (!depth[e]) continue;
         const D3D12_RESOURCE_DESC d = depth[e]->GetDesc();
         for (int j = 0; j < kGrid; ++j)
@@ -474,8 +500,200 @@ void DepthProbeFrame(const XrFrameEndInfo* info) {
             }
         }
     }
-    if (!g_depthReader->Submit(req, StateFromName(cfg->depthProbeState)))
+    if (!g_depthReader->Submit(req))
         Logger::Get().Log(LogLevel::Warn, "sonde de profondeur : soumission refusee (%s)", g_depthReader->LastError());
+}
+
+// --- Captures du rendu du jeu autour de la main --------------------------------------------------
+// But : voir ce que MSFS dessine (flèche au bout du doigt, rayon, point blanc d'impact) pour juger si on peut en tirer la distance à la
+// commande. On copie un rectangle de l'image couleur de l'œil gauche, centré sur le bout de l'index, et on l'écrit en BMP.
+int g_capturesDone = 0;
+ULONGLONG g_lastCaptureTick = 0;
+bool g_prevPressed[2] = {false, false};
+struct PendingCapture {
+    bool active = false;
+    std::string tag;
+    int cx = 0, cy = 0;
+    uint32_t w = 0, h = 0;
+    int x0 = 0, y0 = 0;                          // coin du rectangle copie, dans l'image complete
+    int ox = -1, oy = -1, fx = -1, fy = -1;      // depart du rayon et point a 25 cm sur le rayon (pixels de l'image complete)
+    int ix = -1, iy = -1;                        // bout de l'index
+} g_pendingCapture;
+
+bool WriteBmp(const std::filesystem::path& file, const std::vector<float>& words, uint32_t w, uint32_t h) {
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, file.c_str(), L"wb") != 0 || !f) return false;
+    const uint32_t imgSize = w * h * 4, fileSize = 54 + imgSize, offset = 54, dibSize = 40;
+    uint8_t header[54] = {'B', 'M'};
+    std::memcpy(header + 2, &fileSize, 4);
+    std::memcpy(header + 10, &offset, 4);
+    std::memcpy(header + 14, &dibSize, 4);
+    const int32_t sw = static_cast<int32_t>(w), sh = -static_cast<int32_t>(h);  // hauteur négative : lignes de haut en bas
+    std::memcpy(header + 18, &sw, 4);
+    std::memcpy(header + 22, &sh, 4);
+    const uint16_t planes = 1, bpp = 32;
+    std::memcpy(header + 26, &planes, 2);
+    std::memcpy(header + 28, &bpp, 2);
+    std::memcpy(header + 34, &imgSize, 4);
+    std::fwrite(header, 1, 54, f);
+    std::vector<uint8_t> row(static_cast<size_t>(w) * 4);
+    for (uint32_t y = 0; y < h; ++y) {
+        const uint8_t* src = reinterpret_cast<const uint8_t*>(&words[static_cast<size_t>(y) * w]);  // RGBA
+        for (uint32_t x = 0; x < w; ++x) {
+            row[x * 4 + 0] = src[x * 4 + 2];  // B
+            row[x * 4 + 1] = src[x * 4 + 1];  // G
+            row[x * 4 + 2] = src[x * 4 + 0];  // R
+            row[x * 4 + 3] = 255;
+        }
+        std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+    return true;
+}
+
+// Croix de repere dans une image RGBA (mots de 4 octets), en coordonnees de l image copiee. Ignore ce qui sort de l image.
+void DrawCross(std::vector<float>& words, uint32_t w, uint32_t h, int cx, int cy, int arm, uint8_t r, uint8_t g, uint8_t b) {
+    auto put = [&](int x, int y) {
+        if (x < 0 || y < 0 || x >= static_cast<int>(w) || y >= static_cast<int>(h)) return;
+        uint8_t* p = reinterpret_cast<uint8_t*>(&words[static_cast<size_t>(y) * w + static_cast<size_t>(x)]);
+        p[0] = r;
+        p[1] = g;
+        p[2] = b;
+        p[3] = 255;
+    };
+    for (int k = -arm; k <= arm; ++k)
+        for (int t = -1; t <= 1; ++t) {
+            put(cx + k, cy + t);
+            put(cx + t, cy + k);
+        }
+}
+
+D3D12_RESOURCE_STATES ColorStateFromName(const std::string& n) {
+    if (n == "common") return D3D12_RESOURCE_STATE_COMMON;
+    if (n == "shader") return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (n == "copy_source") return D3D12_RESOURCE_STATE_COPY_SOURCE;
+    return D3D12_RESOURCE_STATE_RENDER_TARGET;
+}
+
+void CaptureFrame(const XrFrameEndInfo* info) {
+    const auto cfg = CurrentConfig();
+    if (cfg->captureMax <= 0 || g_capturesDone >= cfg->captureMax || g_colorReaderFailed || !info || !info->layers || !g_device || !g_queue) return;
+    const XrCompositionLayerProjection* game = FindGameProjection(info);
+    if (!game) return;
+    if (!g_colorReader) {
+        auto reader = std::make_unique<DepthReader>();
+        const char* err = nullptr;
+        if (!reader->Init(g_device, g_queue, &err)) {
+            Logger::Get().Log(LogLevel::Error, "captures desactivees : %s", err ? err : "?");
+            g_colorReaderFailed = true;
+            return;
+        }
+        g_colorReader = std::move(reader);
+    }
+
+    if (g_pendingCapture.active) {  // une copie est en cours : on attend sa fin sans jamais bloquer le rendu
+        std::vector<DepthResultEye> res;
+        if (!g_colorReader->TryCollect(&res)) return;
+        g_pendingCapture.active = false;
+        if (!res.empty() && !res[0].boxes.empty() && res[0].boxes[0].size() == static_cast<size_t>(g_pendingCapture.w) * g_pendingCapture.h) {
+            char name[96];
+            std::snprintf(name, sizeof(name), "cap_%02d_%s.bmp", g_capturesDone + 1, g_pendingCapture.tag.c_str());
+            const std::filesystem::path file = LayerBaseDir() / "logs" / "captures" / name;
+            // Reperes : magenta = depart du rayon que NOUS donnons au jeu ; vert = point a 25 cm sur ce rayon ; jaune = bout de l'index.
+            if (g_pendingCapture.ox >= 0) DrawCross(res[0].boxes[0], g_pendingCapture.w, g_pendingCapture.h, g_pendingCapture.ox - g_pendingCapture.x0, g_pendingCapture.oy - g_pendingCapture.y0, 14, 255, 0, 255);
+            if (g_pendingCapture.fx >= 0) DrawCross(res[0].boxes[0], g_pendingCapture.w, g_pendingCapture.h, g_pendingCapture.fx - g_pendingCapture.x0, g_pendingCapture.fy - g_pendingCapture.y0, 10, 0, 255, 0);
+            if (g_pendingCapture.ix >= 0) DrawCross(res[0].boxes[0], g_pendingCapture.w, g_pendingCapture.h, g_pendingCapture.ix - g_pendingCapture.x0, g_pendingCapture.iy - g_pendingCapture.y0, 8, 255, 255, 0);
+            const bool ok = WriteBmp(file, res[0].boxes[0], g_pendingCapture.w, g_pendingCapture.h);
+            Logger::Get().Log(LogLevel::Info, "capture %d (%s) : %s, rect (%d,%d) %ux%u ; depart du rayon (%d,%d) ; point a 25 cm (%d,%d) ; bout de l'index (%d,%d)", g_capturesDone + 1,
+                              g_pendingCapture.tag.c_str(), ok ? name : "ECHEC d'ecriture", g_pendingCapture.x0, g_pendingCapture.y0, g_pendingCapture.w, g_pendingCapture.h,
+                              g_pendingCapture.ox, g_pendingCapture.oy, g_pendingCapture.fx, g_pendingCapture.fy, g_pendingCapture.ix, g_pendingCapture.iy);
+            ++g_capturesDone;
+        }
+        return;
+    }
+
+    HandsFrame frame;
+    bool any = false;
+    ToHandsFrame(game, info->displayTime, &frame, &any);
+    if (!any) {
+        g_prevPressed[0] = g_prevPressed[1] = false;
+        return;
+    }
+    int hand = -1;
+    bool clickEdge = false;
+    for (int h = 0; h < 2; ++h) {
+        const bool pressed = frame.hand[h].valid && frame.hand[h].pressed;
+        if (pressed && !g_prevPressed[h]) {
+            clickEdge = true;
+            hand = h;
+        }
+        g_prevPressed[h] = pressed;
+    }
+    const ULONGLONG now = GetTickCount64();
+    const bool periodic = now - g_lastCaptureTick >= static_cast<ULONGLONG>(cfg->captureIntervalMs);
+    if (!clickEdge && !periodic) return;
+    if (hand < 0) hand = frame.hand[1].valid ? 1 : 0;
+    if (!frame.hand[hand].valid || !frame.hand[hand].jointValid[10]) return;
+
+    ID3D12Resource* color = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        if (!g_colorChains.empty()) {
+            const auto it = g_gameSwapchains.find(g_colorChains[0]);  // première swapchain couleur = œil gauche
+            if (it != g_gameSwapchains.end() && it->second.lastReleased >= 0 && static_cast<size_t>(it->second.lastReleased) < it->second.images.size())
+                color = it->second.images[it->second.lastReleased];
+        }
+    }
+    if (!color) return;
+    const D3D12_RESOURCE_DESC d = color->GetDesc();
+
+    // Projection, dans l'image de l'œil gauche, du depart du rayon que nous donnons au jeu (et du bout de l'index)
+    const XrPosef& vp = game->views[0].pose;
+    const em::Pose eye{{vp.orientation.x, vp.orientation.y, vp.orientation.z, vp.orientation.w}, {vp.position.x, vp.position.y, vp.position.z}};
+    const XrFovf& fov = game->views[0].fov;
+    const float tl = std::tan(fov.angleLeft), tr = std::tan(fov.angleRight), tu = std::tan(fov.angleUp), td = std::tan(fov.angleDown);
+    auto project = [&](const em::Vec3& p, int* ox, int* oy) {
+        const em::Vec3 v = em::Rotate(em::Conjugate(eye.q), p - eye.p);
+        const float z = -v.z;
+        if (z < 0.05f) return false;
+        *ox = static_cast<int>((v.x / z - tl) / (tr - tl) * static_cast<float>(d.Width));
+        *oy = static_cast<int>((tu - v.y / z) / (tu - td) * static_cast<float>(d.Height));
+        return true;
+    };
+    PendingCapture pc;
+    pc.tag = clickEdge ? "clic" : "survol";
+    int px = 0, py = 0;
+    if (!project(frame.hand[hand].joint[10].p, &pc.ix, &pc.iy)) return;
+    XrPosef aim;
+    if (Emu_LastPointerPose(hand, &aim)) {
+        const em::Vec3 o{aim.position.x, aim.position.y, aim.position.z};
+        const em::Quat q{aim.orientation.x, aim.orientation.y, aim.orientation.z, aim.orientation.w};
+        project(o, &pc.ox, &pc.oy);
+        project(o + em::Rotate(q, em::Vec3{0.0f, 0.0f, -0.25f}), &pc.fx, &pc.fy);
+    }
+    px = pc.ox >= 0 ? pc.ox : pc.ix;
+    py = pc.oy >= 0 ? pc.oy : pc.iy;
+    const uint32_t cw = std::min<uint32_t>(960, static_cast<uint32_t>(d.Width)), ch = std::min<uint32_t>(720, d.Height);
+    const int x0 = std::max(0, std::min(px - static_cast<int>(cw / 2), static_cast<int>(d.Width - cw)));
+    const int y0 = std::max(0, std::min(py - static_cast<int>(ch / 2), static_cast<int>(d.Height - ch)));
+
+    std::vector<DepthRequestEye> req(1);
+    req[0].depth = color;
+    req[0].state = ColorStateFromName(cfg->colorState);
+    req[0].format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    req[0].boxes.push_back({static_cast<uint32_t>(x0), static_cast<uint32_t>(y0), cw, ch});
+    if (!g_colorReader->Submit(req)) return;
+    g_lastCaptureTick = now;
+    pc.active = true;
+    pc.cx = px;
+    pc.cy = py;
+    pc.w = cw;
+    pc.h = ch;
+    pc.x0 = x0;
+    pc.y0 = y0;
+    g_pendingCapture = pc;
 }
 
 // Journalise, pour les premières images, la liste des couches et ce qui est chaîné aux vues (profondeur ?).
@@ -521,9 +739,21 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     XrCompositionLayerProjectionView ourViews[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     bool addLayer = false;
     bool swapchainAcquired[2] = {false, false};
+    XrCompositionLayerQuad menuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // panneau du menu des reglages (si ouvert)
+    bool addMenu = false;
 
     Safe("xrEndFrame(diagnostic)", [&] { LogLayerChain(info); });
     Safe("xrEndFrame(sonde profondeur)", [&] { DepthProbeFrame(info); });
+    Safe("xrEndFrame(captures)", [&] { CaptureFrame(info); });
+    Safe("xrEndFrame(menu)", [&] {
+        if (!info || !info->layers || !g_device || !g_queue) return;
+        const XrCompositionLayerProjection* game = FindGameProjection(info);
+        if (!game) return;
+        HandsFrame frame;
+        bool any = false;
+        ToHandsFrame(game, info->displayTime, &frame, &any);
+        addMenu = VrMenu_Frame(session, g_device, g_queue, game, info->displayTime, frame, &menuQuad);
+    });
     Safe("xrEndFrame(preparation)", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->handsEnabled || g_ov.disabled || !info || info->layerCount == 0 || !info->layers) return;
@@ -612,10 +842,11 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     });
 
     // 2) L'appel réel, HORS de tout try. Sans couche ajoutée : l'info d'origine, intacte.
-    if (!addLayer) return g_dispatch.EndFrame(session, info);
+    if (!addLayer && !addMenu) return g_dispatch.EndFrame(session, info);
 
     std::vector<const XrCompositionLayerBaseHeader*> layers(info->layers, info->layers + info->layerCount);
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ourLayer));
+    if (addLayer) layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ourLayer));
+    if (addMenu) layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&menuQuad));  // le menu passe par-dessus les mains
     XrFrameEndInfo modified = *info;
     modified.layerCount = static_cast<uint32_t>(layers.size());
     modified.layers = layers.data();
@@ -623,8 +854,9 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     if (XR_FAILED(r)) {
         // Notre couche est peut-être en cause : on la désactive et on ne retente pas dans la même image.
         Safe("xrEndFrame(echec)", [&] {
+            if (addMenu) VrMenu_NoteEndFrameFailure();
             Logger::Get().Log(LogLevel::Error, "surimpression : xrEndFrame a refuse la couche des mains (code %d)", static_cast<int>(r));
-            if (++g_ov.failures >= 3) Disable("xrEndFrame refuse la couche ajoutee");
+            if (addLayer && ++g_ov.failures >= 3) Disable("xrEndFrame refuse la couche ajoutee");
         });
     }
     return r;
@@ -652,8 +884,15 @@ void Overlay_OnGraphicsBinding(void* device, void* queue) {
 
 void Overlay_Stop() {
     Safe("Overlay_Stop", [&] {
+        VrMenu_Stop();
         if (g_depthReader) g_depthReader->WaitIdle();
         g_depthReader.reset();
+        if (g_colorReader) g_colorReader->WaitIdle();
+        g_colorReader.reset();
+        g_colorReaderFailed = false;
+        g_pendingCapture.active = false;
+        g_capturesDone = 0;
+        g_lastCaptureTick = 0;
         g_depthReaderFailed = false;
         g_lastProbeTick = 0;
         g_probeCount = 0;
@@ -661,6 +900,7 @@ void Overlay_Stop() {
             std::lock_guard<std::mutex> lock(g_swapMutex);
             g_gameSwapchains.clear();
             g_depthChains.clear();
+            g_colorChains.clear();
         }
         if (g_ov.renderer) g_ov.renderer->WaitIdle();
         DestroyChains();

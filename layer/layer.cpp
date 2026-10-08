@@ -9,11 +9,14 @@
 //    on lui remet NOTRE fonction à la place, qui appellera ensuite la vraie.
 #include <windows.h>
 
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "config/IniEdit.h"
 #include "state.h"
 #include "util/StringUtil.h"
 
@@ -154,6 +157,32 @@ void Safe(const char* what, F&& f) noexcept {
 }
 
 }  // namespace
+
+std::filesystem::path LayerBaseDir() { return g_baseDir; }
+
+bool Layer_SetConfigValue(const char* section, const char* key, const std::string& value) {
+    if (!g_configStore) return false;
+    const std::filesystem::path file = g_configStore->File();
+    std::string text;
+    {
+        std::ifstream in(file, std::ios::in | std::ios::binary);
+        if (!in.is_open()) return false;
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        text = ss.str();
+    }
+    const std::string out = hands::config::IniSetValue(text, section, key, value);
+    {
+        std::ofstream f(file, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << out;
+        f.flush();
+        if (!f) return false;
+    }
+    std::string msg;
+    g_configStore->Reload(&msg);
+    return true;
+}
 
 std::shared_ptr<const hands::config::Config> CurrentConfig() {
     if (!g_configStore) return std::make_shared<const hands::config::Config>();
@@ -305,7 +334,7 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
         LOAD(PollEvent); LOAD(GetCurrentInteractionProfile); LOAD(PathToString); LOAD(StringToPath);
         LOAD(ResultToString); LOAD(GetSystemProperties); LOAD(GetInstanceProperties);
         LOAD(CreateHandTrackerEXT); LOAD(DestroyHandTrackerEXT); LOAD(LocateHandJointsEXT);
-        LOAD(DestroySession); LOAD(LocateSpace); LOAD(GetActionStateBoolean); LOAD(GetActionStateFloat); LOAD(GetActionStatePose);
+        LOAD(DestroySession); LOAD(LocateSpace); LOAD(GetActionStateBoolean); LOAD(GetActionStateFloat); LOAD(GetActionStatePose); LOAD(CreateReferenceSpace); LOAD(DestroySpace);
         LOAD(EndFrame); LOAD(EnumerateSwapchainFormats); LOAD(CreateSwapchain); LOAD(DestroySwapchain);
         LOAD(EnumerateSwapchainImages); LOAD(AcquireSwapchainImage); LOAD(WaitSwapchainImage); LOAD(ReleaseSwapchainImage);
 #undef LOAD

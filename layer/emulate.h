@@ -27,6 +27,15 @@ void Emu_OnActionSpace(XrAction action, XrPath subactionPath, XrSpace space);
 // reçoit l'état du pincement. Retourne faux si la main n'est pas suivie ou si le suivi n'est pas démarré.
 bool Emu_LocateForRender(int hand, XrSpace base, XrTime time, XrHandJointLocationEXT* out, bool* pressed, int* clickJoint);
 
+// Derniere pose de pointeur (celle que le jeu recoit) de la main `hand`, si elle est suivie. Sert aux captures de diagnostic.
+bool Emu_LastPointerPose(int hand, XrPosef* out);
+
+// Menu ouvert : les clics (pincements) ne sont plus transmis au jeu, qui voit la gachette relachee.
+void Emu_SetMenuOpen(bool open);
+
+// Pose de la tete dans `base` a l'instant `time` (pour placer le menu devant l'utilisateur). Faux si indisponible.
+bool Emu_HeadPose(XrSpace base, XrTime time, XrPosef* out);
+
 // Fournis par emulate.cpp : hooks supplémentaires de l'étape 1 (nullptr si inconnu).
 PFN_xrVoidFunction FindEmulationHook(const char* name);
 

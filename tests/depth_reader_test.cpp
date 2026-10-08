@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "depth_reader.h"
+#include "texture_uploader.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace layer;
@@ -106,9 +107,9 @@ int main() {
     std::vector<DepthRequestEye> req(1);
     req[0].depth = depth.Get();
     req[0].boxes = {{10, 10, 1, 1}, {250, 140, 1, 1}, {199, 140, 3, 1}, {5000, 5000, 1, 1}, {636, 476, 10, 10}};
-    EXPECT(reader.Submit(req, D3D12_RESOURCE_STATE_DEPTH_WRITE), "Submit");
+    EXPECT(reader.Submit(req), "Submit");
     EXPECT(reader.Pending(), "requete en cours");
-    EXPECT(!reader.Submit(req, D3D12_RESOURCE_STATE_DEPTH_WRITE), "une seule requete a la fois");
+    EXPECT(!reader.Submit(req), "une seule requete a la fois");
 
     std::vector<DepthResultEye> res;
     for (int i = 0; i < 2000 && !reader.TryCollect(&res); ++i) Sleep(5);
@@ -127,7 +128,7 @@ int main() {
     }
 
     // Une deuxieme requete fonctionne apres la premiere (rotation des tampons)
-    EXPECT(reader.Submit(req, D3D12_RESOURCE_STATE_DEPTH_WRITE), "deuxieme Submit");
+    EXPECT(reader.Submit(req), "deuxieme Submit");
     for (int i = 0; i < 2000 && !reader.TryCollect(&res); ++i) Sleep(5);
     EXPECT(res.size() == 1 && res[0].boxes.size() == 5 && res[0].boxes[1].size() == 1 && Near(res[0].boxes[1][0], 0.75f), "relecture repetee");
 
@@ -138,6 +139,119 @@ int main() {
     l->Close();
     queue->ExecuteCommandLists(1, lists);
     reader.WaitIdle();
+
+    // --- Lecture d'une image COULEUR (R8G8B8A8_TYPELESS, comme les swapchains du jeu), pour les captures ---------------
+    {
+        D3D12_RESOURCE_DESC cd{};
+        cd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        cd.Width = 320;
+        cd.Height = 200;
+        cd.DepthOrArraySize = 1;
+        cd.MipLevels = 1;
+        cd.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        cd.SampleDesc.Count = 1;
+        cd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_CLEAR_VALUE ccv{};
+        ccv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        ccv.Color[0] = 1.0f;
+        ccv.Color[1] = 128.0f / 255.0f;
+        ccv.Color[2] = 0.0f;
+        ccv.Color[3] = 1.0f;
+        ComPtr<ID3D12Resource> color;
+        EXPECT(SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &cd, D3D12_RESOURCE_STATE_RENDER_TARGET, &ccv, IID_PPV_ARGS(&color))),
+               "creation de la texture couleur");
+        D3D12_DESCRIPTOR_HEAP_DESC rh{};
+        rh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rh.NumDescriptors = 1;
+        ComPtr<ID3D12DescriptorHeap> rtvHeap;
+        EXPECT(SUCCEEDED(dev->CreateDescriptorHeap(&rh, IID_PPV_ARGS(&rtvHeap))), "tas RTV");
+        D3D12_RENDER_TARGET_VIEW_DESC rv{};
+        rv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        dev->CreateRenderTargetView(color.Get(), &rv, rtv);
+        a->Reset();
+        l->Reset(a.Get(), nullptr);
+        const float orange[4] = {1.0f, 128.0f / 255.0f, 0.0f, 1.0f}, bleu[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+        l->ClearRenderTargetView(rtv, orange, 0, nullptr);
+        const D3D12_RECT zone{100, 50, 120, 60};
+        l->ClearRenderTargetView(rtv, bleu, 1, &zone);
+        l->Close();
+        queue->ExecuteCommandLists(1, lists);
+
+        std::vector<DepthRequestEye> creq(1);
+        creq[0].depth = color.Get();
+        creq[0].state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        creq[0].format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        creq[0].boxes = {{5, 5, 1, 1}, {110, 55, 1, 1}, {98, 55, 6, 1}};
+        EXPECT(reader.Submit(creq), "Submit couleur");
+        std::vector<DepthResultEye> cres;
+        for (int i = 0; i < 2000 && !reader.TryCollect(&cres); ++i) Sleep(5);
+        EXPECT(cres.size() == 1 && cres[0].boxes.size() == 3, "resultat couleur");
+        if (cres.size() == 1 && cres[0].boxes.size() == 3) {
+            uint32_t w0 = 0, w1 = 0, w2 = 0;
+            if (!cres[0].boxes[0].empty()) std::memcpy(&w0, &cres[0].boxes[0][0], 4);
+            if (!cres[0].boxes[1].empty()) std::memcpy(&w1, &cres[0].boxes[1][0], 4);
+            if (cres[0].boxes[2].size() == 6) std::memcpy(&w2, &cres[0].boxes[2][2], 4);  // pixel x = 100 : premier du rectangle bleu
+            std::printf("couleur : hors=0x%08X dedans=0x%08X bord=0x%08X\n", w0, w1, w2);
+            EXPECT(w0 == 0xFF0080FFu, "pixel orange (octets R=255 G=128 B=0 A=255)");
+            EXPECT(w1 == 0xFFFF0000u, "pixel bleu (octets R=0 G=0 B=255 A=255)");
+            EXPECT(w2 == 0xFFFF0000u, "premier pixel du rectangle bleu");
+        }
+        reader.WaitIdle();
+    }
+
+    // --- Envoi d'une image CPU dans une texture B8G8R8A8 (comme le menu dans le casque), puis relecture ----------------
+    {
+        const uint32_t uw = 100, uh = 60;
+        D3D12_RESOURCE_DESC ud{};
+        ud.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        ud.Width = uw;
+        ud.Height = uh;
+        ud.DepthOrArraySize = 1;
+        ud.MipLevels = 1;
+        ud.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+        ud.SampleDesc.Count = 1;
+        ud.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        ComPtr<ID3D12Resource> tex;
+        EXPECT(SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&tex))),
+               "creation de la texture d'envoi");
+        std::vector<uint32_t> pix(uw * uh);
+        for (uint32_t y = 0; y < uh; ++y)
+            for (uint32_t x = 0; x < uw; ++x) pix[y * uw + x] = 0xFF000000u | (y << 8) | x;  // B = x, G = y
+        TextureUploader up;
+        const char* uerr = nullptr;
+        const bool uok = up.Init(dev.Get(), queue.Get(), &uerr);
+        if (!uok) std::printf("Init envoi : %s\n", uerr ? uerr : "?");
+        EXPECT(uok, "TextureUploader::Init");
+        if (uok) {
+            EXPECT(up.Upload(tex.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, DXGI_FORMAT_B8G8R8A8_UNORM, pix.data(), uw, uh, uw * 4), "Upload");
+            EXPECT(up.Upload(tex.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, DXGI_FORMAT_B8G8R8A8_UNORM, pix.data(), uw, uh, uw * 4), "deuxieme Upload");
+            up.WaitIdle();
+            std::vector<DepthRequestEye> ureq(1);
+            ureq[0].depth = tex.Get();
+            ureq[0].state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            ureq[0].format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            ureq[0].boxes = {{0, 0, 1, 1}, {37, 21, 1, 1}, {99, 59, 1, 1}, {10, 5, 3, 2}};
+            EXPECT(reader.Submit(ureq), "Submit relecture envoi");
+            std::vector<DepthResultEye> ures;
+            for (int i = 0; i < 2000 && !reader.TryCollect(&ures); ++i) Sleep(5);
+            EXPECT(ures.size() == 1 && ures[0].boxes.size() == 4, "resultat relecture envoi");
+            if (ures.size() == 1 && ures[0].boxes.size() == 4) {
+                auto word = [&](size_t box, size_t i) {
+                    uint32_t v = 0;
+                    if (i < ures[0].boxes[box].size()) std::memcpy(&v, &ures[0].boxes[box][i], 4);
+                    return v;
+                };
+                std::printf("envoi : (0,0)=0x%08X (37,21)=0x%08X (99,59)=0x%08X\n", word(0, 0), word(1, 0), word(2, 0));
+                EXPECT(word(0, 0) == 0xFF000000u, "pixel (0,0)");
+                EXPECT(word(1, 0) == (0xFF000000u | (21u << 8) | 37u), "pixel (37,21)");
+                EXPECT(word(2, 0) == (0xFF000000u | (59u << 8) | 99u), "pixel (99,59)");
+                EXPECT(ures[0].boxes[3].size() == 6 && word(3, 5) == (0xFF000000u | (6u << 8) | 12u), "zone 3x2 : dernier pixel (12,6)");
+            }
+            reader.WaitIdle();
+        }
+    }
 
     if (g_failures == 0) std::printf("depth_reader_test : OK\n");
     return g_failures == 0 ? 0 : 1;

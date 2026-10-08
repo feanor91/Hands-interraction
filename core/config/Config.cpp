@@ -20,7 +20,37 @@ Config Config::FromIni(const IniFile& ini) {
     c.logBindings = ini.GetBool("probe", "log_bindings", c.logBindings);
     c.emulationEnabled = ini.GetBool("emulation", "enabled", c.emulationEnabled);
     c.pointerMode = hands::util::ToLower(std::string(ini.GetString("emulation", "pointer_mode", c.pointerMode)));
-    if (c.pointerMode != "palm" && c.pointerMode != "hand" && c.pointerMode != "finger") c.pointerMode = "palm";
+    if (c.pointerMode != "shoulder" && c.pointerMode != "contact" && c.pointerMode != "palm" && c.pointerMode != "hand" && c.pointerMode != "finger")
+        c.pointerMode = "shoulder";
+    c.shoulderSideMm = ini.GetDouble("emulation", "shoulder_side_mm", c.shoulderSideMm);
+    c.shoulderDropMm = ini.GetDouble("emulation", "shoulder_drop_mm", c.shoulderDropMm);
+    c.shoulderBackMm = ini.GetDouble("emulation", "shoulder_back_mm", c.shoulderBackMm);
+    if (c.shoulderSideMm < 50.0) c.shoulderSideMm = 50.0;
+    if (c.shoulderSideMm > 400.0) c.shoulderSideMm = 400.0;
+    if (c.shoulderDropMm < 0.0) c.shoulderDropMm = 0.0;
+    if (c.shoulderDropMm > 500.0) c.shoulderDropMm = 500.0;
+    if (c.shoulderBackMm < -200.0) c.shoulderBackMm = -200.0;
+    if (c.shoulderBackMm > 300.0) c.shoulderBackMm = 300.0;
+    c.shoulderSmoothHz = ini.GetDouble("emulation", "shoulder_smooth_hz", c.shoulderSmoothHz);
+    c.shoulderSmoothBeta = ini.GetDouble("emulation", "shoulder_smooth_beta", c.shoulderSmoothBeta);
+    if (c.shoulderSmoothHz < 0.0) c.shoulderSmoothHz = 0.0;
+    if (c.shoulderSmoothHz > 20.0) c.shoulderSmoothHz = 20.0;
+    if (c.shoulderSmoothBeta < 0.0) c.shoulderSmoothBeta = 0.0;
+    if (c.shoulderSmoothBeta > 50.0) c.shoulderSmoothBeta = 50.0;
+    c.fingerBlend = ini.GetBool("emulation", "finger_blend", c.fingerBlend);
+    c.fingerBlendStartDeg = ini.GetDouble("emulation", "finger_blend_start_deg", c.fingerBlendStartDeg);
+    c.fingerBlendEndDeg = ini.GetDouble("emulation", "finger_blend_end_deg", c.fingerBlendEndDeg);
+    if (c.fingerBlendStartDeg < 0.0) c.fingerBlendStartDeg = 0.0;
+    if (c.fingerBlendStartDeg > 120.0) c.fingerBlendStartDeg = 120.0;
+    if (c.fingerBlendEndDeg < c.fingerBlendStartDeg + 5.0) c.fingerBlendEndDeg = c.fingerBlendStartDeg + 5.0;
+    c.torsoFollowS = ini.GetDouble("emulation", "torso_follow_s", c.torsoFollowS);
+    if (c.torsoFollowS < 0.0) c.torsoFollowS = 0.0;
+    if (c.torsoFollowS > 30.0) c.torsoFollowS = 30.0;
+    c.anchorSource = hands::util::ToLower(std::string(ini.GetString("emulation", "anchor_source", c.anchorSource)));
+    if (c.anchorSource != "fingertip" && c.anchorSource != "bone") c.anchorSource = "fingertip";
+    c.anchorForwardMm = ini.GetDouble("emulation", "anchor_forward_mm", c.anchorForwardMm);
+    if (c.anchorForwardMm < 0.0) c.anchorForwardMm = 0.0;
+    if (c.anchorForwardMm > 150.0) c.anchorForwardMm = 150.0;
     c.palmAim = hands::util::ToLower(std::string(ini.GetString("emulation", "palm_aim", c.palmAim)));
     if (c.palmAim != "proximal" && c.palmAim != "intermediate" && c.palmAim != "distal" && c.palmAim != "tip") c.palmAim = "intermediate";
     c.palmFollowHz = ini.GetDouble("emulation", "palm_follow_hz", c.palmFollowHz);
@@ -35,8 +65,12 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.pointerPitchDeg > 45.0) c.pointerPitchDeg = 45.0;
     if (c.pointerYawDeg < -45.0) c.pointerYawDeg = -45.0;
     if (c.pointerYawDeg > 45.0) c.pointerYawDeg = 45.0;
+    c.sharedPointer = ini.GetBool("emulation", "shared_pointer", c.sharedPointer);
+    c.engageMm = ini.GetDouble("emulation", "engage_mm", c.engageMm);
+    if (c.engageMm < 22.0) c.engageMm = 22.0;
+    if (c.engageMm > 80.0) c.engageMm = 80.0;
     c.clickMode = hands::util::ToLower(std::string(ini.GetString("emulation", "click_mode", c.clickMode)));
-    if (c.clickMode != "side" && c.clickMode != "pinch" && c.clickMode != "middle") c.clickMode = "side";
+    if (c.clickMode != "side" && c.clickMode != "pinch" && c.clickMode != "middle" && c.clickMode != "any") c.clickMode = "any";
     c.hideControllerModel = ini.GetBool("emulation", "hide_controller_model", c.hideControllerModel);
     // Anciens noms (pinch_*) acceptés : les réglages existants continuent de fonctionner.
     c.clickOnMm = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", c.clickOnMm));
@@ -50,6 +84,18 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.depthProbeState != "depth_write" && c.depthProbeState != "depth_read" && c.depthProbeState != "common" &&
         c.depthProbeState != "shader" && c.depthProbeState != "copy_source")
         c.depthProbeState = "depth_write";
+    c.menuEnabled = ini.GetBool("menu", "enabled", c.menuEnabled);
+    c.menuHoldMs = ini.GetInt("menu", "open_hold_ms", c.menuHoldMs);
+    if (c.menuHoldMs < 400) c.menuHoldMs = 400;
+    if (c.menuHoldMs > 5000) c.menuHoldMs = 5000;
+    c.captureMax = ini.GetInt("touch", "capture_max", c.captureMax);
+    c.captureIntervalMs = ini.GetInt("touch", "capture_interval_ms", c.captureIntervalMs);
+    if (c.captureMax < 0) c.captureMax = 0;
+    if (c.captureMax > 100) c.captureMax = 100;
+    if (c.captureIntervalMs < 500) c.captureIntervalMs = 500;
+    c.colorState = hands::util::ToLower(std::string(ini.GetString("touch", "color_state", c.colorState)));
+    if (c.colorState != "render_target" && c.colorState != "common" && c.colorState != "shader" && c.colorState != "copy_source")
+        c.colorState = "render_target";
     c.handsEnabled = ini.GetBool("hands", "enabled", c.handsEnabled);
     c.handsRenderScale = ini.GetDouble("hands", "render_scale", c.handsRenderScale);
     c.handsJointScale = ini.GetDouble("hands", "joint_scale", c.handsJointScale);
@@ -70,7 +116,7 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.smoothRotHz < 0.05) c.smoothRotHz = 0.05;
     if (c.smoothRotBeta < 0.0) c.smoothRotBeta = 0.0;
     if (c.clickOnMm < 1.0) c.clickOnMm = 1.0;
-    if (c.clickOffMm <= c.clickOnMm) c.clickOffMm = c.clickOnMm + 5.0;  // l'hystérésis doit exister
+    if (c.clickOffMm <= c.clickOnMm) c.clickOffMm = c.clickOnMm + 2.0;  // l'hystérésis doit exister
     return c;
 }
 
