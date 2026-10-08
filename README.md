@@ -1,17 +1,26 @@
 # Couche OpenXR « mains nues » pour MSFS 2024
 
 Couche OpenXR implicite (DLL 64 bits) entre MSFS 2024 et VDXR (Virtual Desktop),
-pour piloter le cockpit avec les mains (Meta Quest 3). **Projet en cours : étape 0 seulement.**
+pour piloter le cockpit avec les mains (Meta Quest 3). **Projet arrêté après l'étape 3a : l'interaction aux mains n'est pas assez précise (voir « Bilan »).**
 
 ## État
 
 | Étape | Contenu | État |
 |---|---|---|
 | 0 | Couche transparente qui journalise (extensions, profils, actions, suivi des mains) | **Testée en VR** (MSFS 2024 Store + VDXR + Quest 3, option « forward tracking » de Virtual Desktop requise) |
-| 1 | Contrôleur émulé au bout de l'index + appui (pincement pouce-index) | **Testée en VR** : pointeur stable, clic fonctionnel (glisser des boutons rotatifs à reconfirmer) |
-| 2 | Swipe / maintien | à faire |
-| 3 | Mains en surimpression (DX12) : 3a squelette (**écrit, rendu D3D12 vérifié hors VR, non testé en VR**), 3b mains stylisées skinnées (style `bare` / `glove`), 3c modèles réalistes plus tard | à faire |
-| 4 | Finitions | à faire |
+| 1 | Contrôleur émulé + clic par le pouce (index, côté de l'index, majeur, ou « au plus proche »), deux mains actives | **Testée en VR** : le clic et le glisser des boutons rotatifs fonctionnent |
+| 3a | Squelette des mains en surimpression (D3D12), menu de réglages dans le casque, application de barre des tâches (mise à jour, options) | **Testée en VR** |
+| 2, 3b, 3c, 4 | Swipe, mains stylisées, modèles réalistes, finitions | abandonnées |
+
+## Bilan
+
+Ce qui marche : le suivi des mains est exposé à MSFS, le clic se déclenche de façon fiable, le squelette des mains s'affiche, le menu VR et la tray (installation, mises à jour, options) sont utilisables.
+
+Ce qui ne marche pas assez bien : **la précision du rayon**. Le suivi des mains tremble de quelques millimètres et le geste de clic bouge la main. MSFS attend un rayon de manette précis, sans zone d'aide ; le rayon est ici estimé (épaule, poignet ou paume vers le doigt, plusieurs modes), ce qui amplifie les écarts. En test réel, manettes ou souris sont plus efficaces, et les tablettes du cockpit (petites cibles, défilement) sont presque inutilisables.
+
+Essayé sans résoudre : rayon par l'épaule estimée (torse lent, mélange avec la direction du doigt), lissage One Euro, verrouillage de la pose avant le clic (pré-verrouillage dès l'approche du pouce, zone morte). Voies fermées : profondeur (MSFS n'acquiert jamais ses swapchains de profondeur) ; SimConnect / WASM (pas de « clic sous le rayon » générique, seulement des variables par avion) ; masquer le modèle de manette (`hide_controller_model` est sans effet).
+
+Piste non explorée : accroche sur la cible. MSFS dessine une flèche bleue quand le rayon survole un élément interactif ; la détecter dans l'image du jeu permettrait de figer le rayon sur l'élément.
 
 ## Ce qui est vérifié, ce qui ne l'est pas (étape 0)
 
@@ -50,7 +59,8 @@ Fichiers installés dans `C:\ProgramData\HandsLayer\` (DLL, manifeste, `hands.in
 
 ```
 core/      cœur portable C++17 (config INI, journal, utilitaires) — testé sous Linux
-layer/     couche OpenXR Windows (entry, layer, hooks)
+layer/     couche OpenXR Windows (entry, layer, hooks, émulation, surimpression, menu VR)
+tray/      application de barre des tâches (HandsTray)
 manifest/  manifeste JSON de la couche
 config/    hands.ini d'exemple (copié à côté de la DLL)
 scripts/   install.ps1, uninstall.ps1, check-process.ps1

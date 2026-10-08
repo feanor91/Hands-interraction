@@ -99,6 +99,11 @@ struct HandState {
     int histCount = 0, histHead = 0;  // anneau : le plus récent est à (histHead - 1)
     bool latched = false;
     em::Pose latchedRel;
+    bool preArmed = true;
+    bool prelatched = false;  // pointeur fige des que le pouce s approche de la cible (avant meme le clic)
+    ULONGLONG prelatchTick = 0;
+    bool stickyOn = false;
+    em::Pose sticky;  // pose figee du pointeur (zone morte)
 
     // Pincement
     em::PinchDetector pinch;
@@ -231,6 +236,8 @@ void ResetPointer(HandState& hs) {
     hs.relTime = -1;
     hs.histCount = hs.histHead = 0;
     hs.latched = false;
+    hs.prelatched = false;
+    hs.stickyOn = false;
     hs.pressed = false;
     hs.clickDist = 1.0f;
     hs.pinch.Reset();
@@ -397,11 +404,27 @@ bool Refresh(int h, XrSpace base, XrTime time) {
         if (JointUsable(thumb, false, cfg->clickRequireTracked) && JointUsable(target, false, cfg->clickRequireTracked)) {
             const bool was = hs.pressed;
             const float dist = em::Length(ToPose(target.pose).p - ToPose(thumb.pose).p);
+            const float prevDist = hs.clickDist;
             hs.clickDist = dist;
             hs.pressed = hs.pinch.Update(dist, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
+            // Pre-verrouillage : le pointeur se fige des que le pouce se rapproche de la cible (le geste de clic dure ~150 ms et deplace deja
+            // la main), a partir de la pose d'avant le geste. Il se libere si le pouce s'eloigne sans cliquer.
+            const float armMm = static_cast<float>(cfg->clickOnMm + cfg->prelatchMm) / 1000.0f;
+            if (cfg->prelatchMm > 0.0 && !hs.pressed) {
+                if (!hs.prelatched && dist < armMm && dist < prevDist - 0.0005f && hs.preArmed) {
+                    hs.prelatched = true;
+                    hs.prelatchTick = GetTickCount64();
+                    hs.latchedRel = HistoryAt(hs, time - static_cast<XrTime>(cfg->latchMs * 1e6));
+                } else if (hs.prelatched && (dist > armMm + 0.004f || GetTickCount64() - hs.prelatchTick > 1500)) {
+                    hs.prelatched = false;
+                    hs.preArmed = false;  // reste desarme tant que le pouce n'est pas reparti loin
+                }
+                if (dist > armMm + 0.004f) hs.preArmed = true;
+            }
             if (hs.pressed && !was) {
+                if (!hs.prelatched) hs.latchedRel = HistoryAt(hs, time - static_cast<XrTime>(cfg->latchMs * 1e6));
+                hs.prelatched = false;
                 hs.latched = true;
-                hs.latchedRel = HistoryAt(hs, time - static_cast<XrTime>(cfg->latchMs * 1e6));
             } else if (!hs.pressed && was) {
                 hs.latched = false;
             }
@@ -413,7 +436,27 @@ bool Refresh(int h, XrSpace base, XrTime time) {
         }
     }
 
-    hs.outTip = em::Multiply(palmPose, hs.latched ? hs.latchedRel : hs.relOut);
+    const bool frozen = hs.latched || hs.prelatched;
+    em::Pose cand = em::Multiply(palmPose, frozen ? hs.latchedRel : hs.relOut);
+    if (frozen && cfg->freezeDeadzoneDeg > 0.0) {
+        // Zone morte : une fois fige, le pointeur ne bouge pas tant que la main reste dans une petite zone (tremblement, geste de clic) ;
+        // au-dela il suit la main (glisser une molette) sans a-coup.
+        if (!hs.stickyOn) {
+            hs.sticky = cand;
+            hs.stickyOn = true;
+        } else {
+            const float dzA = static_cast<float>(cfg->freezeDeadzoneDeg) * 3.14159265f / 180.0f;
+            const float ang = em::AngleBetween(cand.q, hs.sticky.q);
+            if (ang > dzA) hs.sticky.q = em::Nlerp(cand.q, hs.sticky.q, dzA / ang);
+            const em::Vec3 dv = cand.p - hs.sticky.p;
+            const float len = em::Length(dv), dzP = static_cast<float>(cfg->freezeDeadzoneMm) / 1000.0f;
+            if (len > dzP) hs.sticky.p = cand.p - dv * (dzP / len);
+        }
+        cand = hs.sticky;
+    } else {
+        hs.stickyOn = false;
+    }
+    hs.outTip = cand;
     hs.lastValidTick = GetTickCount64();
     hs.lastValidTime = time;
     UpdateEngaged(*cfg);

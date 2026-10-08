@@ -76,6 +76,15 @@ Config Config::FromIni(const IniFile& ini) {
     c.clickOnMm = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", c.clickOnMm));
     c.clickOffMm = ini.GetDouble("emulation", "click_off_mm", ini.GetDouble("emulation", "pinch_off_mm", c.clickOffMm));
     c.latchMs = ini.GetDouble("emulation", "latch_ms", c.latchMs);
+    c.prelatchMm = ini.GetDouble("emulation", "prelatch_mm", c.prelatchMm);
+    c.freezeDeadzoneDeg = ini.GetDouble("emulation", "freeze_deadzone_deg", c.freezeDeadzoneDeg);
+    c.freezeDeadzoneMm = ini.GetDouble("emulation", "freeze_deadzone_mm", c.freezeDeadzoneMm);
+    if (c.prelatchMm < 0.0) c.prelatchMm = 0.0;
+    if (c.prelatchMm > 30.0) c.prelatchMm = 30.0;
+    if (c.freezeDeadzoneDeg < 0.0) c.freezeDeadzoneDeg = 0.0;
+    if (c.freezeDeadzoneDeg > 10.0) c.freezeDeadzoneDeg = 10.0;
+    if (c.freezeDeadzoneMm < 0.0) c.freezeDeadzoneMm = 0.0;
+    if (c.freezeDeadzoneMm > 40.0) c.freezeDeadzoneMm = 40.0;
     c.depthProbe = ini.GetBool("touch", "depth_probe", c.depthProbe);
     c.depthProbeIntervalMs = ini.GetInt("touch", "probe_interval_ms", c.depthProbeIntervalMs);
     if (c.depthProbeIntervalMs < 100) c.depthProbeIntervalMs = 100;

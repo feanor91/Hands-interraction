@@ -113,6 +113,11 @@ struct Config {
     // Pendant un pincement, le pointeur reste ancré à la pose d'AVANT le pincement (le bout de l'index
     // bouge quand on pince) : on prend la pose telle qu'elle était `latchMs` millisecondes plus tôt.
     double latchMs = 150.0;
+    // Le pointeur se fige des que le pouce est a moins de `clickOnMm + prelatchMm` de la cible et s'en rapproche (0 = seulement au clic),
+    // puis reste dans une zone morte (degres / millimetres) tant que la main ne s'en eloigne pas : "ne pas bouger d'un iota" au clic.
+    double prelatchMm = 14.0;
+    double freezeDeadzoneDeg = 1.5;
+    double freezeDeadzoneMm = 10.0;
     // N'utiliser que les articulations déclarées « suivies » (et non seulement « valides », donc
     // éventuellement extrapolées) : évite les faux appuis quand une main est perdue.
     bool requireTracked = true;
