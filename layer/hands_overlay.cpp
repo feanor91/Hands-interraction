@@ -24,11 +24,15 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
+#include "depth_reader.h"
 #include "emulate.h"
 #include "hand_renderer.h"
 #include "hands_overlay.h"
@@ -214,6 +218,303 @@ void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFr
     }
 }
 
+// --- Diagnostics (étape « contact ») : que fournit le jeu en profondeur ? -------------------------
+// Aucun effet sur le jeu : on journalise les swapchains créées par le jeu et le contenu de ses couches.
+struct SwapchainInfo {
+    int64_t format = 0;
+    uint64_t usage = 0;
+    uint32_t width = 0, height = 0, arraySize = 0;
+    std::vector<ID3D12Resource*> images;  // images D3D12 de la swapchain (connues après xrEnumerateSwapchainImages)
+    int acquired = -1;                    // dernier indice rendu par xrAcquireSwapchainImage
+    int lastReleased = -1;                // indice de l'image que le jeu vient de terminer (la plus récente)
+};
+std::unordered_map<uint64_t, SwapchainInfo> g_gameSwapchains;  // XrSwapchain -> infos (uniquement celles du jeu)
+std::vector<uint64_t> g_depthChains;  // swapchains de profondeur du jeu, dans l'ordre de création (œil gauche puis droit)
+std::mutex g_swapMutex;
+
+std::string UsageText(uint64_t u) {
+    std::string t;
+    if (u & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT) t += "couleur ";
+    if (u & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) t += "PROFONDEUR ";
+    if (u & XR_SWAPCHAIN_USAGE_UNORDERED_ACCESS_BIT) t += "UAV ";
+    if (u & XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT) t += "copie-src ";
+    if (u & XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT) t += "copie-dst ";
+    if (u & XR_SWAPCHAIN_USAGE_SAMPLED_BIT) t += "echantillonnable ";
+    if (u & XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT) t += "format-modifiable ";
+    return t.empty() ? "?" : t;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateSwapchain(XrSession session, const XrSwapchainCreateInfo* ci, XrSwapchain* sc) {
+    const XrResult r = g_dispatch.CreateSwapchain(session, ci, sc);
+    Safe("xrCreateSwapchain", [&] {
+        if (!ci || !sc || XR_FAILED(r)) return;
+        {
+            std::lock_guard<std::mutex> lock(g_swapMutex);
+            SwapchainInfo si;
+            si.format = ci->format;
+            si.usage = static_cast<uint64_t>(ci->usageFlags);
+            si.width = ci->width;
+            si.height = ci->height;
+            si.arraySize = ci->arraySize;
+            g_gameSwapchains[reinterpret_cast<uint64_t>(*sc)] = si;
+            if (ci->usageFlags & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) g_depthChains.push_back(reinterpret_cast<uint64_t>(*sc));
+        }
+        Logger::Get().Log(LogLevel::Info, "swapchain du jeu : format DXGI %lld, %ux%u, tableau %u, mips %u, echantillons %u, usage = %s",
+                          static_cast<long long>(ci->format), ci->width, ci->height, ci->arraySize, ci->mipCount, ci->sampleCount,
+                          UsageText(ci->usageFlags).c_str());
+    });
+    return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEnumerateSwapchainImages(XrSwapchain sc, uint32_t capacity, uint32_t* count,
+                                                              XrSwapchainImageBaseHeader* images) {
+    const XrResult r = g_dispatch.EnumerateSwapchainImages(sc, capacity, count, images);
+    Safe("xrEnumerateSwapchainImages", [&] {
+        if (XR_FAILED(r) || !images || !count || *count == 0) return;
+        SwapchainInfo si;
+        {
+            std::lock_guard<std::mutex> lock(g_swapMutex);
+            const auto it = g_gameSwapchains.find(reinterpret_cast<uint64_t>(sc));
+            if (it == g_gameSwapchains.end()) return;
+            si = it->second;
+            if (images->type == XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR) {  // on garde toutes les images (pour la sonde de profondeur)
+                it->second.images.clear();
+                for (uint32_t i = 0; i < *count; ++i)
+                    it->second.images.push_back(reinterpret_cast<const XrSwapchainImageD3D12KHR*>(
+                                                    reinterpret_cast<const char*>(images) + i * sizeof(XrSwapchainImageD3D12KHR))
+                                                    ->texture);
+            }
+        }
+        if (images->type != XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR) return;
+        const auto* d3d = reinterpret_cast<const XrSwapchainImageD3D12KHR*>(images);
+        if (!d3d->texture) return;
+        const D3D12_RESOURCE_DESC d = d3d->texture->GetDesc();
+        Logger::Get().Log(LogLevel::Info, "  images (%u) de la swapchain %s : ressource D3D12 format %d, %llux%u, tableau %u, drapeaux 0x%X",
+                          *count, (si.usage & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) ? "PROFONDEUR" : "couleur",
+                          static_cast<int>(d.Format), static_cast<unsigned long long>(d.Width), d.Height,
+                          static_cast<unsigned>(d.DepthOrArraySize), static_cast<unsigned>(d.Flags));
+    });
+    return r;
+}
+
+// --- Suivi des images de profondeur du jeu : quelle image vient d'être terminée ? ---------------
+XRAPI_ATTR XrResult XRAPI_CALL Hook_xrAcquireSwapchainImage(XrSwapchain sc, const XrSwapchainImageAcquireInfo* info, uint32_t* index) {
+    const XrResult r = g_dispatch.AcquireSwapchainImage(sc, info, index);
+    if (XR_SUCCEEDED(r) && index) {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        const auto it = g_gameSwapchains.find(reinterpret_cast<uint64_t>(sc));
+        if (it != g_gameSwapchains.end()) it->second.acquired = static_cast<int>(*index);
+    }
+    return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Hook_xrReleaseSwapchainImage(XrSwapchain sc, const XrSwapchainImageReleaseInfo* info) {
+    const XrResult r = g_dispatch.ReleaseSwapchainImage(sc, info);
+    if (XR_SUCCEEDED(r)) {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        const auto it = g_gameSwapchains.find(reinterpret_cast<uint64_t>(sc));
+        if (it != g_gameSwapchains.end()) it->second.lastReleased = it->second.acquired;
+    }
+    return r;
+}
+
+std::unique_ptr<DepthReader> g_depthReader;  // créé à la première sonde ; détruit avec la session
+bool g_depthReaderFailed = false;
+
+XRAPI_ATTR XrResult XRAPI_CALL Hook_xrDestroySwapchain(XrSwapchain sc) {
+    Safe("xrDestroySwapchain", [&] {
+        if (g_depthReader) g_depthReader->WaitIdle();  // une copie en cours pourrait lire une image sur le point d'être libérée
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        const uint64_t h = reinterpret_cast<uint64_t>(sc);
+        g_gameSwapchains.erase(h);
+        g_depthChains.erase(std::remove(g_depthChains.begin(), g_depthChains.end(), h), g_depthChains.end());
+    });
+    return g_dispatch.DestroySwapchain(sc);
+}
+
+// --- Sonde de profondeur (lecture seule) ----------------------------------------------------------
+// Toutes les `probe_interval_ms`, copie vers le CPU : une grille 8x8 par œil et, autour de chaque bout d'index et de
+// majeur visible, une petite zone 5x5. Le tout est journalisé avec la distance réelle du doigt à l'œil : on pourra
+// ainsi déduire comment le jeu encode la profondeur (plan proche/lointain, profondeur inversée, ...).
+struct ProbeItem {
+    int hand = 0, joint = 0, px = 0, py = 0;
+    float z = 0.0f;  // distance du bout de doigt à l'œil, le long de l'axe de vue (mètres)
+};
+std::vector<ProbeItem> g_probeItems[2];
+ULONGLONG g_lastProbeTick = 0;
+int g_probeCount = 0;
+constexpr int kGrid = 8;
+
+D3D12_RESOURCE_STATES StateFromName(const std::string& n) {
+    if (n == "depth_read") return D3D12_RESOURCE_STATE_DEPTH_READ;
+    if (n == "common") return D3D12_RESOURCE_STATE_COMMON;
+    if (n == "shader") return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (n == "copy_source") return D3D12_RESOURCE_STATE_COPY_SOURCE;
+    return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+}
+
+void ProbeLogResults(const std::vector<DepthResultEye>& res) {
+    Logger& log = Logger::Get();
+    ++g_probeCount;
+    for (size_t eye = 0; eye < res.size() && eye < 2; ++eye) {
+        const DepthResultEye& r = res[eye];
+        if (r.boxes.size() < static_cast<size_t>(kGrid * kGrid)) continue;
+        float mn = 1e30f, mx = -1e30f;
+        int zeros = 0, total = 0;
+        for (int i = 0; i < kGrid * kGrid; ++i)
+            if (!r.boxes[i].empty()) {
+                const float v = r.boxes[i][0];
+                mn = std::min(mn, v);
+                mx = std::max(mx, v);
+                zeros += v == 0.0f;
+                ++total;
+            }
+        log.Log(LogLevel::Info, "profondeur oeil %zu (%ux%u) : grille %dx%d min=%.6g max=%.6g zeros=%d/%d", eye, r.texWidth, r.texHeight,
+                kGrid, kGrid, mn, mx, zeros, total);
+        if (g_probeCount <= 4 || g_probeCount % 20 == 0) {  // la grille complète : les premières fois, puis de temps en temps
+            std::string row;
+            for (int j = 0; j < kGrid; ++j) {
+                row.clear();
+                for (int i = 0; i < kGrid; ++i) {
+                    char b[24];
+                    const auto& v = r.boxes[static_cast<size_t>(j * kGrid + i)];
+                    std::snprintf(b, sizeof(b), "%.5g ", v.empty() ? -1.0f : v[0]);
+                    row += b;
+                }
+                log.Log(LogLevel::Info, "  grille ligne %d : %s", j, row.c_str());
+            }
+        }
+        for (size_t k = 0; k < g_probeItems[eye].size(); ++k) {
+            const ProbeItem& it = g_probeItems[eye][k];
+            const size_t box = static_cast<size_t>(kGrid * kGrid) + k;
+            if (box >= r.boxes.size() || r.boxes[box].empty()) continue;
+            const auto& v = r.boxes[box];
+            float pmn = 1e30f, pmx = -1e30f;
+            for (float x : v) {
+                pmn = std::min(pmn, x);
+                pmx = std::max(pmx, x);
+            }
+            log.Log(LogLevel::Info, "  doigt main %d articulation %d : z=%.4f m pixel (%d,%d) centre=%.6g min=%.6g max=%.6g", it.hand, it.joint,
+                    it.z, it.px, it.py, v[v.size() / 2], pmn, pmx);
+        }
+    }
+}
+
+void DepthProbeFrame(const XrFrameEndInfo* info) {
+    const auto cfg = CurrentConfig();
+    if (!cfg->depthProbe || g_depthReaderFailed || !info || !info->layers || !g_device || !g_queue) return;
+    const XrCompositionLayerProjection* game = FindGameProjection(info);
+    if (!game) return;
+
+    if (!g_depthReader) {
+        auto reader = std::make_unique<DepthReader>();
+        const char* err = nullptr;
+        if (!reader->Init(g_device, g_queue, &err)) {
+            Logger::Get().Log(LogLevel::Error, "sonde de profondeur desactivee : %s", err ? err : "?");
+            g_depthReaderFailed = true;
+            return;
+        }
+        g_depthReader = std::move(reader);
+        Logger::Get().Log(LogLevel::Info, "sonde de profondeur : prete (une zone toutes les %d ms, etat suppose : %s)", cfg->depthProbeIntervalMs,
+                          cfg->depthProbeState.c_str());
+    }
+
+    if (g_depthReader->Pending()) {  // la requête précédente n'est peut-être pas terminée : on ne bloque jamais
+        std::vector<DepthResultEye> res;
+        if (g_depthReader->TryCollect(&res)) ProbeLogResults(res);
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_lastProbeTick < static_cast<ULONGLONG>(cfg->depthProbeIntervalMs)) return;
+    g_lastProbeTick = now;
+
+    // Images de profondeur les plus récentes (une par œil, dans l'ordre de création des swapchains de profondeur)
+    ID3D12Resource* depth[2] = {nullptr, nullptr};
+    {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        for (size_t e = 0; e < 2 && e < g_depthChains.size(); ++e) {
+            const auto it = g_gameSwapchains.find(g_depthChains[e]);
+            if (it == g_gameSwapchains.end()) continue;
+            const SwapchainInfo& sc = it->second;
+            if (sc.lastReleased >= 0 && static_cast<size_t>(sc.lastReleased) < sc.images.size()) depth[e] = sc.images[sc.lastReleased];
+        }
+    }
+    if (!depth[0] && !depth[1]) return;
+
+    HandsFrame frame;
+    bool any = false;
+    ToHandsFrame(game, info->displayTime, &frame, &any);
+
+    std::vector<DepthRequestEye> req(2);
+    for (int e = 0; e < 2; ++e) {
+        g_probeItems[e].clear();
+        req[e].depth = depth[e];
+        if (!depth[e]) continue;
+        const D3D12_RESOURCE_DESC d = depth[e]->GetDesc();
+        for (int j = 0; j < kGrid; ++j)
+            for (int i = 0; i < kGrid; ++i)
+                req[e].boxes.push_back({static_cast<uint32_t>((i + 0.5) / kGrid * d.Width), static_cast<uint32_t>((j + 0.5) / kGrid * d.Height), 1, 1});
+        // Bouts de doigts projetés dans l'image de cet œil
+        const XrPosef& vp = game->views[e].pose;
+        const em::Pose eye{{vp.orientation.x, vp.orientation.y, vp.orientation.z, vp.orientation.w}, {vp.position.x, vp.position.y, vp.position.z}};
+        const XrFovf& fov = game->views[e].fov;
+        const float tl = std::tan(fov.angleLeft), tr = std::tan(fov.angleRight), tu = std::tan(fov.angleUp), td = std::tan(fov.angleDown);
+        for (int h = 0; h < 2; ++h) {
+            if (!frame.hand[h].valid) continue;
+            for (int joint : {10, 15}) {  // bout de l'index, bout du majeur
+                if (!frame.hand[h].jointValid[joint]) continue;
+                const em::Vec3 v = em::Rotate(em::Conjugate(eye.q), frame.hand[h].joint[joint].p - eye.p);
+                const float z = -v.z;
+                if (z < 0.05f) continue;
+                const float u = (v.x / z - tl) / (tr - tl), w = (tu - v.y / z) / (tu - td);
+                const int px = static_cast<int>(u * static_cast<float>(d.Width)), py = static_cast<int>(w * static_cast<float>(d.Height));
+                if (px < 2 || py < 2 || px >= static_cast<int>(d.Width) - 2 || py >= static_cast<int>(d.Height) - 2) continue;
+                req[e].boxes.push_back({static_cast<uint32_t>(px - 2), static_cast<uint32_t>(py - 2), 5, 5});
+                g_probeItems[e].push_back({h, joint, px, py, z});
+            }
+        }
+    }
+    if (!g_depthReader->Submit(req, StateFromName(cfg->depthProbeState)))
+        Logger::Get().Log(LogLevel::Warn, "sonde de profondeur : soumission refusee (%s)", g_depthReader->LastError());
+}
+
+// Journalise, pour les premières images, la liste des couches et ce qui est chaîné aux vues (profondeur ?).
+int g_chainLogsLeft = 3;
+void LogLayerChain(const XrFrameEndInfo* info) {
+    if (g_chainLogsLeft <= 0 || !info || !info->layers) return;
+    --g_chainLogsLeft;
+    Logger& log = Logger::Get();
+    log.Log(LogLevel::Info, "xrEndFrame : %u couche(s), mode de melange %d", info->layerCount, static_cast<int>(info->environmentBlendMode));
+    for (uint32_t i = 0; i < info->layerCount; ++i) {
+        const XrCompositionLayerBaseHeader* l = info->layers[i];
+        if (!l) continue;
+        log.Log(LogLevel::Info, "  couche %u : type %d, drapeaux 0x%llX", i, static_cast<int>(l->type),
+                static_cast<unsigned long long>(l->layerFlags));
+        if (l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) continue;
+        const auto* p = reinterpret_cast<const XrCompositionLayerProjection*>(l);
+        for (uint32_t v = 0; v < p->viewCount && p->views; ++v) {
+            const XrCompositionLayerProjectionView& view = p->views[v];
+            const XrExtent2Di& e = view.subImage.imageRect.extent;
+            log.Log(LogLevel::Info, "    vue %u : image %dx%d, fov (%.2f %.2f %.2f %.2f)", v, e.width, e.height, view.fov.angleLeft,
+                    view.fov.angleRight, view.fov.angleUp, view.fov.angleDown);
+            bool depth = false;
+            for (const auto* n = static_cast<const XrBaseInStructure*>(view.next); n; n = n->next) {
+                if (n->type == XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR) {
+                    const auto* d = reinterpret_cast<const XrCompositionLayerDepthInfoKHR*>(n);
+                    depth = true;
+                    log.Log(LogLevel::Info,
+                            "      PROFONDEUR fournie : swapchain %p, rect %dx%d, minDepth %.3f maxDepth %.3f nearZ %.3f farZ %.3f",
+                            reinterpret_cast<void*>(d->subImage.swapchain), d->subImage.imageRect.extent.width,
+                            d->subImage.imageRect.extent.height, d->minDepth, d->maxDepth, d->nearZ, d->farZ);
+                } else {
+                    log.Log(LogLevel::Info, "      structure chainee a la vue : type %d", static_cast<int>(n->type));
+                }
+            }
+            if (!depth) log.Log(LogLevel::Info, "      pas d'information de profondeur sur cette vue");
+        }
+    }
+}
+
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameEndInfo* info) {
     // 1) Préparation (protégée) : dessine les mains, remplit `ourLayer` si tout s'est bien passé.
     XrCompositionLayerProjection ourLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
@@ -221,6 +522,8 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     bool addLayer = false;
     bool swapchainAcquired[2] = {false, false};
 
+    Safe("xrEndFrame(diagnostic)", [&] { LogLayerChain(info); });
+    Safe("xrEndFrame(sonde profondeur)", [&] { DepthProbeFrame(info); });
     Safe("xrEndFrame(preparation)", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->handsEnabled || g_ov.disabled || !info || info->layerCount == 0 || !info->layers) return;
@@ -331,7 +634,14 @@ struct HookEntry {
     const char* name;
     PFN_xrVoidFunction fn;
 };
-const HookEntry kHooks[] = {{"xrEndFrame", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrEndFrame)}};
+const HookEntry kHooks[] = {
+    {"xrEndFrame", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrEndFrame)},
+    {"xrCreateSwapchain", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrCreateSwapchain)},
+    {"xrEnumerateSwapchainImages", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrEnumerateSwapchainImages)},
+    {"xrAcquireSwapchainImage", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrAcquireSwapchainImage)},
+    {"xrReleaseSwapchainImage", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrReleaseSwapchainImage)},
+    {"xrDestroySwapchain", reinterpret_cast<PFN_xrVoidFunction>(Hook_xrDestroySwapchain)},
+};
 
 }  // namespace
 
@@ -342,6 +652,16 @@ void Overlay_OnGraphicsBinding(void* device, void* queue) {
 
 void Overlay_Stop() {
     Safe("Overlay_Stop", [&] {
+        if (g_depthReader) g_depthReader->WaitIdle();
+        g_depthReader.reset();
+        g_depthReaderFailed = false;
+        g_lastProbeTick = 0;
+        g_probeCount = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_swapMutex);
+            g_gameSwapchains.clear();
+            g_depthChains.clear();
+        }
         if (g_ov.renderer) g_ov.renderer->WaitIdle();
         DestroyChains();
         g_ov.renderer.reset();
@@ -353,7 +673,9 @@ void Overlay_Stop() {
 
 PFN_xrVoidFunction FindOverlayHook(const char* name) {
     const Dispatch& d = g_dispatch;
-    if (!d.EndFrame) return nullptr;
+    if (!d.EndFrame || !d.CreateSwapchain || !d.EnumerateSwapchainImages || !d.AcquireSwapchainImage || !d.ReleaseSwapchainImage ||
+        !d.DestroySwapchain)
+        return nullptr;
     for (const HookEntry& h : kHooks)
         if (std::strcmp(h.name, name) == 0) return h.fn;
     return nullptr;

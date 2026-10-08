@@ -57,6 +57,45 @@ inline Pose Inverse(const Pose& a) {
     return {qi, Rotate(qi, a.p) * -1.0f};
 }
 
+inline Vec3 Cross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+inline float Dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline Vec3 Normalized(Vec3 v) {
+    const float n = Length(v);
+    return n < 1e-8f ? Vec3{0, 0, 0} : v * (1.0f / n);
+}
+
+// Quaternion de la rotation dont les colonnes sont les axes (x, y, z) (orthonormés, repère direct).
+inline Quat QuatFromBasis(Vec3 x, Vec3 y, Vec3 z) {
+    const float m00 = x.x, m01 = y.x, m02 = z.x, m10 = x.y, m11 = y.y, m12 = z.y, m20 = x.z, m21 = y.z, m22 = z.z;
+    const float tr = m00 + m11 + m22;
+    Quat q;
+    if (tr > 0) {
+        const float s = std::sqrt(tr + 1.0f) * 2.0f;
+        q = {(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25f * s};
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q = {0.25f * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s};
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q = {(m01 + m10) / s, 0.25f * s, (m12 + m21) / s, (m02 - m20) / s};
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q = {(m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s};
+    }
+    return Normalize(q);
+}
+
+// Orientation OpenXR dont l'avant (-Z) pointe vers `forward` et dont le haut (+Y) est au plus près de `up`.
+inline Quat LookAlong(Vec3 forward, Vec3 up) {
+    const Vec3 z = Normalized(forward * -1.0f);
+    if (Length(z) < 0.5f) return {0, 0, 0, 1};
+    Vec3 x = Cross(up, z);
+    if (Length(x) < 1e-4f) x = Cross(Vec3{0, 1, 0}, z);  // `up` parallèle à l'avant : axe de secours
+    if (Length(x) < 1e-4f) x = Cross(Vec3{1, 0, 0}, z);
+    x = Normalized(x);
+    return QuatFromBasis(x, Cross(z, x), z);
+}
+
 // Interpolation linéaire normalisée, du côté le plus court (suffisante pour de petits angles).
 inline Quat Nlerp(Quat a, Quat b, float t) {
     if (Dot(a, b) < 0) b = {-b.x, -b.y, -b.z, -b.w};

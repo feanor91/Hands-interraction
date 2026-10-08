@@ -237,6 +237,8 @@ XrResult XRAPI_CALL Layer_xrCreateApiLayerInstance(const XrInstanceCreateInfo* i
                     XR_VERSION_MINOR(a.apiVersion), static_cast<unsigned>(XR_VERSION_PATCH(a.apiVersion)));
             for (uint32_t i = 0; i < info->enabledApiLayerCount; ++i)
                 log.Log(LogLevel::Info, "couche API demandee par l'app : %s", info->enabledApiLayerNames[i]);
+            for (uint32_t i = 0; i < info->enabledExtensionCount; ++i)
+                log.Log(LogLevel::Info, "extension demandee par l'app : %s", info->enabledExtensionNames[i]);
         }
         runtimeExts = EnumerateRuntimeExtensions();
         log.Log(LogLevel::Info, "extensions proposees par le runtime : %u", static_cast<unsigned>(runtimeExts.size()));

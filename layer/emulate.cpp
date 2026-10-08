@@ -204,11 +204,20 @@ bool Refresh(int h, XrSpace base, XrTime time) {
     }
 
     const bool handMode = cfg->pointerMode == "hand";
-    const XrHandJointLocationEXT& knuckle = joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
-    // Mode "hand" : le pointeur est rigide à la paume (axe de la main, origine à la base de l'index) ;
-    // mode "finger" : il suit le bout de l'index. Dans les deux cas le bout de l'index sert au clic.
+    const bool palmMode = cfg->pointerMode == "palm";
+    // Doigt qui porte le pointeur : l'index (défaut) ou le majeur, qui bouge moins quand l'index sert au clic.
+    const bool middleFinger = cfg->pointerFinger == "middle";
+    const XrHandJointLocationEXT& ptrTip = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_TIP_EXT : XR_HAND_JOINT_INDEX_TIP_EXT];
+    const XrHandJointLocationEXT& knuckle = joints[middleFinger ? XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT : XR_HAND_JOINT_INDEX_PROXIMAL_EXT];
+    // Mode "palm" : articulation du doigt vers laquelle on vise depuis la paume (proximal, intermédiaire, distal, bout).
+    const int aimOffset = cfg->palmAim == "proximal" ? 0 : (cfg->palmAim == "distal" ? 2 : (cfg->palmAim == "tip" ? 3 : 1));
+    const XrHandJointLocationEXT& aimJoint = joints[(middleFinger ? XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT : XR_HAND_JOINT_INDEX_PROXIMAL_EXT) + aimOffset];
+    // Mode "palm" : le rayon part de la paume et vise le doigt choisi dans sa pose naturelle (direction lissée lentement) ;
+    // mode "hand" : rigide à la paume (axe de la main, origine à la base du doigt) ; mode "finger" : suit le bout du doigt.
+    // Le geste de clic est indépendant (click_mode).
     const bool usable = XR_SUCCEEDED(r) && loc.isActive && JointUsable(palm, true, cfg->requireTracked) &&
-                        JointUsable(idx, true, cfg->requireTracked) && (!handMode || JointUsable(knuckle, false, cfg->requireTracked));
+                        JointUsable(ptrTip, true, cfg->requireTracked) && (!handMode || JointUsable(knuckle, false, cfg->requireTracked)) &&
+                        (!palmMode || JointUsable(aimJoint, false, cfg->requireTracked));
     if (usable != hs.wasValid && hs.lossLogsLeft > 0) {
         --hs.lossLogsLeft;
         Logger::Get().Log(LogLevel::Info, "emulation : main %s : suivi %s", h == 0 ? "gauche" : "droite",
@@ -221,8 +230,13 @@ bool Refresh(int h, XrSpace base, XrTime time) {
     if (!usable) return false;
 
     const em::Pose palmPose = ToPose(palm.pose);
-    em::Pose pointerWorld = ToPose(idx.pose);
+    em::Pose pointerWorld = ToPose(ptrTip.pose);
     if (handMode) pointerWorld = {palmPose.q, ToPose(knuckle.pose).p};
+    if (palmMode) {
+        // Origine = centre de la paume ; avant = de la paume vers le doigt visé ; haut = haut de la paume (sans effet sur le rayon).
+        const em::Vec3 from = palmPose.p, to = ToPose(aimJoint.pose).p;
+        pointerWorld = {em::LookAlong(to - from, em::Rotate(palmPose.q, em::Vec3{0.0f, 1.0f, 0.0f})), from};
+    }
     em::Pose rawRel = em::Multiply(em::Inverse(palmPose), pointerWorld);
     if (cfg->pointerPitchDeg != 0.0 || cfg->pointerYawDeg != 0.0) {  // réglage fin de la direction (repère de la paume)
         const float kDeg = 3.14159265f / 180.0f;
@@ -238,7 +252,10 @@ bool Refresh(int h, XrSpace base, XrTime time) {
             dt = 0.0f;
         }
         if (cfg->smoothing) {
-            hs.relOut.q = hs.rotFilter.Filter(rawRel.q, dt, static_cast<float>(cfg->smoothRotHz), static_cast<float>(cfg->smoothRotBeta));
+            // Mode palm : suivi lent de la direction (le doigt qui bouge pour cliquer ne déplace pas le rayon).
+            const float rotHz = palmMode ? static_cast<float>(cfg->palmFollowHz) : static_cast<float>(cfg->smoothRotHz);
+            const float rotBeta = static_cast<float>(cfg->smoothRotBeta) * (palmMode ? 0.4f : 1.0f);
+            hs.relOut.q = hs.rotFilter.Filter(rawRel.q, dt, rotHz, rotBeta);
             hs.relOut.p = hs.posFilter.Filter(rawRel.p, dt, 6.0f, 30.0f);
         } else {
             hs.relOut = rawRel;
@@ -247,7 +264,7 @@ bool Refresh(int h, XrSpace base, XrTime time) {
         PushHistory(hs, time, hs.relOut);
 
         const XrHandJointLocationEXT& target = joints[ClickJointFor(cfg->clickMode)];
-        if (JointUsable(thumb, false, cfg->requireTracked) && JointUsable(target, false, cfg->requireTracked)) {
+        if (JointUsable(thumb, false, cfg->clickRequireTracked) && JointUsable(target, false, cfg->clickRequireTracked)) {
             const bool was = hs.pressed;
             const float dist = em::Length(ToPose(target.pose).p - ToPose(thumb.pose).p);
             hs.pressed = hs.pinch.Update(dist, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
@@ -284,10 +301,6 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_spaces.find(Key(space));
         if (it == g_spaces.end()) return;
-        if (it->second.kind == ActionKind::GripPose && cfg->hideControllerModel) {
-            if (HandIndex(it->second.subaction) >= 0) location->locationFlags = 0;  // le jeu ne dessine pas de manette
-            return;
-        }
         const int h = HandIndex(it->second.subaction);
         if (h < 0 || !Refresh(h, baseSpace, time)) return;  // main non suivie : pose du runtime conservée
         HandState& hs = g_hand[h];
@@ -299,7 +312,11 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
                               location->pose.position.x, location->pose.position.y, location->pose.position.z,
                               hs.outTip.p.x, hs.outTip.p.y, hs.outTip.p.z);
         }
-        location->pose = ToXr(hs.outTip);
+        em::Pose finalPose = hs.outTip;
+        // Masquer le modèle de manette : le jeu le dessine à la pose « grip » ; on l'envoie très loin sous le cockpit
+        // (100 m), pose toujours valide et active pour ne pas troubler le jeu. Le rayon (aim) reste sur le doigt.
+        if (it->second.kind == ActionKind::GripPose && cfg->hideControllerModel) finalPose.p.y -= 100.0f;
+        location->pose = ToXr(finalPose);
         location->locationFlags |= kPoseValid | kPoseTracked;
         // Les vitesses du runtime ne correspondent plus à la pose substituée : on les invalide.
         for (auto* n = static_cast<XrBaseOutStructure*>(location->next); n; n = n->next)
@@ -385,11 +402,6 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStatePose(XrSession session, cons
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end()) return;
         const XrPath sub = getInfo->subactionPath;
-        if (it->second == ActionKind::GripPose && cfg->hideControllerModel) {
-            for (int h = 0; h < 2; ++h)
-                if ((sub == XR_NULL_PATH || HandIndex(sub) == h) && Fresh(h)) { state->isActive = XR_FALSE; return; }
-            return;
-        }
         for (int h = 0; h < 2; ++h) {
             if (sub != XR_NULL_PATH && HandIndex(sub) != h) continue;
             if (Fresh(h)) { state->isActive = XR_TRUE; return; }
@@ -459,9 +471,9 @@ bool Emu_Start(XrInstance instance, XrSession session) {
     const auto cfg = CurrentConfig();
     if (cfg->emulationEnabled)
         log.Log(LogLevel::Info,
-                "emulation : ACTIVE (pointeur : %s ; clic : %s %.0f/%.0f mm ; verrouillage %.0f ms ; lissage %s ; suivi exige : %s ; "
+                "emulation : ACTIVE (pointeur : %s sur le %s ; clic : %s %.0f/%.0f mm ; verrouillage %.0f ms ; lissage %s ; suivi exige : %s ; "
                 "manettes du jeu %s)",
-                cfg->pointerMode.c_str(), cfg->clickMode.c_str(), cfg->clickOnMm, cfg->clickOffMm, cfg->latchMs,
+                cfg->pointerMode.c_str(), cfg->pointerFinger == "middle" ? "majeur" : "doigt index", cfg->clickMode.c_str(), cfg->clickOnMm, cfg->clickOffMm, cfg->latchMs,
                 cfg->smoothing ? "oui" : "non", cfg->requireTracked ? "oui" : "non", cfg->hideControllerModel ? "masquees" : "visibles");
     else
         log.Log(LogLevel::Info, "emulation : desactivee (hand trackers ouverts pour le dessin des mains)");

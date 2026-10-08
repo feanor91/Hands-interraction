@@ -29,7 +29,8 @@ TEST(Config_defauts_si_ini_vide) {
 TEST(Config_emulation_defauts_et_seuils_corriges) {
     Config d = Config::FromIni(IniFile::Parse(""));
     CHECK(d.emulationEnabled);
-    CHECK(d.clickOnMm == 22.0);
+    CHECK(d.clickOnMm == 21.0);
+    CHECK(d.clickOffMm == 27.0);
     Config c = Config::FromIni(IniFile::Parse("[emulation]\nenabled = false\nclick_on_mm = 30\nclick_off_mm = 10\n"));
     CHECK(!c.emulationEnabled);
     CHECK(c.clickOnMm == 30.0);
@@ -99,11 +100,41 @@ TEST(Config_click_mode_defaut_et_validation) {
 
 TEST(Config_pointeur_mode_et_bornes) {
     Config d = Config::FromIni(IniFile::Parse(""));
-    CHECK_EQ(d.pointerMode, std::string("hand"));
+    CHECK_EQ(d.pointerMode, std::string("palm"));
+    CHECK_EQ(d.palmAim, std::string("intermediate"));
+    CHECK(d.palmFollowHz == 0.6);
     CHECK(d.pointerPitchDeg == 0.0);
     Config c = Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = FINGER\npointer_pitch_deg = 99\npointer_yaw_deg = -99\n"));
     CHECK_EQ(c.pointerMode, std::string("finger"));
     CHECK(c.pointerPitchDeg == 45.0);
     CHECK(c.pointerYawDeg == -45.0);
-    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = bizarre\n")).pointerMode, std::string("hand"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = bizarre\n")).pointerMode, std::string("palm"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_mode = hand\n")).pointerMode, std::string("hand"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npalm_aim = TIP\n")).palmAim, std::string("tip"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npalm_aim = n_importe_quoi\n")).palmAim, std::string("intermediate"));
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\npalm_follow_hz = 99\n")).palmFollowHz == 5.0);
+}
+
+TEST(Config_clic_accepte_les_positions_estimees_par_defaut) {
+    CHECK(!Config::FromIni(IniFile::Parse("")).clickRequireTracked);
+    CHECK(Config::FromIni(IniFile::Parse("[emulation]\nclick_require_tracked = true\n")).clickRequireTracked);
+}
+
+TEST(Config_doigt_du_pointeur) {
+    CHECK_EQ(Config::FromIni(IniFile::Parse("")).pointerFinger, std::string("index"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_finger = middle\n")).pointerFinger, std::string("middle"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_finger = MAJEUR\n")).pointerFinger, std::string("middle"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[emulation]\npointer_finger = pouce\n")).pointerFinger, std::string("index"));
+}
+
+TEST(Config_sonde_de_profondeur) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.depthProbe);
+    CHECK_EQ(d.depthProbeIntervalMs, 500);
+    CHECK_EQ(d.depthProbeState, std::string("depth_write"));
+    Config c = Config::FromIni(IniFile::Parse("[touch]\ndepth_probe = false\nprobe_interval_ms = 5\ndepth_state = SHADER\n"));
+    CHECK(!c.depthProbe);
+    CHECK_EQ(c.depthProbeIntervalMs, 100);
+    CHECK_EQ(c.depthProbeState, std::string("shader"));
+    CHECK_EQ(Config::FromIni(IniFile::Parse("[touch]\ndepth_state = n_importe_quoi\n")).depthProbeState, std::string("depth_write"));
 }

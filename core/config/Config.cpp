@@ -20,7 +20,15 @@ Config Config::FromIni(const IniFile& ini) {
     c.logBindings = ini.GetBool("probe", "log_bindings", c.logBindings);
     c.emulationEnabled = ini.GetBool("emulation", "enabled", c.emulationEnabled);
     c.pointerMode = hands::util::ToLower(std::string(ini.GetString("emulation", "pointer_mode", c.pointerMode)));
-    if (c.pointerMode != "hand" && c.pointerMode != "finger") c.pointerMode = "hand";
+    if (c.pointerMode != "palm" && c.pointerMode != "hand" && c.pointerMode != "finger") c.pointerMode = "palm";
+    c.palmAim = hands::util::ToLower(std::string(ini.GetString("emulation", "palm_aim", c.palmAim)));
+    if (c.palmAim != "proximal" && c.palmAim != "intermediate" && c.palmAim != "distal" && c.palmAim != "tip") c.palmAim = "intermediate";
+    c.palmFollowHz = ini.GetDouble("emulation", "palm_follow_hz", c.palmFollowHz);
+    if (c.palmFollowHz < 0.05) c.palmFollowHz = 0.05;
+    if (c.palmFollowHz > 5.0) c.palmFollowHz = 5.0;
+    c.pointerFinger = hands::util::ToLower(std::string(ini.GetString("emulation", "pointer_finger", c.pointerFinger)));
+    if (c.pointerFinger == "majeur") c.pointerFinger = "middle";
+    if (c.pointerFinger != "index" && c.pointerFinger != "middle") c.pointerFinger = "index";
     c.pointerPitchDeg = ini.GetDouble("emulation", "pointer_pitch_deg", c.pointerPitchDeg);
     c.pointerYawDeg = ini.GetDouble("emulation", "pointer_yaw_deg", c.pointerYawDeg);
     if (c.pointerPitchDeg < -45.0) c.pointerPitchDeg = -45.0;
@@ -34,6 +42,14 @@ Config Config::FromIni(const IniFile& ini) {
     c.clickOnMm = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", c.clickOnMm));
     c.clickOffMm = ini.GetDouble("emulation", "click_off_mm", ini.GetDouble("emulation", "pinch_off_mm", c.clickOffMm));
     c.latchMs = ini.GetDouble("emulation", "latch_ms", c.latchMs);
+    c.depthProbe = ini.GetBool("touch", "depth_probe", c.depthProbe);
+    c.depthProbeIntervalMs = ini.GetInt("touch", "probe_interval_ms", c.depthProbeIntervalMs);
+    if (c.depthProbeIntervalMs < 100) c.depthProbeIntervalMs = 100;
+    if (c.depthProbeIntervalMs > 10000) c.depthProbeIntervalMs = 10000;
+    c.depthProbeState = hands::util::ToLower(std::string(ini.GetString("touch", "depth_state", c.depthProbeState)));
+    if (c.depthProbeState != "depth_write" && c.depthProbeState != "depth_read" && c.depthProbeState != "common" &&
+        c.depthProbeState != "shader" && c.depthProbeState != "copy_source")
+        c.depthProbeState = "depth_write";
     c.handsEnabled = ini.GetBool("hands", "enabled", c.handsEnabled);
     c.handsRenderScale = ini.GetDouble("hands", "render_scale", c.handsRenderScale);
     c.handsJointScale = ini.GetDouble("hands", "joint_scale", c.handsJointScale);
@@ -44,6 +60,7 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.handsJointScale > 5.0) c.handsJointScale = 5.0;
     if (c.handsBoneMm < 1.0) c.handsBoneMm = 1.0;
     if (c.handsBoneMm > 30.0) c.handsBoneMm = 30.0;
+    c.clickRequireTracked = ini.GetBool("emulation", "click_require_tracked", c.clickRequireTracked);
     c.requireTracked = ini.GetBool("emulation", "require_tracked", c.requireTracked);
     c.smoothing = ini.GetBool("emulation", "smoothing", c.smoothing);
     c.smoothRotHz = ini.GetDouble("emulation", "smooth_rot_hz", c.smoothRotHz);

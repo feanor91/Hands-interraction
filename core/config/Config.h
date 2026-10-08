@@ -49,10 +49,18 @@ struct Config {
     // (XR_EXT_hand_tracking) et simule la gâchette par un pincement pouce-index.
     bool emulationEnabled = true;
     // Origine du pointeur :
-    //   "hand"   = rigide à la paume : le rayon suit l'axe de la main (origine à la base de l'index) ; plier ou
-    //              bouger les doigts ne le déplace pas (recommandé pour les commandes fines) ;
-    //   "finger" = suit l'orientation du bout de l'index.
-    std::string pointerMode = "hand";
+    //   "palm"   = comme l'interface du casque : le rayon part de la PAUME et suit l'axe du doigt choisi dans sa pose naturelle ;
+    //              la direction est lissée lentement, donc plier le doigt brièvement (clic) ne la déplace pas ;
+    //   "hand"   = rigide à la paume : le rayon suit l'axe de la main (origine à la base du doigt) ;
+    //   "finger" = suit l'orientation du bout du doigt.
+    std::string pointerMode = "palm";
+    // Mode "palm" : articulation visée depuis la paume, "proximal", "intermediate" (défaut), "distal" ou "tip" du doigt choisi.
+    std::string palmAim = "intermediate";
+    // Mode "palm" : vitesse de suivi de la direction (Hz). Petit = très stable mais la direction réagit lentement à un changement de pose.
+    double palmFollowHz = 0.6;
+    // Doigt qui porte le pointeur : "index" (défaut) ou "majeur" (`middle`). Le majeur bouge moins quand l'index sert au clic ;
+    // dans ce cas préférer click_mode = pinch (pouce sur le bout de l'index).
+    std::string pointerFinger = "index";
     // Réglage fin de la direction du pointeur, en degrés, dans le repère de la paume
     // (pitch positif = vers le haut, yaw positif = vers la gauche).
     double pointerPitchDeg = 0.0;
@@ -66,18 +74,31 @@ struct Config {
     // cesse alors de réagir, remettre à false.
     bool hideControllerModel = false;
     // Distances pouce-cible (millimètres) : clic sous `clickOnMm`, relâchement au-dessus de `clickOffMm`.
-    double clickOnMm = 22.0;
-    double clickOffMm = 35.0;
+    double clickOnMm = 21.0;
+    double clickOffMm = 27.0;
     // Pendant un pincement, le pointeur reste ancré à la pose d'AVANT le pincement (le bout de l'index
     // bouge quand on pince) : on prend la pose telle qu'elle était `latchMs` millisecondes plus tôt.
     double latchMs = 150.0;
     // N'utiliser que les articulations déclarées « suivies » (et non seulement « valides », donc
     // éventuellement extrapolées) : évite les faux appuis quand une main est perdue.
     bool requireTracked = true;
+    // Le geste de clic doit-il n'utiliser que des articulations « suivies » ? Faux (défaut) : les positions
+    // estimées par le runtime sont acceptées pour le pouce et la cible, ce qui permet de cliquer quand le
+    // pouce est masqué (main au-dessus du pouce). La paume et le bout de l'index restent soumis à
+    // `requireTracked`, donc une main perdue ne produit pas de faux clic.
+    bool clickRequireTracked = false;
     // Lissage One Euro de l'orientation du pointeur (par rapport à la paume).
     bool smoothing = true;
     double smoothRotHz = 1.5;    // plus petit = plus stable à l'arrêt, mais plus de retard
     double smoothRotBeta = 0.8;  // plus grand = moins de retard en mouvement rapide
+
+    // --- [touch] : contact avec les commandes, via la profondeur du jeu (en cours d'étude) ---
+    // Sonde en lecture seule : copie quelques pixels des images de profondeur du jeu et les journalise avec la distance
+    // des bouts de doigts, pour comprendre l'encodage de la profondeur. N'influence pas le jeu.
+    bool depthProbe = true;
+    int depthProbeIntervalMs = 500;
+    // État dans lequel le jeu laisse ses images de profondeur : depth_write (défaut), depth_read, common, shader, copy_source.
+    std::string depthProbeState = "depth_write";
 
     // --- [hands] (étape 3a) : squelette des mains dessiné en surimpression (Direct3D 12) ---
     bool handsEnabled = true;

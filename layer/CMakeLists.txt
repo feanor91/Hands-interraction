@@ -5,7 +5,8 @@ add_library(XR_APILAYER_HANDS_bare SHARED
   hooks_probe.cpp
   emulate.cpp
   hand_renderer.cpp
-  hands_overlay.cpp)
+  hands_overlay.cpp
+  depth_reader.cpp)
 
 # XR_NO_PROTOTYPES : on n'appelle JAMAIS les fonctions xr* directement (donc pas
 # de dépendance à openxr_loader.lib) ; on passe par les pointeurs de la couche suivante.
@@ -31,4 +32,13 @@ target_compile_definitions(hand_renderer_test PRIVATE NOMINMAX WIN32_LEAN_AND_ME
 target_link_libraries(hand_renderer_test PRIVATE hands_core d3d12 dxgi)
 if(HANDS_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
   add_test(NAME hand_renderer_test COMMAND hand_renderer_test ${CMAKE_BINARY_DIR}/hand_renderer_test.bmp)
+endif()
+
+# --- Lecture de la profondeur du jeu (sonde du contact) : test autonome sur une texture de même format ---------
+add_executable(depth_reader_test ../tests/depth_reader_test.cpp depth_reader.cpp)
+target_include_directories(depth_reader_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(depth_reader_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(depth_reader_test PRIVATE d3d12 dxgi)
+if(HANDS_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+  add_test(NAME depth_reader_test COMMAND depth_reader_test)
 endif()

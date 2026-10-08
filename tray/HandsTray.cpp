@@ -39,14 +39,30 @@ constexpr UINT kTrayId = 1;
 enum Cmd : UINT {
     ID_TOGGLE = 100, ID_INSTALL, ID_UNINSTALL, ID_LOGS, ID_INI, ID_AUTOSTART, ID_QUIT,
     ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
-    ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET
+    ID_PTR_PALM, ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET,
+    ID_UPDATE,
+    ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
+    ID_FINGER_INDEX, ID_FINGER_MIDDLE
 };
 
 HWND g_hwnd = nullptr;
 HICON g_iconOn = nullptr, g_iconOff = nullptr, g_iconWarn = nullptr;
+HICON g_iconOnUp = nullptr, g_iconOffUp = nullptr;  // mêmes icônes avec une pastille bleue : mise à jour disponible
 UINT g_taskbarCreated = 0;
 
+// Action lancée si l'utilisateur clique sur la bulle de notification affichée en dernier.
+enum class BalloonAction { None, Install, Update };
+BalloonAction g_balloonAction = BalloonAction::None;
+uint64_t g_notifiedUpdateStamp = 0;  // dernière version proposée (une seule bulle par version et par session du tray)
+
+constexpr UINT kNinBalloonTimeout = WM_USER + 4;    // NIN_BALLOONTIMEOUT
+constexpr UINT kNinBalloonUserClick = WM_USER + 5;  // NIN_BALLOONUSERCLICK
+
+bool UpdateAvailable(uint64_t* stamp);  // défini plus bas (a besoin de ExeDir)
+
 struct State {
+    bool updateAvailable = false;  // une version plus récente de la DLL existe à côté du tray / dans le dépôt
+    uint64_t updateStamp = 0;      // identifie cette version (date de la DLL source)
     bool installed = false;  // DLL présente et couche déclarée dans le registre
     bool enabled = true;     // valeur de `enabled` dans hands.ini
     bool gameRunning = false;
@@ -55,8 +71,10 @@ struct State {
     bool hideModel = false;          // masquer les modèles de manettes du jeu (expérimental)
     bool emulationOn = true;         // pointeur au bout de l'index + clic
     bool handsDraw = true;           // squelette des mains en surimpression
-    std::string pointerMode = "hand";  // hand | finger
+    std::string pointerMode = "palm";  // palm | hand | finger
     double pointerPitch = 0.0, pointerYaw = 0.0;  // degrés
+    double clickOn = 21.0, clickOff = 27.0;       // millimètres : seuils de clic / relâchement
+    std::string pointerFinger = "index";          // index | middle : doigt qui porte le pointeur
 };
 
 std::wstring IniPath() { return std::wstring(kInstallDir) + L"\\hands.ini"; }
@@ -102,6 +120,7 @@ State ReadState() {
     State s;
     s.installed = FileExists(std::wstring(kInstallDir) + L"\\XR_APILAYER_HANDS_bare.dll") && LayerRegistered();
     s.gameRunning = GameRunning();
+    s.updateAvailable = s.installed && UpdateAvailable(&s.updateStamp);
     std::string text;
     if (ReadTextFile(IniPath(), &text)) {  // pas de fichier = valeurs par défaut de la couche
         const hands::config::IniFile ini = hands::config::IniFile::Parse(text);
@@ -111,8 +130,12 @@ State ReadState() {
         s.hideModel = ini.GetBool("emulation", "hide_controller_model", false);
         s.emulationOn = ini.GetBool("emulation", "enabled", true);
         s.handsDraw = ini.GetBool("hands", "enabled", true);
-        s.pointerMode = ini.GetString("emulation", "pointer_mode", "hand");
-        if (s.pointerMode != "hand" && s.pointerMode != "finger") s.pointerMode = "hand";
+        s.pointerMode = ini.GetString("emulation", "pointer_mode", "palm");
+        if (s.pointerMode != "palm" && s.pointerMode != "hand" && s.pointerMode != "finger") s.pointerMode = "palm";
+        s.clickOn = ini.GetDouble("emulation", "click_on_mm", ini.GetDouble("emulation", "pinch_on_mm", 21.0));
+        s.clickOff = ini.GetDouble("emulation", "click_off_mm", ini.GetDouble("emulation", "pinch_off_mm", 27.0));
+        s.pointerFinger = ini.GetString("emulation", "pointer_finger", "index");
+        if (s.pointerFinger != "index" && s.pointerFinger != "middle") s.pointerFinger = "index";
         s.pointerPitch = ini.GetDouble("emulation", "pointer_pitch_deg", 0.0);
         s.pointerYaw = ini.GetDouble("emulation", "pointer_yaw_deg", 0.0);
     }
@@ -143,7 +166,7 @@ bool WriteIniValue(const char* section, const char* key, const std::string& valu
 }
 
 // --- Icône : disque coloré dessiné en mémoire (aucune ressource externe) ---------------------
-HICON MakeIcon(COLORREF fill) {
+HICON MakeIcon(COLORREF fill, bool badge = false) {
     const int sz = 32;
     BITMAPV5HEADER bi{};
     bi.bV5Size = sizeof(bi);
@@ -178,6 +201,14 @@ HICON MakeIcon(COLORREF fill) {
                 argb = 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) |
                        (static_cast<uint32_t>(GetGValue(c)) << 8) | GetBValue(c);
             }
+            if (badge) {  // pastille bleue en bas à droite : « mise à jour disponible »
+                const float bx = x - 24.0f, by = y - 24.0f, bd2 = bx * bx + by * by;
+                if (bd2 <= 8.0f * 8.0f) {
+                    const COLORREF c = bd2 >= 6.0f * 6.0f ? RGB(255, 255, 255) : RGB(30, 110, 230);
+                    argb = 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) |
+                           (static_cast<uint32_t>(GetGValue(c)) << 8) | GetBValue(c);
+                }
+            }
             px[y * sz + x] = argb;
         }
     ICONINFO ii{};
@@ -192,6 +223,7 @@ HICON MakeIcon(COLORREF fill) {
 
 HICON IconFor(const State& s) {
     if (!s.installed) return g_iconWarn;
+    if (s.updateAvailable && g_iconOnUp && g_iconOffUp) return s.enabled ? g_iconOnUp : g_iconOffUp;
     return s.enabled ? g_iconOn : g_iconOff;
 }
 
@@ -199,6 +231,7 @@ std::wstring TooltipFor(const State& s) {
     std::wstring t = L"Mains nues OpenXR — ";
     if (!s.installed) t += L"couche non installée";
     else t += s.enabled ? L"suivi ACTIVÉ" : L"suivi DÉSACTIVÉ";
+    if (s.updateAvailable) t += L" — mise à jour disponible";
     if (s.gameRunning) t += L" (MSFS en cours)";
     return t;
 }
@@ -216,7 +249,10 @@ void AddOrUpdateTray(bool add) {
     Shell_NotifyIconW(add ? NIM_ADD : NIM_MODIFY, &nid);
 }
 
-void Balloon(const std::wstring& text) {
+// Affiche une bulle de notification. Si `action` n'est pas None, un clic sur la bulle lance cette action
+// (avec l'élévation UAC habituelle) : rien ne s'installe sans un clic explicite de l'utilisateur.
+void Balloon(const std::wstring& text, BalloonAction action = BalloonAction::None) {
+    g_balloonAction = action;
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(nid);
     nid.hWnd = g_hwnd;
@@ -268,6 +304,70 @@ std::wstring FindScript(const wchar_t* name) {
         if (FileExists(p)) return p;
     }
     return L"";
+}
+
+// --- Détection d'une version plus récente de la couche ----------------------------------------
+constexpr wchar_t kDllName[] = L"XR_APILAYER_HANDS_bare.dll";
+constexpr wchar_t kJsonName[] = L"XR_APILAYER_HANDS_bare.json";
+
+// Dossier contenant la DLL « source » : à côté du tray (paquet distribué) ou dans l'arbre de compilation
+// (build\tray\Release -> build\layer\Release), c'est-à-dire là où install.ps1 va la chercher.
+std::wstring SourceDir() {
+    const std::wstring dir = ExeDir();
+    for (const wchar_t* rel : {L"", L"\\..\\layer\\Release", L"\\..\\..\\layer\\Release", L"\\..\\..\\layer\\RelWithDebInfo",
+                               L"\\..\\..\\..\\build\\layer\\Release"}) {
+        const std::wstring d = dir + rel;
+        if (FileExists(d + L"\\" + kDllName)) return d;
+    }
+    return L"";
+}
+
+struct FileStamp {
+    bool ok = false;
+    uint64_t size = 0, mtime = 0;
+    bool operator==(const FileStamp& o) const { return ok == o.ok && size == o.size && mtime == o.mtime; }
+};
+
+FileStamp StampOf(const std::wstring& path) {
+    FileStamp s;
+    WIN32_FILE_ATTRIBUTE_DATA d{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &d)) return s;
+    s.ok = true;
+    s.size = (static_cast<uint64_t>(d.nFileSizeHigh) << 32) | d.nFileSizeLow;
+    s.mtime = (static_cast<uint64_t>(d.ftLastWriteTime.dwHighDateTime) << 32) | d.ftLastWriteTime.dwLowDateTime;
+    return s;
+}
+
+bool SameContent(const std::wstring& a, const std::wstring& b) {
+    std::string x, y;
+    if (!ReadTextFile(a, &x) || !ReadTextFile(b, &y)) return false;
+    return x == y;
+}
+
+// Vrai si la DLL (ou le manifeste) source diffère de celle installée ET est plus récente. `stamp` identifie la
+// version source. Le résultat est mis en cache tant que les tailles et dates des 4 fichiers ne changent pas
+// (la comparaison de contenu n'est donc faite qu'après une recompilation ou une réinstallation).
+bool UpdateAvailable(uint64_t* stamp) {
+    static FileStamp cache[4];
+    static bool cacheResult = false;
+    static uint64_t cacheStamp = 0;
+    const std::wstring src = SourceDir();
+    if (stamp) *stamp = 0;
+    if (src.empty()) return false;
+    const std::wstring files[4] = {src + L"\\" + kDllName, std::wstring(kInstallDir) + L"\\" + kDllName, src + L"\\" + kJsonName,
+                                   std::wstring(kInstallDir) + L"\\" + kJsonName};
+    FileStamp now[4];
+    for (int i = 0; i < 4; ++i) now[i] = StampOf(files[i]);
+    bool same = true;
+    for (int i = 0; i < 4; ++i) same = same && now[i] == cache[i];
+    if (!same) {
+        for (int i = 0; i < 4; ++i) cache[i] = now[i];
+        const bool differs = !SameContent(files[0], files[1]) || (now[2].ok && now[3].ok && !SameContent(files[2], files[3]));
+        cacheResult = now[0].ok && now[1].ok && differs && now[0].mtime > now[1].mtime;
+        cacheStamp = now[0].mtime;
+    }
+    if (stamp) *stamp = cacheStamp;
+    return cacheResult;
 }
 
 void RunElevatedScript(const wchar_t* name, const wchar_t* extraArgs) {
@@ -341,6 +441,19 @@ void AdjustPointer(const State& s, double dpitch, double dyaw) {
     Balloon(msg);
 }
 
+// Préréglages de sensibilité du clic : seuil de clic / seuil de relâchement (millimètres).
+void ApplySensitivity(double on, double off, const wchar_t* label) {
+    std::wstring err;
+    char b1[32], b2[32];
+    std::snprintf(b1, sizeof(b1), "%.0f", on);
+    std::snprintf(b2, sizeof(b2), "%.0f", off);
+    if (!WriteIniValue("emulation", "click_on_mm", b1, &err) || !WriteIniValue("emulation", "click_off_mm", b2, &err)) {
+        MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
+        return;
+    }
+    Balloon(std::wstring(L"Relâchement du clic : ") + label + L".");
+}
+
 void OpenPath(const std::wstring& p) { ShellExecuteW(g_hwnd, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 
 void ShowMenu() {
@@ -348,6 +461,8 @@ void ShowMenu() {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | MF_DISABLED, 0, s.installed ? L"Couche : installée" : L"Couche : NON installée");
     AppendMenuW(m, MF_STRING | MF_DISABLED, 0, s.gameRunning ? L"MSFS : en cours" : L"MSFS : arrêté");
+    if (s.updateAvailable)
+        AppendMenuW(m, MF_STRING, ID_UPDATE, L"▶ Mettre à jour la couche… (nouvelle version disponible)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (s.enabled ? MF_CHECKED : 0) | (s.installed ? 0 : MF_GRAYED), ID_TOGGLE,
                 L"Couche activée (au prochain lancement du jeu)");
@@ -361,9 +476,14 @@ void ShowMenu() {
     HMENU pointer = CreatePopupMenu();
     AppendMenuW(pointer, MF_STRING | (s.emulationOn ? MF_CHECKED : 0) | cfgGray, ID_EMULATION, L"Pointeur piloté par la main");
     AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Doigt du pointeur :");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerFinger == "index" ? MF_CHECKED : 0), ID_FINGER_INDEX, L"   Index");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerFinger == "middle" ? MF_CHECKED : 0), ID_FINGER_MIDDLE, L"   Majeur (bouge moins quand l'index clique)");
+    AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Rayon (pour viser) :");
-    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "hand" ? MF_CHECKED : 0), ID_PTR_HAND, L"   Axe de la main (stable, recommandé)");
-    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "finger" ? MF_CHECKED : 0), ID_PTR_FINGER, L"   Orientation du bout de l'index");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "palm" ? MF_CHECKED : 0), ID_PTR_PALM, L"   Depuis la paume, dans l'axe du doigt (comme le casque)");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "hand" ? MF_CHECKED : 0), ID_PTR_HAND, L"   Axe de la main (rigide à la paume)");
+    AppendMenuW(pointer, MF_STRING | emuGray | (s.pointerMode == "finger" ? MF_CHECKED : 0), ID_PTR_FINGER, L"   Orientation du bout du doigt");
     AppendMenuW(pointer, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(pointer, MF_STRING | MF_DISABLED, 0, L"Clic (geste du pouce) :");
     AppendMenuW(pointer, MF_STRING | emuGray | (s.clickMode == "side" ? MF_CHECKED : 0), ID_CLICK_SIDE, L"   Sur le côté de l'index (l'index reste fixe)");
@@ -380,6 +500,20 @@ void ShowMenu() {
     AppendMenuW(tilt, MF_STRING, ID_PTR_RIGHT, L"Vers la droite (−2°)");
     AppendMenuW(tilt, MF_STRING, ID_PTR_RESET, L"Réinitialiser");
     AppendMenuW(pointer, MF_POPUP | emuGray, reinterpret_cast<UINT_PTR>(tilt), L"Inclinaison du rayon");
+
+    // Relâchement du clic : préréglages (clic / relâchement en mm)
+    HMENU sens = CreatePopupMenu();
+    auto near2 = [](double a, double b) { return a > b - 0.5 && a < b + 0.5; };
+    const bool fast = near2(s.clickOn, 20) && near2(s.clickOff, 24), normal = near2(s.clickOn, 21) && near2(s.clickOff, 27),
+               tolerant = near2(s.clickOn, 22) && near2(s.clickOff, 35);
+    wchar_t cur[96];
+    swprintf(cur, 96, L"Actuel : clic à %.0f mm, relâchement à %.0f mm", s.clickOn, s.clickOff);
+    AppendMenuW(sens, MF_STRING | MF_DISABLED, 0, cur);
+    AppendMenuW(sens, MF_STRING | (fast ? MF_CHECKED : 0), ID_SENS_FAST, L"Rapide (20 / 24 mm) : le clic s'arrête dès que le pouce s'écarte");
+    AppendMenuW(sens, MF_STRING | (normal ? MF_CHECKED : 0), ID_SENS_NORMAL, L"Normal (21 / 27 mm)");
+    AppendMenuW(sens, MF_STRING | (tolerant ? MF_CHECKED : 0), ID_SENS_TOLERANT, L"Tolérant (22 / 35 mm) : le clic tient même si le pouce bouge");
+    AppendMenuW(pointer, MF_POPUP | emuGray, reinterpret_cast<UINT_PTR>(sens), L"Relâchement du clic");
+
     AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(pointer), L"Pointeur");
 
     // --- Sous-menu « Affichage » ----------------------------------------------------------------
@@ -409,8 +543,18 @@ void ShowMenu() {
         case ID_CLICK_SIDE: ApplySetting("emulation", "click_mode", "side", L"Clic : pouce sur le côté de l'index."); break;
         case ID_CLICK_PINCH: ApplySetting("emulation", "click_mode", "pinch", L"Clic : pouce sur le bout de l'index."); break;
         case ID_CLICK_MIDDLE: ApplySetting("emulation", "click_mode", "middle", L"Clic : pouce sur le bout du majeur."); break;
+        case ID_PTR_PALM: ApplySetting("emulation", "pointer_mode", "palm", L"Rayon : depuis la paume, dans l'axe du doigt."); break;
         case ID_PTR_HAND: ApplySetting("emulation", "pointer_mode", "hand", L"Rayon : axe de la main."); break;
-        case ID_PTR_FINGER: ApplySetting("emulation", "pointer_mode", "finger", L"Rayon : orientation du bout de l'index."); break;
+        case ID_PTR_FINGER: ApplySetting("emulation", "pointer_mode", "finger", L"Rayon : orientation du bout du doigt."); break;
+        case ID_SENS_FAST: ApplySensitivity(20, 24, L"rapide"); break;
+        case ID_SENS_NORMAL: ApplySensitivity(21, 27, L"normal"); break;
+        case ID_SENS_TOLERANT: ApplySensitivity(22, 35, L"tolérant"); break;
+        case ID_FINGER_INDEX: ApplySetting("emulation", "pointer_finger", "index", L"Le pointeur est sur l'index."); break;
+        case ID_FINGER_MIDDLE:
+            // Avec le pointeur sur le majeur, le clic doit se faire avec l'index (il ne déplace plus le pointeur).
+            ApplySetting("emulation", "pointer_finger", "middle", L"Le pointeur est sur le majeur. Clic : pouce sur le bout de l'index.");
+            if (s.clickMode != "pinch") ApplySetting("emulation", "click_mode", "pinch", L"Le pointeur est sur le majeur. Clic : pouce sur le bout de l'index.");
+            break;
         case ID_PTR_UP: AdjustPointer(s, 2.0, 0.0); break;
         case ID_PTR_DOWN: AdjustPointer(s, -2.0, 0.0); break;
         case ID_PTR_LEFT: AdjustPointer(s, 0.0, 2.0); break;
@@ -428,6 +572,7 @@ void ShowMenu() {
             ApplySetting("emulation", "hide_controller_model", s.hideModel ? "false" : "true",
                          s.hideModel ? L"Manettes du jeu affichées." : L"Manettes du jeu masquées (expérimental).");
             break;
+        case ID_UPDATE:
         case ID_INSTALL: RunElevatedScript(L"install.ps1", L""); break;
         case ID_UNINSTALL: RunElevatedScript(L"uninstall.ps1", L"-RemoveFiles"); break;
         case ID_LOGS: OpenPath(std::wstring(kInstallDir) + L"\\logs"); break;
@@ -445,11 +590,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     switch (msg) {
         case WM_TRAY:
-            if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) ShowMenu();
+            if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) {
+                ShowMenu();
+            } else if (lp == kNinBalloonUserClick) {  // clic sur la bulle : action explicite de l'utilisateur
+                const BalloonAction a = g_balloonAction;
+                g_balloonAction = BalloonAction::None;
+                if (a != BalloonAction::None) RunElevatedScript(L"install.ps1", L"");
+            } else if (lp == kNinBalloonTimeout) {
+                g_balloonAction = BalloonAction::None;
+            }
             return 0;
-        case WM_TIMER:
+        case WM_TIMER: {
             AddOrUpdateTray(false);  // rafraîchit icône et infobulle (jeu lancé, config modifiée à la main...)
+            // Une nouvelle version vient d'apparaître (recompilation) : une seule bulle par version, jamais pendant le jeu.
+            const State st = ReadState();
+            if (st.updateAvailable && !st.gameRunning && st.updateStamp != g_notifiedUpdateStamp) {
+                g_notifiedUpdateStamp = st.updateStamp;
+                Balloon(L"Nouvelle version de la couche disponible. Cliquez ici pour la mettre à jour (MSFS doit être fermé).", BalloonAction::Update);
+            }
             return 0;
+        }
         case WM_DESTROY: {
             NOTIFYICONDATAW nid{};
             nid.cbSize = sizeof(nid);
@@ -474,6 +634,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     g_iconOn = MakeIcon(RGB(46, 160, 67));     // vert : actif
     g_iconOff = MakeIcon(RGB(128, 128, 128));  // gris : désactivé
     g_iconWarn = MakeIcon(RGB(214, 137, 16));  // orange : couche non installée
+    g_iconOnUp = MakeIcon(RGB(46, 160, 67), true);      // pastille bleue : mise à jour disponible
+    g_iconOffUp = MakeIcon(RGB(128, 128, 128), true);
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
     WNDCLASSW wc{};
@@ -487,12 +649,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     AddOrUpdateTray(true);
     SetTimer(g_hwnd, kTimerId, 3000, nullptr);
 
+    // Invites au démarrage. Rien ne s'installe sans clic de l'utilisateur sur la bulle (puis validation UAC).
+    {
+        const State st = ReadState();
+        if (!st.installed) {
+            if (!FindScript(L"install.ps1").empty())
+                Balloon(L"La couche n'est pas installée. Cliquez ici pour l'installer maintenant (validation administrateur requise).", BalloonAction::Install);
+        } else if (st.updateAvailable && !st.gameRunning) {
+            g_notifiedUpdateStamp = st.updateStamp;
+            Balloon(L"Nouvelle version de la couche disponible. Cliquez ici pour la mettre à jour (MSFS doit être fermé).", BalloonAction::Update);
+        }
+    }
+
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
-    for (HICON i : {g_iconOn, g_iconOff, g_iconWarn})
+    for (HICON i : {g_iconOn, g_iconOff, g_iconWarn, g_iconOnUp, g_iconOffUp})
         if (i) DestroyIcon(i);
     if (mutex) CloseHandle(mutex);
     return 0;

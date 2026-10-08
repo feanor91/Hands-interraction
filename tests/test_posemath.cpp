@@ -67,3 +67,36 @@ TEST(OneEuro_position_premiere_valeur_passe_telle_quelle) {
     OneEuro f;
     CHECK(Near(f.Filter(Vec3{1, 2, 3}, 0.011f, 3.0f, 10.0f), {1, 2, 3}));
 }
+
+TEST(PoseMath_LookAlong_avant_et_haut) {
+    // Avant -Z, haut +Y : identité
+    CHECK(Near(Rotate(LookAlong({0, 0, -1}, {0, 1, 0}), {0, 0, -1}), {0, 0, -1}));
+    CHECK(Near(Rotate(LookAlong({0, 0, -1}, {0, 1, 0}), {0, 1, 0}), {0, 1, 0}));
+    // Avant +X : -Z doit devenir +X et +Y rester vers le haut
+    const Quat q = LookAlong({1, 0, 0}, {0, 1, 0});
+    CHECK(Near(Rotate(q, {0, 0, -1}), {1, 0, 0}));
+    CHECK(Near(Rotate(q, {0, 1, 0}), {0, 1, 0}));
+    // Avant incliné vers le bas : le haut reste du côté de `up`
+    const Vec3 f = Normalized({0, -1, -1});
+    const Quat q2 = LookAlong(f, {0, 1, 0});
+    CHECK(Near(Rotate(q2, {0, 0, -1}), f));
+    CHECK(Rotate(q2, {0, 1, 0}).y > 0.5f);
+}
+
+TEST(PoseMath_LookAlong_cas_degeneres) {
+    // `up` parallèle à l'avant : doit rester une rotation valide dont -Z pointe vers l'avant
+    const Quat q = LookAlong({0, 1, 0}, {0, 1, 0});
+    CHECK(Near(Rotate(q, {0, 0, -1}), {0, 1, 0}));
+    CHECK(Near(std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w), 1.0f));
+    // avant nul : identité
+    CHECK(Near(LookAlong({0, 0, 0}, {0, 1, 0}).w, 1.0f));
+}
+
+TEST(PoseMath_QuatFromBasis_aller_retour) {
+    for (float deg : {0.0f, 33.0f, 90.0f, 135.0f, 180.0f, -120.0f}) {
+        const Quat q = Normalize(Multiply(RotY(deg), Quat{0.3f, 0.0f, 0.0f, 0.95f}));
+        const Vec3 x = Rotate(q, {1, 0, 0}), y = Rotate(q, {0, 1, 0}), z = Rotate(q, {0, 0, 1});
+        const Quat r = QuatFromBasis(x, y, z);
+        CHECK(Near(AngleBetween(q, r), 0.0f, 1e-3f));
+    }
+}
