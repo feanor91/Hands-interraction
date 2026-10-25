@@ -20,7 +20,7 @@ void WriteText(const std::filesystem::path& p, const std::string& s) {
 
 TEST(Config_defauts_si_ini_vide) {
     Config c = Config::FromIni(IniFile::Parse(""));
-    CHECK(c.discoveryMode);
+    CHECK(!c.discoveryMode);
     CHECK_EQ(c.processAllowlist.size(), size_t(1));
     CHECK(c.enableHandTrackingExtension);
     CHECK(c.enabled);
@@ -63,7 +63,7 @@ TEST(Config_Reload_garde_ancienne_valeur_si_fichier_absent) {
     ConfigStore store(f);
     std::string msg;
     CHECK(!store.Reload(&msg));
-    CHECK(store.Get()->discoveryMode);  // defaut conserve
+    CHECK(!store.Get()->discoveryMode);  // defaut conserve
 }
 
 TEST(Config_rechargement_a_chaud) {

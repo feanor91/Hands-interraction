@@ -28,7 +28,7 @@ struct Config {
     std::vector<std::string> processAllowlist{"FlightSimulator2024.exe"};
     // Mode découverte : la couche s'active (en simple journalisation) quel que
     // soit le processus, pour révéler le nom exact de l'exécutable.
-    bool discoveryMode = true;
+    bool discoveryMode = false;
     // Interrupteur général (application de la barre des tâches) : false = la couche laisse
     // tout passer. Lu à la création de l'instance OpenXR, donc effectif au prochain lancement du jeu.
     bool enabled = true;
