@@ -38,6 +38,7 @@
 #include "hand_renderer.h"
 #include "hands_overlay.h"
 #include "vr_menu.h"
+#include "zones.h"
 
 namespace layer {
 
@@ -752,6 +753,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
         HandsFrame frame;
         bool any = false;
         ToHandsFrame(game, info->displayTime, &frame, &any);
+        Zones_Frame(frame);
         addMenu = VrMenu_Frame(session, g_device, g_queue, game, info->displayTime, frame, &menuQuad);
     });
     Safe("xrEndFrame(preparation)", [&] {

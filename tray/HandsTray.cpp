@@ -20,6 +20,7 @@
 
 #include "config/IniEdit.h"
 #include "config/IniFile.h"
+#include "JoyPoll.h"
 
 namespace {
 
@@ -43,7 +44,8 @@ enum Cmd : UINT {
     ID_UPDATE,
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
     ID_FINGER_INDEX, ID_FINGER_MIDDLE,
-    ID_SHARED
+    ID_SHARED,
+    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF
 };
 
 HWND g_hwnd = nullptr;
@@ -77,6 +79,9 @@ struct State {
     double clickOn = 21.0, clickOff = 27.0;       // millimètres : seuils de clic / relâchement
     std::string pointerFinger = "index";          // index | middle : doigt qui porte le pointeur
     bool sharedPointer = false;                   // les deux mains actives : la main qui clique prend la main
+    bool zonesOn = false;                         // pochoir : zones apprises, contact -> touche StreamSim
+    std::string zoneJoystick;                     // nom (ou morceau de nom) du joystick / HOTAS des boutons de zones
+    int zoneTeachButton = 0, zoneClearButton = 0;  // boutons de memorisation / d'effacement (0 = aucun)
 };
 
 std::wstring IniPath() { return std::wstring(kInstallDir) + L"\\hands.ini"; }
@@ -141,6 +146,10 @@ State ReadState() {
         if (s.pointerFinger != "index" && s.pointerFinger != "middle") s.pointerFinger = "index";
         s.pointerPitch = ini.GetDouble("emulation", "pointer_pitch_deg", 0.0);
         s.pointerYaw = ini.GetDouble("emulation", "pointer_yaw_deg", 0.0);
+        s.zonesOn = ini.GetBool("zones", "enabled", false);
+        s.zoneJoystick = ini.GetString("zones", "joystick", "");
+        s.zoneTeachButton = ini.GetInt("zones", "teach_button", 0);
+        s.zoneClearButton = ini.GetInt("zones", "clear_button", 0);
     }
     return s;
 }
@@ -427,6 +436,47 @@ void ApplySetting(const char* section, const char* key, const std::string& value
     Balloon(confirmation);
 }
 
+// --- Choix d'un bouton de joystick / HOTAS pour les zones : on appuie sur le bouton voulu ------------------------------------------
+constexpr UINT_PTR kDetectTimerId = 2;
+hands::win::JoyPoll g_joyPoll;
+int g_detectWhat = 0;  // 0 = aucune detection, 1 = bouton de memorisation, 2 = bouton d'effacement
+ULONGLONG g_detectUntil = 0;
+
+void StartDetect(int what) {
+    g_detectWhat = what;
+    g_detectUntil = GetTickCount64() + 30000;
+    g_joyPoll.PollAllPressed("");  // memorise l'etat actuel : seul un NOUVEL appui compte
+    SetTimer(g_hwnd, kDetectTimerId, 50, nullptr);
+    Balloon(what == 1 ? L"Appuyez maintenant sur le bouton de la manette / HOTAS qui MÉMORISERA la zone (30 s)."
+                      : L"Appuyez maintenant sur le bouton de la manette / HOTAS qui EFFACERA les zones (30 s).");
+}
+
+void PollDetect() {
+    if (g_detectWhat == 0) return;
+    if (GetTickCount64() > g_detectUntil) {
+        g_detectWhat = 0;
+        KillTimer(g_hwnd, kDetectTimerId);
+        Balloon(L"Aucun bouton détecté : choix annulé (le joystick est-il branché ?).");
+        return;
+    }
+    hands::win::JoyEvent ev;
+    if (!g_joyPoll.PollPressed("", 0, &ev)) return;
+    const int what = g_detectWhat;
+    g_detectWhat = 0;
+    KillTimer(g_hwnd, kDetectTimerId);
+    std::wstring err;
+    // Le nom du peripherique est commun aux deux boutons : le dernier choix gagne.
+    if (!WriteIniValue("zones", "joystick", ev.device, &err) ||
+        !WriteIniValue("zones", what == 1 ? "teach_button" : "clear_button", std::to_string(ev.button), &err)) {
+        MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
+        return;
+    }
+    int wl = MultiByteToWideChar(CP_UTF8, 0, ev.device.c_str(), -1, nullptr, 0);
+    std::wstring name(wl > 0 ? wl - 1 : 0, L'\0');
+    if (wl > 1) MultiByteToWideChar(CP_UTF8, 0, ev.device.c_str(), -1, name.data(), wl);
+    Balloon(std::wstring(what == 1 ? L"Mémorisation de la zone : bouton " : L"Effacement des zones : bouton ") + std::to_wstring(ev.button) + L" de « " + name + L" ».");
+}
+
 // Ajoute (dpitch, dyaw) degrés à l'inclinaison du pointeur (bornée à ±45°) et l'enregistre.
 void AdjustPointer(const State& s, double dpitch, double dyaw) {
     auto clamp = [](double v) { return v < -45.0 ? -45.0 : (v > 45.0 ? 45.0 : v); };
@@ -528,6 +578,29 @@ void ShowMenu() {
     AppendMenuW(display, MF_STRING | (s.handsDraw ? MF_CHECKED : 0) | cfgGray, ID_HANDS_DRAW, L"Squelette des mains");
     AppendMenuW(display, MF_STRING | (s.hideModel ? MF_CHECKED : 0) | cfgGray, ID_HIDE_MODEL, L"Masquer les manettes du jeu (expérimental)");
     AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(display), L"Affichage");
+
+    // --- Sous-menu « Zones (pochoir) » ------------------------------------------------------------
+    HMENU zones = CreatePopupMenu();
+    AppendMenuW(zones, MF_STRING | (s.zonesOn ? MF_CHECKED : 0) | cfgGray, ID_ZONES_ENABLE, L"Zones actives (contact du doigt = touche StreamSim)");
+    AppendMenuW(zones, MF_SEPARATOR, 0, nullptr);
+    {
+        auto label = [&](const wchar_t* what, int button) {
+            std::wstring l = what;
+            if (button > 0) {
+                l += L" : bouton " + std::to_wstring(button);
+            } else {
+                l += L" : (aucun)";
+            }
+            return l;
+        };
+        AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_TEACH_BTN, (label(L"Choisir le bouton qui mémorise la zone", s.zoneTeachButton) + L"…").c_str());
+        if (s.zoneTeachButton > 0) AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_TEACH_OFF, L"   Ne plus utiliser ce bouton");
+        AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_CLEAR_BTN, (label(L"Choisir le bouton qui efface les zones", s.zoneClearButton) + L"…").c_str());
+        if (s.zoneClearButton > 0) AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_CLEAR_OFF, L"   Ne plus utiliser ce bouton");
+    }
+    AppendMenuW(zones, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(zones, MF_STRING | MF_DISABLED, 0, L"En vol : pointez la commande du bout de l'index, puis appuyez sur le bouton.");
+    AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(zones), L"Zones (pochoir)");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_INSTALL, L"Installer / réparer la couche…");
     AppendMenuW(m, MF_STRING | (s.installed ? 0 : MF_GRAYED), ID_UNINSTALL, L"Désinstaller la couche…");
@@ -578,6 +651,13 @@ void ShowMenu() {
             ApplySetting("emulation", "enabled", s.emulationOn ? "false" : "true",
                          s.emulationOn ? L"Pointeur piloté par la main : désactivé." : L"Pointeur piloté par la main : activé.");
             break;
+        case ID_ZONES_ENABLE:
+            ApplySetting("zones", "enabled", s.zonesOn ? "false" : "true", s.zonesOn ? L"Zones désactivées." : L"Zones activées.");
+            break;
+        case ID_ZONES_TEACH_BTN: StartDetect(1); break;
+        case ID_ZONES_CLEAR_BTN: StartDetect(2); break;
+        case ID_ZONES_TEACH_OFF: ApplySetting("zones", "teach_button", "0", L"Plus de bouton de mémorisation (touche Ctrl+Alt+F9 seulement)."); break;
+        case ID_ZONES_CLEAR_OFF: ApplySetting("zones", "clear_button", "0", L"Plus de bouton d'effacement (touche Ctrl+Alt+F10 seulement)."); break;
         case ID_HANDS_DRAW:
             ApplySetting("hands", "enabled", s.handsDraw ? "false" : "true",
                          s.handsDraw ? L"Squelette des mains masqué." : L"Squelette des mains affiché.");
@@ -635,6 +715,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_TIMER: {
+            if (wp == kDetectTimerId) {
+                PollDetect();
+                return 0;
+            }
             if (SelfReplacedAndStable()) {
                 ShellExecuteW(nullptr, L"open", g_selfPath.c_str(), L"--replace", nullptr, SW_HIDE);
                 DestroyWindow(hwnd);  // libère l'instance unique pour la nouvelle version

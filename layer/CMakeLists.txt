@@ -9,15 +9,18 @@ add_library(XR_APILAYER_HANDS_bare SHARED
   depth_reader.cpp
   texture_uploader.cpp
   menu_render.cpp
-  vr_menu.cpp)
+  vr_menu.cpp
+  zones.cpp
+  ../win/JoyPoll.cpp)
 
 # XR_NO_PROTOTYPES : on n'appelle JAMAIS les fonctions xr* directement (donc pas
 # de dépendance à openxr_loader.lib) ; on passe par les pointeurs de la couche suivante.
 target_compile_definitions(XR_APILAYER_HANDS_bare PRIVATE XR_NO_PROTOTYPES WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(XR_APILAYER_HANDS_bare PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/win
   ${CMAKE_SOURCE_DIR}/third_party/openxr/include)
-target_link_libraries(XR_APILAYER_HANDS_bare PRIVATE hands_core d3d12)
+target_link_libraries(XR_APILAYER_HANDS_bare PRIVATE hands_core d3d12 winhttp dinput8 dxguid)
 set_target_properties(XR_APILAYER_HANDS_bare PROPERTIES PREFIX "")
 
 # Rassemble DLL + manifeste + config exemple dans un seul dossier (celui de la DLL),

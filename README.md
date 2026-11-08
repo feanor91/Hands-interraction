@@ -22,6 +22,18 @@ Essayé sans résoudre : rayon par l'épaule estimée (torse lent, mélange avec
 
 Piste non explorée : accroche sur la cible. MSFS dessine une flèche bleue quand le rayon survole un élément interactif ; la détecter dans l'image du jeu permettrait de figer le rayon sur l'élément.
 
+## Zones (pochoir) : essai
+
+Piste ouverte après le bilan : au lieu d'un rayon, des **zones sphériques** apprises au bout de l'index, qui déclenchent une touche de
+StreamSim (`POST /api/press`) au contact (maintien `dwell_ms`). Essai sur la batterie du Rafale (profil `default`, page `21zzi94t`, touche 30).
+Désactivé par défaut : `[zones] enabled = true` ou menu de la tray *Zones (pochoir)*.
+
+* Mémoriser : poser le bout de l'index sur la commande, puis appuyer sur un **bouton de joystick / HOTAS** choisi dans la tray (*Zones >
+  Choisir le bouton…*, on appuie sur le bouton voulu) ; la zone est enregistrée `teach_delay_ms` plus tard (bip de confirmation). Repli au clavier :
+  Ctrl+Alt+F9 (apprendre), Ctrl+Alt+F10 (tout effacer). Les zones sont dans `zones.ini`, à côté de la DLL, dans l'espace du jeu : à réapprendre si le
+  cockpit est recalé.
+* Code : `core/emulation/ZoneTracker.h` (maintien et réarmement, testé), `layer/zones.cpp`, `win/JoyPoll.*` (DirectInput, partagé avec la tray).
+
 ## Ce qui est vérifié, ce qui ne l'est pas (étape 0)
 
 | Élément | Statut |

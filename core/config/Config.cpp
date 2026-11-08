@@ -93,6 +93,26 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.depthProbeState != "depth_write" && c.depthProbeState != "depth_read" && c.depthProbeState != "common" &&
         c.depthProbeState != "shader" && c.depthProbeState != "copy_source")
         c.depthProbeState = "depth_write";
+    c.zonesEnabled = ini.GetBool("zones", "enabled", c.zonesEnabled);
+    c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
+    c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);
+    c.zoneRearmMs = ini.GetDouble("zones", "rearm_ms", c.zoneRearmMs);
+    c.zoneTeachDelayMs = ini.GetDouble("zones", "teach_delay_ms", c.zoneTeachDelayMs);
+    if (c.zoneTeachDelayMs < 0.0) c.zoneTeachDelayMs = 0.0;
+    if (c.zoneTeachDelayMs > 30000.0) c.zoneTeachDelayMs = 30000.0;
+    c.zoneJoystick = ini.GetString("zones", "joystick", c.zoneJoystick);
+    c.zoneTeachButton = ini.GetInt("zones", "teach_button", c.zoneTeachButton);
+    c.zoneClearButton = ini.GetInt("zones", "clear_button", c.zoneClearButton);
+    if (c.zoneTeachButton < 0 || c.zoneTeachButton > 128) c.zoneTeachButton = 0;
+    if (c.zoneClearButton < 0 || c.zoneClearButton > 128) c.zoneClearButton = 0;
+    c.zoneServerPort = ini.GetInt("zones", "server_port", c.zoneServerPort);
+    if (c.zoneRadiusMm < 5.0) c.zoneRadiusMm = 5.0;
+    if (c.zoneRadiusMm > 100.0) c.zoneRadiusMm = 100.0;
+    if (c.zoneDwellMs < 0.0) c.zoneDwellMs = 0.0;
+    if (c.zoneDwellMs > 3000.0) c.zoneDwellMs = 3000.0;
+    if (c.zoneRearmMs < 0.0) c.zoneRearmMs = 0.0;
+    if (c.zoneRearmMs > 5000.0) c.zoneRearmMs = 5000.0;
+    if (c.zoneServerPort < 1 || c.zoneServerPort > 65535) c.zoneServerPort = 3210;
     c.menuEnabled = ini.GetBool("menu", "enabled", c.menuEnabled);
     c.menuHoldMs = ini.GetInt("menu", "open_hold_ms", c.menuHoldMs);
     if (c.menuHoldMs < 400) c.menuHoldMs = 400;

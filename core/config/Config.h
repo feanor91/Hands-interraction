@@ -147,6 +147,19 @@ struct Config {
 
     // --- [menu] : menu des réglages affiché dans le casque ---
     // Ouverture et fermeture : pincer les DEUX mains en même temps pendant `menuHoldMs`.
+    // --- Zones (pochoir) : contact du bout de l'index avec des zones sphériques apprises (touche Ctrl+Alt+F9), qui déclenchent une touche de
+    // StreamSim (POST /api/press). Désactivé par défaut. Voir layer/zones.cpp.
+    bool zonesEnabled = false;
+    double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone
+    double zoneDwellMs = 250.0;   // durée de maintien du doigt dans la zone avant de déclencher
+    double zoneRearmMs = 400.0;   // durée hors de la zone avant de pouvoir redéclencher
+    double zoneTeachDelayMs = 1500.0;  // delai entre Ctrl+Alt+F9 et l'enregistrement (le temps de poser le doigt)
+    // Bouton de joystick / HOTAS (numerotation de joy.cpl, a partir de 1 ; 0 = aucun) qui memorise la zone / efface les zones. `zoneJoystick` :
+    // morceau du nom du peripherique ("" = n'importe lequel). Se choisissent depuis le menu de la tray (appuyer sur le bouton voulu).
+    std::string zoneJoystick;
+    int zoneTeachButton = 0;
+    int zoneClearButton = 0;
+    int zoneServerPort = 3210;    // port de StreamSim (127.0.0.1)
     bool menuEnabled = true;
     int menuHoldMs = 1200;
 
