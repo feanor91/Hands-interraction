@@ -169,7 +169,15 @@ void Zones_Frame(const HandsFrame& frame) {
     // Boutons de joystick / HOTAS choisis dans la tray (front montant).
     bool teachBtn = false, clearBtn = false;
     if (cfg->zoneTeachButton > 0 || cfg->zoneClearButton > 0) {
+        static bool listed = false;
+        if (!listed) {
+            listed = true;
+            for (const std::string& n : JoyInstance().Devices()) Logger::Get().Log(LogLevel::Info, "zones : joystick lu : %s", n.c_str());
+            Logger::Get().Log(LogLevel::Info, "zones : boutons surveilles : memoriser = %d, effacer = %d (peripherique : '%s')", cfg->zoneTeachButton,
+                              cfg->zoneClearButton, cfg->zoneJoystick.c_str());
+        }
         for (const hands::win::JoyEvent& ev : JoyInstance().PollAllPressed(cfg->zoneJoystick)) {
+            Logger::Get().Log(LogLevel::Info, "zones : bouton %d enfonce (%s)", ev.button, ev.device.c_str());
             if (ev.button == cfg->zoneTeachButton) teachBtn = true;
             if (ev.button == cfg->zoneClearButton) clearBtn = true;
         }
@@ -187,7 +195,6 @@ void Zones_Frame(const HandsFrame& frame) {
         BeepAsync(800, 40);
     }
     if (g_teachAt != 0 && now >= g_teachAt) {
-        g_teachAt = 0;
         int h = -1;
         for (int k : {1, 0})
             if (frame.hand[k].valid && frame.hand[k].jointValid[kIndexTip]) {
@@ -195,8 +202,14 @@ void Zones_Frame(const HandsFrame& frame) {
                 break;
             }
         if (h < 0) {
-            Logger::Get().Log(LogLevel::Warn, "zones : apprentissage impossible, aucun bout d'index suivi");
+            // Main pas (encore) suivie : on reessaie a chaque image pendant 5 s avant d'abandonner.
+            if (now >= g_teachAt + 5000) {
+                g_teachAt = 0;
+                Logger::Get().Log(LogLevel::Warn, "zones : apprentissage abandonne, aucun bout d'index suivi pendant 5 s (la main est-elle visible des cameras ?)");
+                BeepAsync(300, 200);
+            }
         } else {
+            g_teachAt = 0;
             ZoneState& z = g_zone[0];
             z.pos = frame.hand[h].joint[kIndexTip].p;
             z.radius = static_cast<float>(cfg->zoneRadiusMm / 1000.0);

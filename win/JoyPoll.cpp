@@ -21,6 +21,7 @@ struct JoyPoll::Impl {
         IDirectInputDevice8W* dev = nullptr;
         std::string name;
         bool down[128] = {};
+        bool primed = false;  // premier etat lu : sert de reference, sans evenement
     };
     IDirectInput8W* di = nullptr;
     HWND window = nullptr;
@@ -110,9 +111,11 @@ std::vector<JoyEvent> JoyPoll::PollAllPressed(const std::string& deviceFilter) {
             continue;
         }
         const bool match = wanted.empty() || Impl::Lower(d.name).find(wanted) != std::string::npos;
+        const bool report = d.primed;
+        d.primed = true;
         for (int i = 0; i < 128; ++i) {
             const bool now = (st.rgbButtons[i] & 0x80) != 0;
-            if (now && !d.down[i] && match) {
+            if (now && !d.down[i] && match && report) {
                 JoyEvent ev;
                 ev.device = d.name;
                 ev.button = i + 1;
