@@ -14,6 +14,12 @@ if(EXISTS "${HANDS_SIMCONNECT_SDK}/include/SimConnect.h" AND EXISTS "${HANDS_SIM
   add_executable(simbridge_cli simbridge_cli.cpp)
   target_link_libraries(simbridge_cli PRIVATE hands_simbridge)
   set_target_properties(simbridge_cli PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+
+  # Pont resident (sans fenetre) lance par la tray : la couche OpenXR et les outils lui parlent par un tube nomme.
+  add_executable(HandsBridge WIN32 HandsBridge.cpp)
+  target_compile_definitions(HandsBridge PRIVATE UNICODE _UNICODE)
+  target_link_libraries(HandsBridge PRIVATE hands_simbridge advapi32 shell32)
+  set_target_properties(HandsBridge PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 else()
   message(STATUS "SDK SimConnect introuvable (${HANDS_SIMCONNECT_SDK}) : pont SimConnect non compile.")
 endif()

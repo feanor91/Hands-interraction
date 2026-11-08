@@ -58,6 +58,17 @@ IniFile IniFile::Parse(std::string_view text, std::vector<std::string>* warnings
     return ini;
 }
 
+std::vector<std::string> IniFile::Sections() const {
+    std::vector<std::string> out;
+    for (const auto& kv : values_) {
+        const size_t dot = kv.first.find('.');
+        if (dot == std::string::npos || dot == 0) continue;
+        const std::string sec = kv.first.substr(0, dot);
+        if (out.empty() || out.back() != sec) out.push_back(sec);
+    }
+    return out;
+}
+
 bool IniFile::Has(std::string_view section, std::string_view key) const {
     return values_.count(MakeKey(section, key)) != 0;
 }

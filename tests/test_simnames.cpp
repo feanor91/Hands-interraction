@@ -48,3 +48,25 @@ TEST(SimNames_code_avionique) {
     CHECK(!IsCodeTooLong("(>H:X)"));
     CHECK(IsCodeTooLong(std::string(1100, 'a')));
 }
+
+#include "sim/ZoneAction.h"
+
+TEST(ZoneAction_requetes) {
+    hands::sim::ZoneAction a;
+    std::string err;
+    CHECK(BuildBridgeRequest(a, &err).empty());  // sans action
+    a.type = "event"; a.target = "parking_brakes"; a.value = 1;
+    CHECK(BuildBridgeRequest(a, &err) == "event\tPARKING_BRAKES\t1");
+    a.type = "var"; a.target = "l:AZP_X"; a.unit = "bool"; a.value = 1; a.mode = "toggle";
+    CHECK(BuildBridgeRequest(a, &err) == "togglevar\tL:AZP_X\tbool\t1");
+    a.mode = "set"; a.value = 0.5;
+    CHECK(BuildBridgeRequest(a, &err) == "setvar\tL:AZP_X\tbool\t0.5");
+    a.type = "input"; a.target = "AZP_RAF_SW"; a.mode = "toggle";
+    CHECK(BuildBridgeRequest(a, &err) == "toggleinput\tAZP_RAF_SW\t0.5");
+    a.type = "code"; a.target = "  (>H:AZP_X)  ";
+    CHECK(BuildBridgeRequest(a, &err) == "code\t(>H:AZP_X)");
+    a.type = "event"; a.target = "bad name";
+    CHECK(BuildBridgeRequest(a, &err).empty() && !err.empty());
+    a.type = "zzz";
+    CHECK(BuildBridgeRequest(a, &err).empty());
+}

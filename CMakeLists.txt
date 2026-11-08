@@ -36,6 +36,6 @@ endif()
 # --- Couche OpenXR (Windows uniquement) --------------------------------------
 if(WIN32)
   add_subdirectory(layer)
-  add_subdirectory(tray)
   add_subdirectory(tools)
+  add_subdirectory(tray)
 endif()

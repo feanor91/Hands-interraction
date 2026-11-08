@@ -690,6 +690,27 @@ void ShowMenu() {
 // (et reste stable 2 contrôles de suite, pour ne pas lancer un fichier encore en cours d'écriture), il lance la nouvelle version avec
 // `--replace` puis se ferme : la nouvelle attend que l'ancienne ait libéré l'instance unique.
 std::wstring g_selfPath;
+
+// Pont SimConnect (HandsBridge.exe, a cote de la tray) : lance s'il ne tourne pas, arrete a la fermeture de la tray.
+void EnsureBridge() {
+    if (HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\HandsBridge")) {
+        CloseHandle(m);
+        return;
+    }
+    const size_t slash = g_selfPath.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;
+    const std::wstring exe = g_selfPath.substr(0, slash + 1) + L"HandsBridge.exe";
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_HIDE);
+}
+
+void StopBridge() {
+    char reply[64];
+    DWORD got = 0;
+    char q[] = "quit";
+    CallNamedPipeW(L"\\\\.\\pipe\\HandsBridge", q, 4, reply, sizeof(reply), &got, 500);
+}
+
 FileStamp g_selfStamp;
 FileStamp g_selfPending;
 
@@ -732,6 +753,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 DestroyWindow(hwnd);  // libère l'instance unique pour la nouvelle version
                 return 0;
             }
+            EnsureBridge();
             AddOrUpdateTray(false);  // rafraîchit icône et infobulle (jeu lancé, config modifiée à la main...)
             // Une nouvelle version vient d'apparaître (recompilation) : une seule bulle par version, jamais pendant le jeu.
             const State st = ReadState();
@@ -748,6 +770,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             nid.uID = kTrayId;
             Shell_NotifyIconW(NIM_DELETE, &nid);
             KillTimer(hwnd, kTimerId);
+            StopBridge();
             PostQuitMessage(0);
             return 0;
         }
@@ -794,6 +817,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_hwnd = CreateWindowExW(0, kWndClass, kTitle, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
     if (!g_hwnd) return 1;
 
+    EnsureBridge();
     AddOrUpdateTray(true);
     SetTimer(g_hwnd, kTimerId, 3000, nullptr);
     if (replace) Balloon(L"Application relancée : nouvelle version chargée.");

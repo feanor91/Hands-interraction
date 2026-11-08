@@ -7,7 +7,6 @@
 #endif
 #include <windows.h>
 #include <mmsystem.h>
-#include <winhttp.h>
 
 #include <atomic>
 #include <cmath>
@@ -22,6 +21,8 @@
 #include <vector>
 
 #include "JoyPoll.h"
+#include "bridge_client.h"
+#include "sim/ZoneAction.h"
 #include "config/IniFile.h"
 #include "emulation/ZoneTracker.h"
 #include "log/Logger.h"
@@ -37,18 +38,11 @@ using hands::log::Logger;
 
 constexpr int kIndexTip = 10;  // XR_HAND_JOINT_INDEX_TIP_EXT
 
-// Zones connues : nom, touche de StreamSim à presser (profil, page, indice). Pour ce premier essai : le frein de parc (touche 'Frein libre' de la page MSFS).
-struct ZoneDef {
-    const char* name;
-    const char* profile;
-    const char* page;
-    int index;
-};
-const ZoneDef kDefs[] = {{"frein_parc", "default", "od16uzxc", 1}};
-constexpr int kZoneCount = sizeof(kDefs) / sizeof(kDefs[0]);
-
+// Une zone : nom, action a envoyer au pont SimConnect, position apprise. Lues dans zones.ini (une section par zone).
 struct ZoneState {
-    bool defined = false;
+    std::string id;
+    hands::sim::ZoneAction action;
+    bool defined = false;  // position apprise
     em::Vec3 pos;
     float radius = 0.02f;
     em::ZoneTracker tracker[2];
@@ -57,7 +51,7 @@ struct ZoneState {
     ULONGLONG lastFire = 0;     // dernier declenchement
     ULONGLONG lastCapture = 0;  // derniere memorisation
 };
-ZoneState g_zone[kZoneCount];
+std::vector<ZoneState> g_zone;
 
 bool g_loaded = false;
 FILETIME g_loadedStamp{};
@@ -67,7 +61,6 @@ ULONGLONG g_teachAt = 0, g_teachTick = 0;  // enregistrement differe (0 = aucun)
 em::Vec3 g_teachTip;                       // bout d'index qui sera enregistre (pour le repere visuel)
 bool g_teachTipValid = false;
 int g_buttonLogsLeft = 200;
-std::atomic<bool> g_posting{false};
 
 // Alloue et jamais detruit : pas de COM dans un destructeur statique (dechargement de la DLL sous verrou du chargeur).
 hands::win::JoyPoll& JoyInstance() {
@@ -90,36 +83,64 @@ FILETIME FileStamp() {
 }
 
 void LoadZones() {
-    for (auto& z : g_zone) z.defined = false;
+    g_zone.clear();
     std::ifstream f(ZonesPath());
-    if (!f) return;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    const auto ini = hands::config::IniFile::Parse(ss.str());
-    for (int i = 0; i < kZoneCount; ++i) {
-        if (!ini.Has(kDefs[i].name, "x")) continue;
-        g_zone[i].pos = {static_cast<float>(ini.GetDouble(kDefs[i].name, "x", 0)), static_cast<float>(ini.GetDouble(kDefs[i].name, "y", 0)),
-                         static_cast<float>(ini.GetDouble(kDefs[i].name, "z", 0))};
-        const double r = ini.GetDouble(kDefs[i].name, "radius_mm", 0.0);
-        g_zone[i].radius = static_cast<float>((r >= 5.0 && r <= 100.0 ? r : CurrentConfig()->zoneRadiusMm) / 1000.0);
-        g_zone[i].defined = true;
-        for (auto& t : g_zone[i].tracker) t.Disarm();  // le doigt est peut-etre deja dans la zone : pas de declenchement au chargement
+    if (f) {
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const auto ini = hands::config::IniFile::Parse(ss.str());
+        for (const std::string& sec : ini.Sections()) {
+            ZoneState z;
+            z.id = sec;
+            z.action.type = ini.GetString(sec, "action", "");
+            z.action.target = ini.GetString(sec, "target", "");
+            z.action.unit = ini.GetString(sec, "unit", "number");
+            z.action.value = ini.GetDouble(sec, "value", 1.0);
+            z.action.mode = ini.GetString(sec, "mode", z.action.type == "event" || z.action.type == "code" ? "press" : "set");
+            z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
+            if (ini.Has(sec, "x")) {
+                z.pos = {static_cast<float>(ini.GetDouble(sec, "x", 0)), static_cast<float>(ini.GetDouble(sec, "y", 0)),
+                         static_cast<float>(ini.GetDouble(sec, "z", 0))};
+                const double r = ini.GetDouble(sec, "radius_mm", 0.0);
+                if (r >= 5.0 && r <= 100.0) z.radius = static_cast<float>(r / 1000.0);
+                z.defined = true;
+                for (auto& t : z.tracker) t.Disarm();  // le doigt est peut-etre deja dans la zone : pas de declenchement au chargement
+            }
+            g_zone.push_back(std::move(z));
+        }
+    }
+    if (g_zone.empty()) {  // premier lancement : une zone d'essai (frein de parc), a apprendre
+        ZoneState z;
+        z.id = "frein_parc";
+        z.action.type = "event";
+        z.action.target = "PARKING_BRAKES";
+        z.action.mode = "press";
+        z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
+        g_zone.push_back(std::move(z));
     }
 }
 
 void SaveZones() {
     std::ofstream f(ZonesPath(), std::ios::trunc);
     if (!f) {
-        Logger::Get().Log(LogLevel::Warn, "zones : ecriture de zones.ini impossible (%s) ; reinstallez la couche (install.ps1 cree data\\)", ZonesPath().c_str());
+        Logger::Get().Log(LogLevel::Warn, "zones : ecriture de zones.ini impossible (%s) ; reinstallez la couche (install.ps1 cree data)", ZonesPath().c_str());
         return;
     }
-    f << "; Zones apprises (espace du jeu, metres). Genere par la couche (bouton de memorisation de la tray, ou Ctrl+Alt+F9 / F10).\n";
-    for (int i = 0; i < kZoneCount; ++i) {
-        if (!g_zone[i].defined) continue;
-        char b[256];
-        std::snprintf(b, sizeof(b), "[%s]\nx = %.4f\ny = %.4f\nz = %.4f\nradius_mm = %.0f\n\n", kDefs[i].name, g_zone[i].pos.x, g_zone[i].pos.y,
-                      g_zone[i].pos.z, g_zone[i].radius * 1000.0f);
+    f << "; Zones du pochoir. Une section par zone. Position apprise (espace du jeu, metres) = x, y, z ; l'action est envoyee au pont SimConnect.\n"
+         "; action = event | var | input | code     target = nom (PARKING_BRAKES, L:AZP_RAF_X, nom d'Input Event, ou code avionique)\n"
+         "; mode = press | set | toggle              unit = number (variables)      value = 1\n"
+         "; Une zone sans x/y/z attend d'etre apprise : le bouton de memorisation apprend la premiere de la liste qui n'a pas de position.\n\n";
+    for (const ZoneState& z : g_zone) {
+        char b[160];
+        f << "[" << z.id << "]\naction = " << z.action.type << "\ntarget = " << z.action.target << "\nmode = " << z.action.mode << "\n";
+        if (z.action.type == "var") f << "unit = " << z.action.unit << "\n";
+        std::snprintf(b, sizeof(b), "value = %g\n", z.action.value);
         f << b;
+        if (z.defined) {
+            std::snprintf(b, sizeof(b), "x = %.4f\ny = %.4f\nz = %.4f\nradius_mm = %.0f\n", z.pos.x, z.pos.y, z.pos.z, z.radius * 1000.0f);
+            f << b;
+        }
+        f << "\n";
     }
 }
 
@@ -165,38 +186,15 @@ void Play(Snd s) {
     }
 }
 
-// POST /api/press vers StreamSim, sur un fil a part : le rendu n'attend jamais le reseau.
-void PostPress(const ZoneDef& def, int port) {
-    if (g_posting.exchange(true)) return;
-    const std::string body =
-        std::string("{\"profileId\":\"") + def.profile + "\",\"pageId\":\"" + def.page + "\",\"index\":" + std::to_string(def.index) + "}";
-    const std::string name = def.name;
-    std::thread([body, name, port] {
-        bool ok = false;
-        DWORD status = 0;
-        if (HINTERNET s = WinHttpOpen(L"HandsLayer", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)) {
-            WinHttpSetTimeouts(s, 1000, 1000, 2000, 3000);
-            if (HINTERNET c = WinHttpConnect(s, L"127.0.0.1", static_cast<INTERNET_PORT>(port), 0)) {
-                if (HINTERNET r = WinHttpOpenRequest(c, L"POST", L"/api/press", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0)) {
-                    const wchar_t* hdr = L"Content-Type: application/json\r\n";
-                    if (WinHttpSendRequest(r, hdr, static_cast<DWORD>(-1L), const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
-                                           static_cast<DWORD>(body.size()), 0) &&
-                        WinHttpReceiveResponse(r, nullptr)) {
-                        DWORD sz = sizeof(status);
-                        WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz,
-                                            WINHTTP_NO_HEADER_INDEX);
-                        ok = status >= 200 && status < 300;
-                    }
-                    WinHttpCloseHandle(r);
-                }
-                WinHttpCloseHandle(c);
-            }
-            WinHttpCloseHandle(s);
-        }
-        Logger::Get().Log(ok ? LogLevel::Info : LogLevel::Warn, "zones : '%s' -> StreamSim /api/press : %s (HTTP %lu)", name.c_str(),
-                          ok ? "ok" : "ECHEC (StreamSim lance ?)", static_cast<unsigned long>(status));
-        g_posting = false;
-    }).detach();
+// Envoie l'action de la zone au pont SimConnect (HandsBridge.exe).
+void Fire(const ZoneState& z) {
+    std::string err;
+    const std::string req = hands::sim::BuildBridgeRequest(z.action, &err);
+    if (req.empty()) {
+        Logger::Get().Log(LogLevel::Warn, "zones : '%s' : action inutilisable (%s) ; corrigez zones.ini", z.id.c_str(), err.c_str());
+        return;
+    }
+    Bridge_Send(req, z.id);
 }
 
 bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
@@ -222,7 +220,7 @@ void Zones_Frame(const HandsFrame& frame) {
             LoadZones();
             g_loadedStamp = stamp;
             if (!g_loaded)
-                Logger::Get().Log(LogLevel::Info, "zones : activees (fichier : %s) ; Ctrl+Alt+F9 = apprendre 'frein_parc' au bout de l'index, Ctrl+Alt+F10 = tout effacer",
+                Logger::Get().Log(LogLevel::Info, "zones : activees (fichier : %s) ; Ctrl+Alt+F9 = apprendre la prochaine zone sans position au bout de l'index, Ctrl+Alt+F10 = tout effacer",
                                   ZonesPath().c_str());
             g_loaded = true;
         }
@@ -279,7 +277,15 @@ void Zones_Frame(const HandsFrame& frame) {
                 }
             } else {
                 g_teachAt = 0;
-                ZoneState& z = g_zone[0];
+                // Zone a apprendre : la premiere de la liste qui n'a pas encore de position.
+                ZoneState* target = nullptr;
+                for (ZoneState& c : g_zone)
+                    if (!c.defined) { target = &c; break; }
+                if (!target) {
+                    Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja une position ; effacez-les (bouton d'effacement) ou ajoutez-en dans zones.ini");
+                    Play(Snd::Fail);
+                } else {
+                ZoneState& z = *target;
                 z.pos = frame.hand[h].joint[kIndexTip].p;
                 z.radius = static_cast<float>(cfg->zoneRadiusMm / 1000.0);
                 z.defined = true;
@@ -287,24 +293,24 @@ void Zones_Frame(const HandsFrame& frame) {
                 for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
                 SaveZones();
                 g_loadedStamp = FileStamp();
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' apprise avec la main %s en (%.3f, %.3f, %.3f), rayon %.0f mm", kDefs[0].name,
+                Logger::Get().Log(LogLevel::Info, "zones : '%s' apprise avec la main %s en (%.3f, %.3f, %.3f), rayon %.0f mm", z.id.c_str(),
                                   h == 1 ? "droite" : "gauche", z.pos.x, z.pos.y, z.pos.z, z.radius * 1000.0f);
                 Play(Snd::Captured);
+                }
             }
         }
     }
     if (clearNow) {
-        for (auto& z : g_zone) z.defined = false;
+        for (auto& z : g_zone) z.defined = false;  // les actions sont conservees, seules les positions sont effacees
         SaveZones();
         g_loadedStamp = FileStamp();
-        Logger::Get().Log(LogLevel::Info, "zones : toutes les zones effacees");
+        Logger::Get().Log(LogLevel::Info, "zones : positions de toutes les zones effacees");
         Play(Snd::Clear);
     }
     g_prevTeach = teachKey;
     g_prevClear = clearKey;
 
-    for (int i = 0; i < kZoneCount; ++i) {
-        ZoneState& z = g_zone[i];
+    for (ZoneState& z : g_zone) {
         z.inside = false;
         if (!z.defined) continue;
         for (int h = 0; h < 2; ++h) {
@@ -314,14 +320,14 @@ void Zones_Frame(const HandsFrame& frame) {
             if (ok && em::Length(tip - z.pos) <= z.radius) z.inside = true;
             if (ok && em::Length(tip - z.pos) < 0.10f && now - z.lastNear > 500) {  // trace de mise au point : a quelle distance passe le doigt ?
                 z.lastNear = now;
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", kDefs[i].name, h == 1 ? "droite" : "gauche",
+                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche",
                                   em::Length(tip - z.pos) * 1000.0f);
             }
             if (z.tracker[h].Update(tip, ok, z.pos, z.radius, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs)) {
                 z.lastFire = now;
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", kDefs[i].name, h == 1 ? "droite" : "gauche");
+                Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", z.id.c_str(), h == 1 ? "droite" : "gauche");
                 Play(Snd::Trigger);
-                PostPress(kDefs[i], cfg->zoneServerPort);
+                Fire(z);
             }
         }
     }
@@ -341,8 +347,7 @@ void Zones_FillMarkers(HandsFrame* frame) {
     };
     // Apprentissage en cours : repere blanc qui pulse au bout de l'index (c'est ce point qui sera enregistre).
     if (g_teachAt != 0 && g_teachTipValid) add(g_teachTip, ((now / 250) % 2 == 0) ? 0.012f : 0.020f, 1.0f, 1.0f, 1.0f);
-    for (int i = 0; i < kZoneCount; ++i) {
-        const ZoneState& z = g_zone[i];
+    for (const ZoneState& z : g_zone) {
         if (!z.defined) continue;
         if (z.lastCapture != 0 && now - z.lastCapture < 800) add(z.pos, 0.040f, 1.0f, 1.0f, 1.0f);       // memorisee : flash blanc
         else if (z.lastFire != 0 && now - z.lastFire < 800) add(z.pos, 0.030f, 0.10f, 1.0f, 0.20f);   // declenchee : flash vert
