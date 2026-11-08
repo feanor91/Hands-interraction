@@ -25,7 +25,7 @@ Piste non explorée : accroche sur la cible. MSFS dessine une flèche bleue quan
 ## Zones (pochoir) : essai
 
 Piste ouverte après le bilan : au lieu d'un rayon, des **zones sphériques** apprises au bout de l'index, qui déclenchent une touche de
-StreamSim (`POST /api/press`) au contact (maintien `dwell_ms`). Essai sur la batterie du Rafale (profil `default`, page `21zzi94t`, touche 30).
+StreamSim (`POST /api/press`) au contact (maintien `dwell_ms`). Essai sur le frein de parc (touche « Frein libre » de la page MSFS : profil `default`, page `od16uzxc`, touche 1) ; la batterie n'existe pas sur le Rafale.
 Activé par défaut (`[zones] enabled`, ou menu de la tray *Zones (pochoir)*) ; sans zone apprise, il ne fait rien.
 
 * Mémoriser : poser le bout de l'index sur la commande, puis appuyer sur un **bouton de joystick / HOTAS** choisi dans la tray (*Zones >

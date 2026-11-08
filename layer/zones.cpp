@@ -32,14 +32,14 @@ using hands::log::Logger;
 
 constexpr int kIndexTip = 10;  // XR_HAND_JOINT_INDEX_TIP_EXT
 
-// Zones connues : nom, touche de StreamSim à presser (profil, page, indice). Pour ce premier essai : la batterie du Rafale.
+// Zones connues : nom, touche de StreamSim à presser (profil, page, indice). Pour ce premier essai : le frein de parc (touche 'Frein libre' de la page MSFS).
 struct ZoneDef {
     const char* name;
     const char* profile;
     const char* page;
     int index;
 };
-const ZoneDef kDefs[] = {{"batterie", "default", "21zzi94t", 30}};
+const ZoneDef kDefs[] = {{"frein_parc", "default", "od16uzxc", 1}};
 constexpr int kZoneCount = sizeof(kDefs) / sizeof(kDefs[0]);
 
 struct ZoneState {
@@ -158,7 +158,7 @@ void Zones_Frame(const HandsFrame& frame) {
             LoadZones();
             g_loadedStamp = stamp;
             if (!g_loaded)
-                Logger::Get().Log(LogLevel::Info, "zones : activees ; Ctrl+Alt+F9 = apprendre 'batterie' au bout de l'index, Ctrl+Alt+F10 = tout effacer");
+                Logger::Get().Log(LogLevel::Info, "zones : activees ; Ctrl+Alt+F9 = apprendre 'frein_parc' au bout de l'index, Ctrl+Alt+F10 = tout effacer");
             g_loaded = true;
         }
     }
