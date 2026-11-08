@@ -70,3 +70,21 @@ TEST(ZoneAction_requetes) {
     a.type = "zzz";
     CHECK(BuildBridgeRequest(a, &err).empty());
 }
+
+#include "sim/ZoneFile.h"
+
+TEST(ZoneFile_aller_retour) {
+    hands::sim::ZoneRecord a;
+    a.id = "frein_parc"; a.action.type = "event"; a.action.target = "PARKING_BRAKES"; a.action.mode = "press";
+    a.hasPos = true; a.x = 0.1234; a.y = -0.5; a.z = 0.75; a.radiusMm = 20;
+    hands::sim::ZoneRecord b;
+    b.id = "efb"; b.action.type = "var"; b.action.target = "L:AZP_RAF_EFB_ON"; b.action.mode = "toggle"; b.action.unit = "bool"; b.action.value = 1;
+    const auto back = hands::sim::ParseZones(hands::sim::SerializeZones({a, b}));
+    CHECK(back.size() == 2);
+    CHECK(back[0].id == "efb" || back[1].id == "efb");
+    for (const auto& r : back) {
+        if (r.id == "frein_parc") CHECK(r.hasPos && r.action.target == "PARKING_BRAKES" && r.radiusMm == 20);
+        if (r.id == "efb") CHECK(!r.hasPos && r.action.mode == "toggle" && r.action.unit == "bool");
+    }
+    CHECK(hands::sim::SanitizeZoneId("Frein de Parc.1") == "frein_de_parc1");
+}

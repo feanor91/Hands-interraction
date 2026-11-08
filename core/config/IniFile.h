@@ -26,7 +26,7 @@ public:
     static IniFile Parse(std::string_view text, std::vector<std::string>* warnings = nullptr);
 
     bool Has(std::string_view section, std::string_view key) const;
-    // Noms (en minuscules) des sections qui contiennent au moins une cle, dans l'ordre alphabetique. Un nom de section ne doit pas contenir de point.
+    // Noms (en minuscules) des sections qui contiennent au moins une cle, dans l'ordre du fichier. Un nom de section ne doit pas contenir de point.
     std::vector<std::string> Sections() const;
 
     std::string GetString(std::string_view section, std::string_view key, std::string_view def) const;
@@ -42,6 +42,7 @@ private:
     static std::string MakeKey(std::string_view section, std::string_view key);
     // Clé interne : "section.cle" en minuscules.
     std::map<std::string, std::string> values_;
+    std::vector<std::string> order_;  // sections dans l'ordre d'apparition
 };
 
 }  // namespace hands::config

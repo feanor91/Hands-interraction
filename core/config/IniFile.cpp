@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "IniFile.h"
 
 #include <charconv>
@@ -53,21 +54,16 @@ IniFile IniFile::Parse(std::string_view text, std::vector<std::string>* warnings
             if (warnings) warnings->push_back("ligne " + std::to_string(lineNo) + " : cle vide, ignoree");
             continue;
         }
+        if (!section.empty()) {
+            const std::string low = ToLower(section);
+            if (std::find(ini.order_.begin(), ini.order_.end(), low) == ini.order_.end()) ini.order_.push_back(low);
+        }
         ini.values_[MakeKey(section, key)] = std::string(value);
     }
     return ini;
 }
 
-std::vector<std::string> IniFile::Sections() const {
-    std::vector<std::string> out;
-    for (const auto& kv : values_) {
-        const size_t dot = kv.first.find('.');
-        if (dot == std::string::npos || dot == 0) continue;
-        const std::string sec = kv.first.substr(0, dot);
-        if (out.empty() || out.back() != sec) out.push_back(sec);
-    }
-    return out;
-}
+std::vector<std::string> IniFile::Sections() const { return order_; }
 
 bool IniFile::Has(std::string_view section, std::string_view key) const {
     return values_.count(MakeKey(section, key)) != 0;

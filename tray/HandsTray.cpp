@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 
+#include "ZoneEditor.h"
 #include "config/IniEdit.h"
 #include "config/IniFile.h"
 #include "JoyPoll.h"
@@ -45,7 +46,7 @@ enum Cmd : UINT {
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
     ID_FINGER_INDEX, ID_FINGER_MIDDLE,
     ID_SHARED,
-    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF
+    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF, ID_ZONES_EDIT
 };
 
 HWND g_hwnd = nullptr;
@@ -584,7 +585,8 @@ void ShowMenu() {
 
     // --- Sous-menu « Zones (pochoir) » ------------------------------------------------------------
     HMENU zones = CreatePopupMenu();
-    AppendMenuW(zones, MF_STRING | (s.zonesOn ? MF_CHECKED : 0) | cfgGray, ID_ZONES_ENABLE, L"Zones actives (contact du doigt = touche StreamSim)");
+    AppendMenuW(zones, MF_STRING | (s.zonesOn ? MF_CHECKED : 0) | cfgGray, ID_ZONES_ENABLE, L"Zones actives (contact du doigt = commande du simulateur)");
+    AppendMenuW(zones, MF_STRING, ID_ZONES_EDIT, L"Configurer les zones et leurs commandes…");
     AppendMenuW(zones, MF_SEPARATOR, 0, nullptr);
     {
         auto label = [&](const wchar_t* what, int button) {
@@ -660,6 +662,7 @@ void ShowMenu() {
         case ID_ZONES_TEACH_BTN: StartDetect(1); break;
         case ID_ZONES_CLEAR_BTN: StartDetect(2); break;
         case ID_ZONES_TEACH_OFF: ApplySetting("zones", "teach_button", "0", L"Plus de bouton de mémorisation (touche Ctrl+Alt+F9 seulement)."); break;
+        case ID_ZONES_EDIT: ZoneEditor_Show(g_hwnd, GetModuleHandleW(nullptr)); break;
         case ID_ZONES_CLEAR_OFF: ApplySetting("zones", "clear_button", "0", L"Plus de bouton d'effacement (touche Ctrl+Alt+F10 seulement)."); break;
         case ID_HANDS_DRAW:
             ApplySetting("hands", "enabled", s.handsDraw ? "false" : "true",

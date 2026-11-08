@@ -80,6 +80,13 @@ std::string Handle(SimBridge& sim, const std::string& line) {
         g_quit = true;
         return "ok";
     }
+    if (c == "inputs") {  // liste des Input Events de l'avion charge : ok<TAB>nom<TAB>nom...
+        std::vector<hands::win::InputEventInfo> list;
+        if (!sim.ListInputs(&list, false, 8000, &err)) return bad(err);
+        std::string r = "ok";
+        for (const auto& i : list) r += '\t' + i.name;
+        return r;
+    }
     if (c == "event") {
         if (!sim.SendEvent(arg(1), std::atoi(arg(2).c_str()), &err)) return bad(err);
         return "ok";
@@ -156,7 +163,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     bool first = true;
     while (!g_quit) {
         HANDLE pipe = CreateNamedPipeW(kPipeName, PIPE_ACCESS_DUPLEX | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
-                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 4096,
+                                       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 65536,
                                        4096, 0, &sa);
         if (pipe == INVALID_HANDLE_VALUE) {
             if (first) break;  // un autre exemplaire tient deja le tube
