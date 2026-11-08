@@ -127,6 +127,11 @@ void Serve(SimBridge* sim, HANDLE pipe) {
     }
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
+    if (g_quit) {  // « quit » : le fil principal attend une connexion, on sort d'ici
+        sim->Stop();
+        Log("HandsBridge arrete");
+        ExitProcess(0);
+    }
 }
 
 }  // namespace
