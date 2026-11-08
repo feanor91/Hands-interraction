@@ -45,4 +45,15 @@ void Bridge_Send(const std::string& request, const std::string& label) {
     }).detach();
 }
 
+std::string Bridge_Call(const std::string& request, unsigned timeoutMs) {
+    std::string buf(256 * 1024, '\0');
+    DWORD got = 0;
+    if (!CallNamedPipeW(L"\\\\.\\pipe\\HandsBridge", const_cast<char*>(request.data()), static_cast<DWORD>(request.size()), buf.data(),
+                        static_cast<DWORD>(buf.size()), &got, timeoutMs))
+        return {};
+    buf.resize(got);
+    while (!buf.empty() && (buf.back() == '\n' || buf.back() == '\r')) buf.pop_back();
+    return buf;
+}
+
 }  // namespace layer

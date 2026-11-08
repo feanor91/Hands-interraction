@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "emulate.h"
+#include "zones.h"
 #include "menu_render.h"
 #include "texture_uploader.h"
 #include "vr_menu.h"
@@ -35,10 +36,17 @@ namespace em = hands::emulation;
 
 namespace {
 
-constexpr float kPanelWidthM = 0.60f;  // largeur du panneau dans le monde (mètres)
-constexpr float kPanelDistM = 0.85f;   // distance devant la tête à l'ouverture
+// Panneau au bout du rayon (manettes ou rayon des mains) : grand et loin. Sans rayon (mode « mains seules »), on le touche du doigt : plus petit et à portée de bras.
+constexpr float kPanelWidthRay = 0.60f, kPanelDistRay = 0.85f;
+constexpr float kPanelWidthTouch = 0.44f, kPanelDistTouch = 0.50f;
+constexpr ULONGLONG kPokeDwellMs = 450;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
+enum class Page { Main, Zones, Commands };
+Page g_page = Page::Main;
+int g_cmdPage = 0;
+size_t g_lastCmdCount = 0;
+constexpr size_t kCmdPerPage = 8;
 
 struct Row {
     std::wstring text;
@@ -62,6 +70,7 @@ struct MenuState {
     std::wstring status;
     int failures = 0;
     size_t rowCount = 0;
+    float panelW = kPanelWidthRay, panelDist = kPanelDistRay;
 };
 MenuState g;
 
@@ -90,7 +99,72 @@ std::string Num(double v) {
     return b;
 }
 
+void CloseMenu() {
+    g.open = false;
+    g_fine = false;
+    g_page = Page::Main;
+    Emu_SetMenuOpen(false);
+    g.status.clear();
+}
+
+// Page « Zones » : zones existantes (les toucher = reapprendre leur position) et ajout d'une zone.
+std::vector<Row> BuildZonesRows() {
+    std::vector<Row> rows;
+    rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
+    rows.push_back({L"＋  Ajouter une zone : choisir sa commande  ▸", true, [] {
+                        g_page = Page::Commands;
+                        g_cmdPage = 0;
+                        if (!Zones_InputsLoaded()) Zones_RefreshInputs();
+                    }});
+    const std::vector<ZoneInfo> zones = Zones_List();
+    for (size_t i = 0; i < zones.size() && rows.size() < kMenuRows - 2; ++i) {
+        const ZoneInfo z = zones[i];
+        rows.push_back({std::wstring(z.hasPos ? L"✔  " : L"…  ") + z.text + (z.hasPos ? L"" : L"   (à apprendre)"), true, [z] {
+                            CloseMenu();
+                            Zones_Reteach(z.id);
+                        }});
+    }
+    if (zones.empty()) rows.push_back({L"Aucune zone pour l'instant.", false, nullptr});
+    rows.push_back({L"Toucher une zone de la liste = réapprendre sa position", false, nullptr});
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
+// Page « Commandes » : bibliotheque du Rafale puis Input Events de l'avion, par pages ; choisir = creer la zone et lancer son apprentissage.
+std::vector<Row> BuildCommandRows() {
+    std::vector<Row> rows;
+    const size_t n = Zones_CommandCount();
+    const size_t pages = std::max<size_t>(1, (n + kCmdPerPage - 1) / kCmdPerPage);
+    if (static_cast<size_t>(g_cmdPage) >= pages) g_cmdPage = static_cast<int>(pages) - 1;
+    rows.push_back({L"◂  Retour aux zones", true, [] { g_page = Page::Zones; }});
+    for (size_t k = 0; k < kCmdPerPage; ++k) {
+        const size_t idx = static_cast<size_t>(g_cmdPage) * kCmdPerPage + k;
+        if (idx >= n) {
+            rows.push_back({L"", false, nullptr});
+            continue;
+        }
+        rows.push_back({Zones_CommandLabel(idx), true, [idx] {
+                            Zones_AddCommand(idx);
+                            CloseMenu();
+                        }});
+    }
+    wchar_t b[64];
+    swprintf(b, 64, L"◂  Page précédente  (%d / %zu)", g_cmdPage + 1, pages);
+    rows.push_back({b, g_cmdPage > 0, [] { --g_cmdPage; }});
+    rows.push_back({L"Page suivante  ▸", static_cast<size_t>(g_cmdPage) + 1 < pages, [] { ++g_cmdPage; }});
+    if (Zones_InputsLoaded()) {
+        swprintf(b, 64, L"%zu commandes (avion lu)", n);
+        rows.push_back({b, false, nullptr});
+    } else {
+        rows.push_back({L"Lire aussi les commandes de l'avion (MSFS lancé)", true, [] { Zones_RefreshInputs(); }});
+    }
+    return rows;
+}
+
 std::vector<Row> BuildRows() {
+    if (g_page == Page::Zones) return BuildZonesRows();
+    if (g_page == Page::Commands) return BuildCommandRows();
     const auto cfg = CurrentConfig();
     std::vector<Row> rows;
 
@@ -162,6 +236,7 @@ std::vector<Row> BuildRows() {
                         Set("hands", "enabled", on ? "false" : "true", on ? L"Squelette : NON" : L"Squelette : OUI");
                     }});
     if (!g_fine) {
+        rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
         rows.push_back({L"Réglages fins du rayon  ▸", true, [] { g_fine = true; }});
     } else {
         rows.clear();
@@ -267,7 +342,7 @@ bool Redraw(const std::vector<Row>& rows) {
     for (const Row& r : rows) mr.push_back({r.text, r.selectable});
     std::vector<uint32_t> px;
     RenderMenuBitmap(L"Mains nues OpenXR — réglages",
-                     g.status.empty() ? L"Visez une ligne et pincez · pincez les 2 mains pour fermer" : g.status, mr, g.hover, &px);
+                     g.status.empty() ? L"Visez et pincez, ou touchez une ligne du doigt · pincez les 2 mains pour fermer" : g.status, mr, g.hover, &px);
     const Dispatch& d = g_dispatch;
     uint32_t index = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -313,13 +388,16 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
                 Logger::Get().Log(LogLevel::Info, "menu : ferme (geste)");
             } else {
                 XrPosef head;
+                g.panelW = cfg->emulationEnabled ? kPanelWidthRay : kPanelWidthTouch;
+                g.panelDist = cfg->emulationEnabled ? kPanelDistRay : kPanelDistTouch;
+                g_page = Page::Main;
                 if (Emu_HeadPose(game->space, displayTime, &head)) {
                     const em::Pose hp{{head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w}, {head.position.x, head.position.y, head.position.z}};
                     const em::Vec3 fwd = em::Rotate(hp.q, em::Vec3{0.0f, 0.0f, -1.0f});
                     em::Vec3 fh = em::Normalized(em::Vec3{fwd.x, 0.0f, fwd.z});
                     if (em::Length(fh) < 0.5f) fh = em::Vec3{0.0f, 0.0f, -1.0f};
                     const em::Vec3 up{0.0f, 1.0f, 0.0f};
-                    g.quad = {em::LookAlong(fh, up), hp.p + fh * kPanelDistM - up * 0.05f};  // devant la tete, un peu plus bas
+                    g.quad = {em::LookAlong(fh, up), hp.p + fh * g.panelDist - up * 0.05f};  // devant la tete, un peu plus bas
                     g.open = true;
                     g.dirty = true;
                     g.hover = -1;
@@ -340,12 +418,16 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     if (!g.open) return false;
 
     // --- Panneau et image ------------------------------------------------------------------------------------------
+    if (g_page == Page::Commands && Zones_CommandCount() != g_lastCmdCount) {
+        g_lastCmdCount = Zones_CommandCount();
+        g.dirty = true;
+    }
     std::vector<Row> rows = BuildRows();
     if (!EnsureSwapchain(session, device, queue, rows.size())) {
         Disable("creation du panneau impossible");
         return false;
     }
-    const float panelH = kPanelWidthM * static_cast<float>(g.h) / static_cast<float>(g.w);
+    const float panelH = g.panelW * static_cast<float>(g.h) / static_cast<float>(g.w);
 
     // --- Pointage : le rayon que le jeu recevrait, coupé avec le plan du panneau --------------------------------------
     int hoverRow = -1, hoverHand = -1;
@@ -357,7 +439,7 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
         const em::Vec3 dir = em::Rotate(em::Quat{aim.orientation.x, aim.orientation.y, aim.orientation.z, aim.orientation.w}, em::Vec3{0.0f, 0.0f, -1.0f});
         float lx = 0, ly = 0, t = 0;
         if (!em::RayQuadHit(o, dir, g.quad, &lx, &ly, &t)) continue;
-        const int x = static_cast<int>((lx / kPanelWidthM + 0.5f) * static_cast<float>(g.w));
+        const int x = static_cast<int>((lx / g.panelW + 0.5f) * static_cast<float>(g.w));
         const int y = static_cast<int>((0.5f - ly / panelH) * static_cast<float>(g.h));
         rowOfHand[h] = MenuRowAtPixel(x, y, rows.size());
     }
@@ -368,6 +450,50 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
         }
     }
     if (hoverRow >= 0 && !rows[static_cast<size_t>(hoverRow)].selectable) hoverRow = -1;
+
+    // --- Toucher du doigt : le bout de l'index sur le panneau (ou presque), maintenu un instant, choisit la ligne --------------------
+    {
+        static ULONGLONG pokeSince[2] = {0, 0};
+        static int pokeRow[2] = {-1, -1};
+        static bool pokeLock[2] = {false, false};
+        bool activated = false;
+        for (int h = 0; h < 2; ++h) {
+            const HandPoseData& hd = frame.hand[h];
+            if (!(hd.valid && hd.jointValid[10])) {
+                pokeRow[h] = -1;
+                pokeLock[h] = false;
+                continue;
+            }
+            const em::Vec3 loc = em::Rotate(em::Conjugate(g.quad.q), hd.joint[10].p - g.quad.p);  // z > 0 : devant le panneau
+            if (loc.z > 0.07f) pokeLock[h] = false;      // le doigt s'est retire : nouveau choix possible
+            int row = -1;
+            if (!pokeLock[h] && loc.z < 0.03f && loc.z > -0.06f) {
+                const int x = static_cast<int>((loc.x / g.panelW + 0.5f) * static_cast<float>(g.w));
+                const int y = static_cast<int>((0.5f - loc.y / panelH) * static_cast<float>(g.h));
+                row = MenuRowAtPixel(x, y, rows.size());
+                if (row >= 0 && !rows[static_cast<size_t>(row)].selectable) row = -1;
+            }
+            if (row != pokeRow[h]) {
+                pokeRow[h] = row;
+                pokeSince[h] = now;
+            } else if (row >= 0 && !activated && now - pokeSince[h] >= kPokeDwellMs) {
+                activated = true;
+                pokeLock[h] = true;
+                pokeRow[h] = -1;
+                Row& r = rows[static_cast<size_t>(row)];
+                if (r.action) {
+                    r.action();
+                    g.dirty = true;
+                }
+            }
+            if (pokeRow[h] >= 0 && hoverRow < 0) hoverRow = pokeRow[h];
+        }
+        if (activated && !g.open) return false;
+        if (activated) {
+            g.hover = -1;
+            rows = BuildRows();
+        }
+    }
     if (hoverRow != g.hover) {
         g.hover = hoverRow;
         g.dirty = true;
@@ -408,7 +534,7 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     quad->subImage.imageArrayIndex = 0;
     quad->pose.orientation = {g.quad.q.x, g.quad.q.y, g.quad.q.z, g.quad.q.w};
     quad->pose.position = {g.quad.p.x, g.quad.p.y, g.quad.p.z};
-    quad->size = {kPanelWidthM, panelH};
+    quad->size = {g.panelW, panelH};
     return true;
 }
 

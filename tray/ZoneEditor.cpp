@@ -43,7 +43,7 @@ const struct {
     const char* target;
     const char* mode;
 } kLibrary[] = {
-#include "CommandLibrary.inc"
+#include "sim/CommandLibrary.inc"
 };
 
 enum Ctl {

@@ -1,4 +1,4 @@
-"""Genere tray/CommandLibrary.inc a partir des prereglages Rafale de StreamSim (shared/msfs.js).
+"""Genere core/sim/CommandLibrary.inc a partir des prereglages Rafale de StreamSim (shared/msfs.js).
 Usage : python scripts/gen_command_library.py D:/Repos/StreamDeck/shared/msfs.js
 Ne garde que les commandes qu'un contact du doigt peut declencher (interrupteurs, boutons) : pas les molettes ni les selecteurs."""
 import re
@@ -29,5 +29,5 @@ for label, typ, target, mode in entries:
         continue
     seen.add((typ, target))
     out.append('{L"%s", "%s", "%s", "%s"},\n' % (label.replace('"', '\\"'), typ, target, mode))
-open("tray/CommandLibrary.inc", "w", encoding="utf-8").write("".join(out))
+open("core/sim/CommandLibrary.inc", "w", encoding="utf-8").write("".join(out))
 print(len(seen), "commandes")

@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -23,6 +25,7 @@
 #include "JoyPoll.h"
 #include "bridge_client.h"
 #include "sim/ZoneAction.h"
+#include "sim/ZoneFile.h"
 #include "config/IniFile.h"
 #include "emulation/ZoneTracker.h"
 #include "log/Logger.h"
@@ -56,6 +59,7 @@ std::vector<ZoneState> g_zone;
 bool g_loaded = false;
 FILETIME g_loadedStamp{};
 ULONGLONG g_lastCheck = 0;
+std::string g_teachId;  // zone visee par l'apprentissage en cours (vide = premiere sans position)
 bool g_prevTeach = false, g_prevClear = false;
 ULONGLONG g_teachAt = 0, g_teachTick = 0;  // enregistrement differe (0 = aucun)
 em::Vec3 g_teachTip;                       // bout d'index qui sera enregistre (pour le repere visuel)
@@ -277,10 +281,11 @@ void Zones_Frame(const HandsFrame& frame) {
                 }
             } else {
                 g_teachAt = 0;
-                // Zone a apprendre : la premiere de la liste qui n'a pas encore de position.
+                // Zone a apprendre : celle choisie dans le menu en VR, sinon la premiere de la liste qui n'a pas encore de position.
                 ZoneState* target = nullptr;
                 for (ZoneState& c : g_zone)
-                    if (!c.defined) { target = &c; break; }
+                    if (!g_teachId.empty() ? c.id == g_teachId : !c.defined) { target = &c; break; }
+                g_teachId.clear();
                 if (!target) {
                     Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja une position ; effacez-les (bouton d'effacement) ou ajoutez-en dans zones.ini");
                     Play(Snd::Fail);
@@ -354,6 +359,141 @@ void Zones_FillMarkers(HandsFrame* frame) {
         else if (z.inside) add(z.pos, 0.020f, 1.0f, 1.0f, 0.10f);                                      // doigt dedans : jaune
         else add(z.pos, 0.010f, 1.0f, 0.25f, 0.90f);                                                    // zone apprise : magenta
     }
+}
+
+// --- Pilotage depuis le menu en VR ------------------------------------------------------------------------------------------------
+namespace {
+
+struct LibEntry {
+    const wchar_t* label;
+    const char* type;
+    const char* target;
+    const char* mode;
+};
+const LibEntry kLibrary[] = {
+#include "sim/CommandLibrary.inc"
+};
+constexpr size_t kLibraryCount = sizeof(kLibrary) / sizeof(kLibrary[0]);
+
+std::mutex g_liveMutex;
+std::vector<std::string> g_liveInputs;
+std::atomic<bool> g_liveLoaded{false}, g_liveLoading{false};
+
+void EnsureLoaded() {
+    if (g_loaded) return;
+    LoadZones();
+    g_loadedStamp = FileStamp();
+    g_loaded = true;
+}
+
+std::wstring WideOf(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+// Compte a rebours de l'apprentissage lance depuis le menu : plus long qu'avec le bouton (il faut retirer les mains du menu et viser).
+void StartTeach(const std::string& id) {
+    g_teachId = id;
+    const ULONGLONG now = GetTickCount64();
+    g_teachAt = now + 3000;
+    g_teachTick = now;
+    Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' dans 3 s, posez le bout de l'index sur la commande", id.c_str());
+    Play(Snd::Start);
+}
+
+}  // namespace
+
+std::vector<ZoneInfo> Zones_List() {
+    EnsureLoaded();
+    std::vector<ZoneInfo> out;
+    for (const ZoneState& z : g_zone) out.push_back({z.id, WideOf(z.id + " — " + z.action.target), z.defined});
+    return out;
+}
+
+size_t Zones_CommandCount() {
+    std::lock_guard<std::mutex> l(g_liveMutex);
+    return kLibraryCount + g_liveInputs.size();
+}
+
+std::wstring Zones_CommandLabel(size_t index) {
+    if (index < kLibraryCount) return kLibrary[index].label;
+    std::lock_guard<std::mutex> l(g_liveMutex);
+    index -= kLibraryCount;
+    return index < g_liveInputs.size() ? L"Input : " + WideOf(g_liveInputs[index]) : std::wstring();
+}
+
+bool Zones_InputsLoaded() { return g_liveLoaded; }
+
+void Zones_RefreshInputs() {
+    if (g_liveLoading.exchange(true)) return;
+    std::thread([] {
+        const std::string r = Bridge_Call("inputs", 12000);
+        std::vector<std::string> names;
+        if (r.rfind("ok", 0) == 0) {
+            size_t p = r.find('\t');
+            while (p != std::string::npos) {
+                const size_t q = r.find('\t', p + 1);
+                const std::string n = r.substr(p + 1, q == std::string::npos ? std::string::npos : q - p - 1);
+                if (!n.empty()) names.push_back(n);
+                p = q;
+            }
+            std::sort(names.begin(), names.end());
+        }
+        Logger::Get().Log(r.rfind("ok", 0) == 0 ? LogLevel::Info : LogLevel::Warn, "zones : %zu Input Events lus dans l'avion (%s)", names.size(),
+                          r.empty() ? "pont injoignable" : r.substr(0, 40).c_str());
+        {
+            std::lock_guard<std::mutex> l(g_liveMutex);
+            g_liveInputs = std::move(names);
+        }
+        g_liveLoaded = true;
+        g_liveLoading = false;
+    }).detach();
+}
+
+void Zones_AddCommand(size_t index) {
+    EnsureLoaded();
+    ZoneState z;
+    if (index < kLibraryCount) {
+        z.action.type = kLibrary[index].type;
+        z.action.target = kLibrary[index].target;
+        z.action.mode = kLibrary[index].mode;
+    } else {
+        std::lock_guard<std::mutex> l(g_liveMutex);
+        const size_t i = index - kLibraryCount;
+        if (i >= g_liveInputs.size()) return;
+        z.action.type = "input";
+        z.action.target = g_liveInputs[i];
+        z.action.mode = "toggle";
+    }
+    std::string base = hands::sim::SanitizeZoneId(z.action.target);
+    if (base.size() > 40) base.resize(40);
+    if (base.empty()) base = "zone";
+    std::string id = base;
+    for (int n = 2;; ++n) {
+        bool used = false;
+        for (const ZoneState& o : g_zone) used = used || o.id == id;
+        if (!used) break;
+        id = base + "_" + std::to_string(n);
+    }
+    z.id = id;
+    z.action.value = 1.0;
+    z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
+    g_zone.push_back(std::move(z));
+    SaveZones();
+    g_loadedStamp = FileStamp();
+    StartTeach(id);
+}
+
+void Zones_Reteach(const std::string& id) {
+    EnsureLoaded();
+    for (const ZoneState& z : g_zone)
+        if (z.id == id) {
+            StartTeach(id);
+            return;
+        }
 }
 
 }  // namespace layer

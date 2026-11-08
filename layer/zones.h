@@ -9,6 +9,9 @@
 
 #include <openxr/openxr.h>
 
+#include <string>
+#include <vector>
+
 #include "hand_renderer.h"
 
 namespace layer {
@@ -19,5 +22,24 @@ void Zones_Frame(const HandsFrame& frame);
 // Ajoute au rendu des mains les reperes des zones apprises (magenta ; jaune quand le doigt est dedans ; vert au declenchement ; blanc a
 // l'apprentissage) et le repere de l'apprentissage en cours (au bout de l'index).
 void Zones_FillMarkers(HandsFrame* frame);
+
+// --- Pilotage depuis le menu en VR (vr_menu.cpp) --------------------------------------------------------------------------------
+struct ZoneInfo {
+    std::string id;
+    std::wstring text;  // « nom — cible »
+    bool hasPos = false;
+};
+std::vector<ZoneInfo> Zones_List();
+
+// Commandes proposees : bibliotheque du Rafale (core/sim/CommandLibrary.inc) puis Input Events lus dans l'avion (Zones_RefreshInputs).
+size_t Zones_CommandCount();
+std::wstring Zones_CommandLabel(size_t index);
+void Zones_RefreshInputs();  // lecture asynchrone via le pont (MSFS doit tourner)
+bool Zones_InputsLoaded();
+
+// Cree une zone pour la commande choisie et lance son apprentissage (compte a rebours puis memorisation du bout de l'index).
+void Zones_AddCommand(size_t index);
+// Relance l'apprentissage de la position d'une zone existante.
+void Zones_Reteach(const std::string& id);
 
 }  // namespace layer
