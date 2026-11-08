@@ -191,3 +191,14 @@ TEST(Config_pointeur_partage) {
     CHECK(c.engageMm == 22.0);
     CHECK(Config::FromIni(IniFile::Parse("[emulation]\nengage_mm = 500\n")).engageMm == 80.0);
 }
+
+TEST(Config_masquage_des_manettes_virtuelles) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.hideHandControllers);
+    CHECK(d.hideControllersProfile);
+    CHECK(d.hideControllersHoldMs == 1000.0);
+    Config c = Config::FromIni(IniFile::Parse("[hands]\nhide_controllers = false\nhide_hold_ms = 99999\nhide_controllers_profile = no\n"));
+    CHECK(!c.hideHandControllers);
+    CHECK(!c.hideControllersProfile);
+    CHECK(c.hideControllersHoldMs == 5000.0);
+}

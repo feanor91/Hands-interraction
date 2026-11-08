@@ -20,7 +20,7 @@ target_include_directories(XR_APILAYER_HANDS_bare PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/win
   ${CMAKE_SOURCE_DIR}/third_party/openxr/include)
-target_link_libraries(XR_APILAYER_HANDS_bare PRIVATE hands_core d3d12 winhttp dinput8 dxguid)
+target_link_libraries(XR_APILAYER_HANDS_bare PRIVATE hands_core d3d12 winhttp winmm dinput8 dxguid)
 set_target_properties(XR_APILAYER_HANDS_bare PROPERTIES PREFIX "")
 
 # Rassemble DLL + manifeste + config exemple dans un seul dossier (celui de la DLL),

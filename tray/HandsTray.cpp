@@ -39,7 +39,7 @@ constexpr UINT kTrayId = 1;
 
 enum Cmd : UINT {
     ID_TOGGLE = 100, ID_INSTALL, ID_UNINSTALL, ID_LOGS, ID_INI, ID_AUTOSTART, ID_QUIT,
-    ID_CLICK_ANY, ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
+    ID_HIDE_HANDCTRL, ID_CLICK_ANY, ID_CLICK_SIDE, ID_CLICK_PINCH, ID_CLICK_MIDDLE, ID_HIDE_MODEL, ID_HANDS_DRAW, ID_EMULATION,
     ID_PTR_SHOULDER, ID_PTR_CONTACT, ID_PTR_PALM, ID_PTR_HAND, ID_PTR_FINGER, ID_PTR_UP, ID_PTR_DOWN, ID_PTR_LEFT, ID_PTR_RIGHT, ID_PTR_RESET,
     ID_UPDATE,
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
@@ -79,6 +79,7 @@ struct State {
     double clickOn = 21.0, clickOff = 27.0;       // millimètres : seuils de clic / relâchement
     std::string pointerFinger = "index";          // index | middle : doigt qui porte le pointeur
     bool sharedPointer = false;                   // les deux mains actives : la main qui clique prend la main
+    bool hideHandCtrl = true;                     // mains seules : manettes virtuelles issues des mains masquees
     bool zonesOn = false;                         // pochoir : zones apprises, contact -> touche StreamSim
     std::string zoneJoystick;                     // nom (ou morceau de nom) du joystick / HOTAS des boutons de zones
     int zoneTeachButton = 0, zoneClearButton = 0;  // boutons de memorisation / d'effacement (0 = aucun)
@@ -146,6 +147,7 @@ State ReadState() {
         if (s.pointerFinger != "index" && s.pointerFinger != "middle") s.pointerFinger = "index";
         s.pointerPitch = ini.GetDouble("emulation", "pointer_pitch_deg", 0.0);
         s.pointerYaw = ini.GetDouble("emulation", "pointer_yaw_deg", 0.0);
+        s.hideHandCtrl = ini.GetBool("hands", "hide_controllers", true);
         s.zonesOn = ini.GetBool("zones", "enabled", false);
         s.zoneJoystick = ini.GetString("zones", "joystick", "");
         s.zoneTeachButton = ini.GetInt("zones", "teach_button", 0);
@@ -576,6 +578,7 @@ void ShowMenu() {
     // --- Sous-menu « Affichage » ----------------------------------------------------------------
     HMENU display = CreatePopupMenu();
     AppendMenuW(display, MF_STRING | (s.handsDraw ? MF_CHECKED : 0) | cfgGray, ID_HANDS_DRAW, L"Squelette des mains");
+    AppendMenuW(display, MF_STRING | (s.hideHandCtrl ? MF_CHECKED : 0) | cfgGray, ID_HIDE_HANDCTRL, L"Mains seules : masquer les manettes virtuelles des mains");
     AppendMenuW(display, MF_STRING | (s.hideModel ? MF_CHECKED : 0) | cfgGray, ID_HIDE_MODEL, L"Masquer les manettes du jeu (expérimental)");
     AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(display), L"Affichage");
 
@@ -661,6 +664,11 @@ void ShowMenu() {
         case ID_HANDS_DRAW:
             ApplySetting("hands", "enabled", s.handsDraw ? "false" : "true",
                          s.handsDraw ? L"Squelette des mains masqué." : L"Squelette des mains affiché.");
+            break;
+        case ID_HIDE_HANDCTRL:
+            ApplySetting("hands", "hide_controllers", s.hideHandCtrl ? "false" : "true",
+                         s.hideHandCtrl ? L"Manettes virtuelles des mains : visibles (Virtual Desktop les fabrique à partir des mains)."
+                                        : L"Mains seules : les manettes virtuelles des mains sont masquées tant que vos mains sont suivies.");
             break;
         case ID_HIDE_MODEL:
             ApplySetting("emulation", "hide_controller_model", s.hideModel ? "false" : "true",

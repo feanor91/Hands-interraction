@@ -5,7 +5,7 @@
 .DESCRIPTION
   1. Copie la DLL, le manifeste JSON et hands.ini dans C:\ProgramData\HandsLayer
   2. Regle les droits : lecture/execution pour les applications Microsoft Store
-     ("TOUS LES PACKAGES D'APPLICATION"), ecriture seulement sur logs\ et hands.ini
+     ("TOUS LES PACKAGES D'APPLICATION"), ecriture seulement sur logs\, data\ et hands.ini
   3. Enregistre le manifeste dans le registre (couche implicite OpenXR) :
      HKLM\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit  (nom = chemin du manifeste, DWORD 0 = active)
 
@@ -73,6 +73,7 @@ Write-Host "Installation  : $InstallDir"
 # --- Copie des fichiers ----------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'logs') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'data') | Out-Null
 try {
     Copy-Item -Force (Join-Path $SourceDir $DllName)      (Join-Path $InstallDir $DllName)
     Copy-Item -Force (Join-Path $SourceDir $ManifestName) (Join-Path $InstallDir $ManifestName)
@@ -101,6 +102,8 @@ Invoke-Icacls @($InstallDir, '/inheritance:r', '/grant:r',
     '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX',
     '*S-1-15-2-1:(OI)(CI)RX', '*S-1-15-2-2:(OI)(CI)RX')
 Invoke-Icacls @((Join-Path $InstallDir 'logs'), '/grant', '*S-1-5-32-545:(OI)(CI)M', '*S-1-15-2-1:(OI)(CI)M')
+# data\ : donnees ecrites par la couche dans le jeu (zones.ini) ; meme droits que logs\.
+Invoke-Icacls @((Join-Path $InstallDir 'data'), '/grant', '*S-1-5-32-545:(OI)(CI)M', '*S-1-15-2-1:(OI)(CI)M')
 Invoke-Icacls @($iniDest, '/grant', '*S-1-5-32-545:M')
 Write-Host "Droits        : appliques"
 

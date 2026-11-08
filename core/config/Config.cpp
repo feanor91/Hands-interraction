@@ -93,6 +93,11 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.depthProbeState != "depth_write" && c.depthProbeState != "depth_read" && c.depthProbeState != "common" &&
         c.depthProbeState != "shader" && c.depthProbeState != "copy_source")
         c.depthProbeState = "depth_write";
+    c.hideHandControllers = ini.GetBool("hands", "hide_controllers", c.hideHandControllers);
+    c.hideControllersHoldMs = ini.GetDouble("hands", "hide_hold_ms", c.hideControllersHoldMs);
+    c.hideControllersProfile = ini.GetBool("hands", "hide_controllers_profile", c.hideControllersProfile);
+    if (c.hideControllersHoldMs < 0.0) c.hideControllersHoldMs = 0.0;
+    if (c.hideControllersHoldMs > 5000.0) c.hideControllersHoldMs = 5000.0;
     c.zonesEnabled = ini.GetBool("zones", "enabled", c.zonesEnabled);
     c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
     c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);

@@ -117,6 +117,10 @@ void AddCube(std::vector<Prim>& out, const em::Pose& pose, float sx, float sy, f
 }
 
 void BuildPrims(const HandsFrame& frame, const RenderStyle& style, std::vector<Prim>& out) {
+    for (int m = 0; m < frame.markerCount && m < kMaxMarkers; ++m) {
+        const MarkerData& mk = frame.marker[m];
+        AddCube(out, em::Pose{em::Quat{0, 0, 0, 1}, mk.pos}, mk.size, mk.size, mk.size, mk.r, mk.g, mk.b);
+    }
     for (int h = 0; h < 2; ++h) {
         const HandPoseData& hd = frame.hand[h];
         if (!hd.valid) continue;

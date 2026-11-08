@@ -743,6 +743,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     XrCompositionLayerQuad menuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};  // panneau du menu des reglages (si ouvert)
     bool addMenu = false;
 
+    Safe("xrEndFrame(mains seules)", [&] { if (info) Emu_UpdateHandPresence(info->displayTime); });
     Safe("xrEndFrame(diagnostic)", [&] { LogLayerChain(info); });
     Safe("xrEndFrame(sonde profondeur)", [&] { DepthProbeFrame(info); });
     Safe("xrEndFrame(captures)", [&] { CaptureFrame(info); });
@@ -765,7 +766,8 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
         HandsFrame frame;
         bool any = false;
         ToHandsFrame(game, info->displayTime, &frame, &any);
-        if (!any) { ++g_ov.framesSkipped; return; }  // aucune main visible : pas de couche, pas de coût GPU
+        Zones_FillMarkers(&frame);
+        if (!any && frame.markerCount == 0) { ++g_ov.framesSkipped; return; }  // aucune main visible : pas de couche, pas de coût GPU
 
         uint32_t w[2], h[2];
         for (int i = 0; i < 2; ++i) {

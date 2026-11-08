@@ -149,6 +149,16 @@ struct Config {
     // Ouverture et fermeture : pincer les DEUX mains en même temps pendant `menuHoldMs`.
     // --- Zones (pochoir) : contact du bout de l'index avec des zones sphériques apprises (touche Ctrl+Alt+F9), qui déclenchent une touche de
     // StreamSim (POST /api/press). Sans zone apprise, ne fait rien. Voir layer/zones.cpp.
+    // --- Mode « mains seules » : Virtual Desktop (VDXR) fabrique lui-même des manettes Touch à partir des mains suivies (profil
+    // oculus/touch_controller actif sur les deux mains, pose aim = rayon, pincement = gâchette) : MSFS dessine alors des manettes fantômes, un
+    // rayon, et prend les pincements pour des clics. Quand ce réglage est vrai (et que NOTRE émulation est coupée), la couche rend inactives les
+    // poses et les entrées de manette d'une main tant que cette main est suivie ; les vraies manettes reviennent dès que les mains ne sont plus
+    // suivies. Section [hands].
+    bool hideHandControllers = true;
+    double hideControllersHoldMs = 1000.0;   // la main doit rester non suivie ce temps (ms) avant que les manettes réapparaissent (anti-scintillement)
+    // Déclare aussi « aucun profil d'interaction » sur la main masquée (xrGetCurrentInteractionProfile + évènement de changement synthétique) :
+    // le jeu cesse alors de croire à une manette connectée.
+    bool hideControllersProfile = true;
     bool zonesEnabled = true;
     double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone
     double zoneDwellMs = 250.0;   // durée de maintien du doigt dans la zone avant de déclencher

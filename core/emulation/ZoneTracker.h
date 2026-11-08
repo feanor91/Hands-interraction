@@ -40,6 +40,12 @@ public:
         return false;
     }
     void Reset() { *this = ZoneTracker(); }
+    // Desarme sans declencher : le doigt doit d'abord sortir de la zone (apres un apprentissage, le doigt s'y trouve deja).
+    void Disarm() {
+        armed_ = false;
+        insideSince_ = -1;
+        outsideSince_ = -1;
+    }
     bool Armed() const { return armed_; }
 
 private:

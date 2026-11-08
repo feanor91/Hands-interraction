@@ -18,9 +18,11 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "emulate.h"
 #include "hands_overlay.h"
+#include "emulation/HandPresence.h"
 #include "emulation/Pinch.h"
 #include "emulation/PoseMath.h"
 
@@ -138,6 +140,13 @@ std::unordered_map<uint64_t, ActionKind> g_actionKinds;  // action -> sorte
 std::unordered_map<uint64_t, SpaceInfo> g_spaces;        // espace d'action -> infos
 std::unordered_map<uint64_t, uint8_t> g_reported;        // (action,main) -> dernière valeur envoyée
 
+// Mode « mains seules » : manettes virtuelles issues des mains masquées tant que la main est suivie.
+em::HandPresence g_presence[2];                    // suivi filtré (maintien), protégé par g_mutex
+std::atomic<bool> g_hideHand[2] = {false, false};  // lu sans verrou par les hooks
+std::unordered_set<uint64_t> g_handBound;          // actions liées à un chemin /user/hand/... (protégé par g_mutex)
+bool g_profileEventPending = false;                // évènement de changement de profil à synthétiser (protégé par g_mutex)
+bool g_lastProfileFake = false;                    // valeur de hide_controllers_profile à la dernière mise à jour
+
 constexpr ULONGLONG kFreshMs = 300;  // au-delà, la main est considérée perdue : pass-through
 
 ActionKind Classify(const std::string& fullName) {
@@ -155,6 +164,14 @@ int HandIndex(XrPath p) {
     if (p == g_handPath[0]) return 0;
     if (p == g_handPath[1]) return 1;
     return -1;
+}
+
+// Doit-on masquer l'entrée de cette action pour cette sous-action ? (g_mutex déjà pris)
+bool ShouldMask(XrAction action, XrPath subaction) {
+    if (g_handBound.find(Key(action)) == g_handBound.end()) return false;
+    if (subaction == XR_NULL_PATH) return g_hideHand[0].load() || g_hideHand[1].load();
+    const int h = HandIndex(subaction);
+    return h >= 0 && g_hideHand[h].load();
 }
 
 constexpr XrSpaceLocationFlags kPoseValid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
@@ -514,7 +531,19 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !location) return r;
     Safe("xrLocateSpace", [&] {
         const auto cfg = CurrentConfig();
-        if (!cfg->emulationEnabled) return;
+        if (!cfg->emulationEnabled) {
+            // Mode « mains seules » : la pose de l'action (aim ou grip) d'une main suivie est déclarée non localisable.
+            if (!cfg->hideHandControllers) return;
+            std::lock_guard<std::mutex> lock(g_mutex);
+            const auto hit = g_spaces.find(Key(space));
+            if (hit == g_spaces.end()) return;
+            const int hslot = HandIndex(hit->second.subaction);
+            if (hslot < 0 || !g_hideHand[hslot].load()) return;
+            location->locationFlags = 0;
+            for (auto* n = static_cast<XrBaseOutStructure*>(location->next); n; n = n->next)
+                if (n->type == XR_TYPE_SPACE_VELOCITY) reinterpret_cast<XrSpaceVelocity*>(n)->velocityFlags = 0;
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_spaces.find(Key(space));
         if (it == g_spaces.end()) return;
@@ -576,7 +605,22 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateBoolean(XrSession session, c
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !getInfo || !state) return r;
     Safe("xrGetActionStateBoolean", [&] {
         const auto cfg = CurrentConfig();
-        if (!cfg->emulationEnabled) return;
+        if (!cfg->emulationEnabled) {
+            if (!cfg->hideHandControllers) return;
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_handBound.find(Key(getInfo->action)) == g_handBound.end()) return;
+            // `last` : dernier état « enfoncé » vu par le jeu pour (action, main). Au début du masquage, le jeu voit un relâchement (une seule fois).
+            uint8_t& last = g_reported[Key(getInfo->action) * 4 + static_cast<uint64_t>(HandIndex(getInfo->subactionPath) + 1)];
+            if (ShouldMask(getInfo->action, getInfo->subactionPath)) {
+                state->changedSinceLastSync = (last != 0) ? XR_TRUE : XR_FALSE;
+                last = 0;
+                state->currentState = XR_FALSE;
+                state->isActive = XR_FALSE;
+            } else {
+                last = (state->currentState != XR_FALSE) ? 1 : 0;
+            }
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end() || it->second != ActionKind::TriggerBool) return;
@@ -600,7 +644,21 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateFloat(XrSession session, con
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !getInfo || !state) return r;
     Safe("xrGetActionStateFloat", [&] {
         const auto cfg = CurrentConfig();
-        if (!cfg->emulationEnabled) return;
+        if (!cfg->emulationEnabled) {
+            if (!cfg->hideHandControllers) return;
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_handBound.find(Key(getInfo->action)) == g_handBound.end()) return;
+            uint8_t& last = g_reported[Key(getInfo->action) * 4 + static_cast<uint64_t>(HandIndex(getInfo->subactionPath) + 1)];
+            if (ShouldMask(getInfo->action, getInfo->subactionPath)) {
+                state->changedSinceLastSync = (last != 0) ? XR_TRUE : XR_FALSE;
+                last = 0;
+                state->currentState = 0.0f;
+                state->isActive = XR_FALSE;
+            } else {
+                last = (state->currentState != 0.0f) ? 1 : 0;
+            }
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end() || it->second != ActionKind::TriggerFloat) return;
@@ -625,7 +683,12 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStatePose(XrSession session, cons
     if (!g_live.load(std::memory_order_acquire) || XR_FAILED(r) || !getInfo || !state) return r;
     Safe("xrGetActionStatePose", [&] {
         const auto cfg = CurrentConfig();
-        if (!cfg->emulationEnabled) return;
+        if (!cfg->emulationEnabled) {
+            if (!cfg->hideHandControllers) return;
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (ShouldMask(getInfo->action, getInfo->subactionPath)) state->isActive = XR_FALSE;
+            return;
+        }
         std::lock_guard<std::mutex> lock(g_mutex);
         const auto it = g_actionKinds.find(Key(getInfo->action));
         if (it == g_actionKinds.end()) return;
@@ -664,8 +727,8 @@ const HookEntry kHooks[] = {
 bool Emu_Start(XrInstance instance, XrSession session) {
     Logger& log = Logger::Get();
     // Les hand trackers servent à l'émulation (étape 1) ET au dessin des mains (étape 3a).
-    if (!CurrentConfig()->emulationEnabled && !CurrentConfig()->handsEnabled) {
-        log.Log(LogLevel::Info, "emulation et mains : desactivees dans hands.ini ([emulation] et [hands] enabled = false)");
+    if (!CurrentConfig()->emulationEnabled && !CurrentConfig()->handsEnabled && !CurrentConfig()->hideHandControllers && !CurrentConfig()->zonesEnabled) {
+        log.Log(LogLevel::Info, "emulation, mains, zones et masquage des manettes : desactives dans hands.ini");
         return false;
     }
     const Dispatch& d = g_dispatch;
@@ -711,7 +774,8 @@ bool Emu_Start(XrInstance instance, XrSession session) {
                 cfg->pointerMode.c_str(), cfg->pointerFinger == "middle" ? "majeur" : "doigt index", cfg->clickMode.c_str(), cfg->clickOnMm, cfg->clickOffMm, cfg->latchMs,
                 cfg->smoothing ? "oui" : "non", cfg->requireTracked ? "oui" : "non", cfg->hideControllerModel ? "masquees" : "visibles");
     else
-        log.Log(LogLevel::Info, "emulation : desactivee (hand trackers ouverts pour le dessin des mains)");
+        log.Log(LogLevel::Info, "emulation : desactivee (hand trackers ouverts : dessin des mains, zones, masquage des manettes virtuelles : %s)",
+                cfg->hideHandControllers ? "OUI" : "non");
     return true;
 }
 
@@ -765,6 +829,12 @@ void Emu_Stop(XrSession session) {
     g_viewSpace = XR_NULL_HANDLE;
     g_spaces.clear();
     g_reported.clear();
+    g_handBound.clear();
+    for (int h = 0; h < 2; ++h) {
+        g_presence[h].Reset();
+        g_hideHand[h].store(false);
+    }
+    g_profileEventPending = false;
     g_torsoInit = false;
     g_session = XR_NULL_HANDLE;
     g_started = false;
@@ -784,6 +854,69 @@ void Emu_OnActionSpace(XrAction action, XrPath subactionPath, XrSpace space) {
     if (it == g_actionKinds.end()) return;
     if (it->second == ActionKind::AimPose || it->second == ActionKind::GripPose)
         g_spaces[Key(space)] = SpaceInfo{it->second, subactionPath};
+}
+
+void Emu_OnHandBinding(XrAction action) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_handBound.insert(Key(action));
+}
+
+void Emu_UpdateHandPresence(XrTime displayTime) {
+    if (!g_live.load(std::memory_order_acquire)) return;
+    const auto cfg = CurrentConfig();
+    const bool want = cfg->hideHandControllers && !cfg->emulationEnabled;
+    const double nowMs = static_cast<double>(GetTickCount64());
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (int h = 0; h < 2; ++h) {
+        bool active = false;
+        if (want && g_hand[h].tracker && g_viewSpace != XR_NULL_HANDLE && g_dispatch.LocateHandJointsEXT) {
+            XrHandJointsLocateInfoEXT info{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+            info.baseSpace = g_viewSpace;
+            info.time = displayTime;
+            XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT];
+            XrHandJointLocationsEXT loc{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+            loc.jointCount = XR_HAND_JOINT_COUNT_EXT;
+            loc.jointLocations = joints;
+            active = XR_SUCCEEDED(g_dispatch.LocateHandJointsEXT(g_hand[h].tracker, &info, &loc)) && loc.isActive;
+        }
+        bool present = false;
+        if (want) present = g_presence[h].Update(active, nowMs, cfg->hideControllersHoldMs);
+        else g_presence[h].Reset();
+        const bool prev = g_hideHand[h].exchange(present);
+        if (present != prev) {
+            g_profileEventPending = true;
+            Logger::Get().Log(LogLevel::Info, "mains seules : manette virtuelle de la main %s %s", h == 0 ? "gauche" : "droite",
+                              present ? "MASQUEE (main suivie)" : "de nouveau visible (main non suivie)");
+        }
+    }
+    if (cfg->hideControllersProfile != g_lastProfileFake) {  // le jeu doit relire les profils quand ce réglage change à chaud
+        g_lastProfileFake = cfg->hideControllersProfile;
+        g_profileEventPending = true;
+    }
+}
+
+bool Emu_ShouldHideProfile(XrPath topLevelUserPath) {
+    if (!g_live.load(std::memory_order_acquire)) return false;
+    const auto cfg = CurrentConfig();
+    if (cfg->emulationEnabled || !cfg->hideHandControllers || !cfg->hideControllersProfile) return false;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const int h = HandIndex(topLevelUserPath);
+    return h >= 0 && g_hideHand[h].load();
+}
+
+bool Emu_TakePendingProfileEvent(XrSession* session) {
+    if (!g_live.load(std::memory_order_acquire)) return false;
+    const auto cfg = CurrentConfig();
+    if (cfg->emulationEnabled || !cfg->hideHandControllers || !cfg->hideControllersProfile) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_profileEventPending = false;  // inutile : rien n'est masqué au niveau du profil
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_profileEventPending || g_session == XR_NULL_HANDLE) return false;
+    g_profileEventPending = false;
+    if (session) *session = g_session;
+    return true;
 }
 
 PFN_xrVoidFunction FindEmulationHook(const char* name) {

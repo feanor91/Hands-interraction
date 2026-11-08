@@ -36,6 +36,16 @@ void Emu_SetMenuOpen(bool open);
 // Pose de la tete dans `base` a l'instant `time` (pour placer le menu devant l'utilisateur). Faux si indisponible.
 bool Emu_HeadPose(XrSpace base, XrTime time, XrPosef* out);
 
+// --- Mode « mains seules » (voir [hands] hide_controllers dans Config.h) ---------------------------------------------------
+// Une action liée (par une suggestion de bindings) à un chemin /user/hand/... : seules ces actions sont masquées (pas le regard).
+void Emu_OnHandBinding(XrAction action);
+// Mise à jour une fois par image (xrEndFrame) : lit l'état de suivi de chaque main, filtre (maintien) et décide quelles manettes masquer.
+void Emu_UpdateHandPresence(XrTime displayTime);
+// La manette virtuelle de ce chemin de haut niveau (/user/hand/left ou right) est-elle déclarée « aucun profil » au jeu ?
+bool Emu_ShouldHideProfile(XrPath topLevelUserPath);
+// Évènement « profil d'interaction changé » synthétique en attente (à livrer par xrPollEvent quand le runtime n'a rien d'autre) ?
+bool Emu_TakePendingProfileEvent(XrSession* session);
+
 // Fournis par emulate.cpp : hooks supplémentaires de l'étape 1 (nullptr si inconnu).
 PFN_xrVoidFunction FindEmulationHook(const char* name);
 

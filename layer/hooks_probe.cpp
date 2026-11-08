@@ -258,6 +258,13 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrCreateAction(XrActionSet actionSet, const 
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrSuggestInteractionProfileBindings(
     XrInstance instance, const XrInteractionProfileSuggestedBinding* suggested) {
+    Safe("xrSuggestInteractionProfileBindings(mains)", [&] {
+        if (!suggested) return;
+        for (uint32_t i = 0; i < suggested->countSuggestedBindings; ++i) {
+            const auto& b = suggested->suggestedBindings[i];
+            if (PathToStringSafe(instance, b.binding).rfind("/user/hand/", 0) == 0) Emu_OnHandBinding(b.action);
+        }
+    });
     Safe("xrSuggestInteractionProfileBindings", [&] {
         if (!suggested) return;
         Logger& log = Logger::Get();
@@ -325,6 +332,22 @@ void LogCurrentProfiles(XrSession session) {
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrPollEvent(XrInstance instance, XrEventDataBuffer* eventData) {
     const XrResult r = g_dispatch.PollEvent(instance, eventData);
+    // Mode « mains seules » : quand le runtime n'a rien à livrer, on peut livrer un « profil d'interaction changé » synthétique (la manette
+    // virtuelle d'une main vient d'être masquée ou rendue) pour que le jeu relise xrGetCurrentInteractionProfile.
+    if (r == XR_EVENT_UNAVAILABLE && eventData) {
+        bool injected = false;
+        Safe("xrPollEvent(synthetique)", [&] {
+            XrSession s = XR_NULL_HANDLE;
+            if (!Emu_TakePendingProfileEvent(&s)) return;
+            auto* e = reinterpret_cast<XrEventDataInteractionProfileChanged*>(eventData);
+            e->type = XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED;
+            e->next = nullptr;
+            e->session = s;
+            injected = true;
+            Logger::Get().Log(LogLevel::Info, "evenement synthetique : le profil d'interaction a change (manettes virtuelles des mains)");
+        });
+        if (injected) return XR_SUCCESS;
+    }
     // Chemin rapide : appelé à chaque image. On ne fait quelque chose que si un
     // événement intéressant est présent.
     if (r == XR_SUCCESS && eventData) {
@@ -345,9 +368,17 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrPollEvent(XrInstance instance, XrEventData
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetCurrentInteractionProfile(XrSession session, XrPath topLevelUserPath,
                                                                    XrInteractionProfileState* state) {
     const XrResult r = g_dispatch.GetCurrentInteractionProfile(session, topLevelUserPath, state);
+    bool masked = false;
+    Safe("xrGetCurrentInteractionProfile(masque)", [&] {
+        if (XR_FAILED(r) || !state || state->interactionProfile == XR_NULL_PATH) return;
+        if (Emu_ShouldHideProfile(topLevelUserPath)) {
+            state->interactionProfile = XR_NULL_PATH;
+            masked = true;
+        }
+    });
     Safe("xrGetCurrentInteractionProfile", [&] {
         if (XR_FAILED(r) || !state) return;
-        const std::string profile = PathText(state->interactionProfile);
+        const std::string profile = masked ? std::string("(masque : mains seules)") : PathText(state->interactionProfile);
         {
             std::lock_guard<std::mutex> lock(g_profileMutex);
             auto& last = g_lastProfile[static_cast<uint64_t>(topLevelUserPath)];

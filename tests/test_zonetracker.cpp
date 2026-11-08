@@ -43,3 +43,17 @@ TEST(ZoneTracker_doigt_perdu_abandonne) {
     z.Update(c, false, c, 0.02f, 100, 250, 300);
     CHECK(!z.Update(c, true, c, 0.02f, 300, 250, 300));  // le compte repart de zero
 }
+
+TEST(ZoneTracker_Disarm_exige_une_sortie) {
+    ZoneTracker z;
+    const Vec3 c{0, 0, 0}, in{0, 0, 0}, out{0.1f, 0, 0};
+    z.Disarm();
+    CHECK(!z.Armed());
+    CHECK(!z.Update(in, true, c, 0.02f, 0, 100, 300));
+    CHECK(!z.Update(in, true, c, 0.02f, 500, 100, 300));   // reste dedans : jamais de declenchement
+    CHECK(!z.Update(out, true, c, 0.02f, 600, 100, 300));
+    CHECK(!z.Update(out, true, c, 0.02f, 950, 100, 300));  // dehors depuis 350 ms : rearme
+    CHECK(z.Armed());
+    CHECK(!z.Update(in, true, c, 0.02f, 1000, 100, 300));
+    CHECK(z.Update(in, true, c, 0.02f, 1120, 100, 300));
+}

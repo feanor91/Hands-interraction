@@ -28,8 +28,18 @@ struct HandPoseData {
     bool jointValid[kHandJointCount] = {};
 };
 
+// Petit cube de repere dessine dans l'espace du jeu (zones apprises, retour visuel de l'apprentissage).
+struct MarkerData {
+    hands::emulation::Vec3 pos;
+    float size = 0.01f;  // arete du cube, en metres
+    float r = 1.0f, g = 1.0f, b = 1.0f;
+};
+constexpr int kMaxMarkers = 8;
+
 struct HandsFrame {
     HandPoseData hand[2];  // 0 = gauche, 1 = droite
+    MarkerData marker[kMaxMarkers];
+    int markerCount = 0;
 };
 
 // Point de vue d'un œil : pose dans l'espace de référence + champ de vision (angles en radians, comme OpenXR).

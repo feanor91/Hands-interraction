@@ -16,12 +16,16 @@
 
 namespace hands::win {
 
+// Les premiers etats lus apres l ouverture d un joystick peuvent etre faux ou incomplets (tous les boutons a zero puis l etat reel : les
+// interrupteurs deja enfonces du HOTAS apparaissent alors comme des appuis). On les ignore pendant ce delai.
+constexpr ULONGLONG kPrimingMs = 1500;
+
 struct JoyPoll::Impl {
     struct Dev {
         IDirectInputDevice8W* dev = nullptr;
         std::string name;
         bool down[128] = {};
-        bool primed = false;  // premier etat lu : sert de reference, sans evenement
+        ULONGLONG openTick = 0;  // ouverture du peripherique : pendant kPrimingMs on lit l etat sans signaler d appui
     };
     IDirectInput8W* di = nullptr;
     HWND window = nullptr;
@@ -46,6 +50,7 @@ struct JoyPoll::Impl {
         Dev d;
         d.dev = dev;
         d.name = name;
+        d.openTick = GetTickCount64();
         self->devs.push_back(d);
         return DIENUM_CONTINUE;
     }
@@ -111,8 +116,7 @@ std::vector<JoyEvent> JoyPoll::PollAllPressed(const std::string& deviceFilter) {
             continue;
         }
         const bool match = wanted.empty() || Impl::Lower(d.name).find(wanted) != std::string::npos;
-        const bool report = d.primed;
-        d.primed = true;
+        const bool report = GetTickCount64() - d.openTick > kPrimingMs;
         for (int i = 0; i < 128; ++i) {
             const bool now = (st.rgbButtons[i] & 0x80) != 0;
             if (now && !d.down[i] && match && report) {

@@ -16,4 +16,8 @@ namespace layer {
 // Appelé à chaque xrEndFrame avec les mains (dans l'espace du jeu). Sans effet si `[zones] enabled = false`.
 void Zones_Frame(const HandsFrame& frame);
 
+// Ajoute au rendu des mains les reperes des zones apprises (magenta ; jaune quand le doigt est dedans ; vert au declenchement ; blanc a
+// l'apprentissage) et le repere de l'apprentissage en cours (au bout de l'index).
+void Zones_FillMarkers(HandsFrame* frame);
+
 }  // namespace layer
