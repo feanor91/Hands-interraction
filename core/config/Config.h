@@ -148,8 +148,8 @@ struct Config {
     // --- [menu] : menu des réglages affiché dans le casque ---
     // Ouverture et fermeture : pincer les DEUX mains en même temps pendant `menuHoldMs`.
     // --- Zones (pochoir) : contact du bout de l'index avec des zones sphériques apprises (touche Ctrl+Alt+F9), qui déclenchent une touche de
-    // StreamSim (POST /api/press). Désactivé par défaut. Voir layer/zones.cpp.
-    bool zonesEnabled = false;
+    // StreamSim (POST /api/press). Sans zone apprise, ne fait rien. Voir layer/zones.cpp.
+    bool zonesEnabled = true;
     double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone
     double zoneDwellMs = 250.0;   // durée de maintien du doigt dans la zone avant de déclencher
     double zoneRearmMs = 400.0;   // durée hors de la zone avant de pouvoir redéclencher
