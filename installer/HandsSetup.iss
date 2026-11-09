@@ -62,6 +62,12 @@ Source: "{#BuildDir}\layer\Release\hands.ini"; DestDir: "{#DataDir}"; Flags: onl
 ; Programmes.
 Source: "{#BuildDir}\tray\Release\HandsTray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\tools\Release\HandsBridge.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Copie "source" a cote de la tray : c'est la que le bouton Installer / Mettre a jour de la tray cherche la DLL et scripts\install.ps1.
+Source: "{#BuildDir}\layer\Release\{#LayerName}.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\layer\Release\{#LayerName}.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\layer\Release\hands.ini"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\scripts\install.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "..\scripts\uninstall.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
