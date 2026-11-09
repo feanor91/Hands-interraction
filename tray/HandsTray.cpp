@@ -515,6 +515,7 @@ void OpenPath(const std::wstring& p) { ShellExecuteW(g_hwnd, L"open", p.c_str(),
 void ShowMenu() {
     const State s = ReadState();
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | MF_DISABLED, 0, L"Hands Interaction " TEXT(HANDS_VERSION));
     AppendMenuW(m, MF_STRING | MF_DISABLED, 0, s.installed ? L"Couche : installée" : L"Couche : NON installée");
     AppendMenuW(m, MF_STRING | MF_DISABLED, 0, s.gameRunning ? L"MSFS : en cours" : L"MSFS : arrêté");
     if (s.updateAvailable)

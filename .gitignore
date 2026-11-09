@@ -3,3 +3,4 @@ build-*/
 *.user
 .vs/
 CMakeUserPresets.json
+dist/

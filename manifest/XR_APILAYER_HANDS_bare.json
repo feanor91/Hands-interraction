@@ -5,7 +5,7 @@
         "library_path": ".\\XR_APILAYER_HANDS_bare.dll",
         "api_version": "1.0",
         "implementation_version": "1",
-        "description": "Couche mains nues pour MSFS 2024 (etape 0 : journalisation uniquement)",
+        "description": "Hands Interaction : mains nues (suivi des mains, pochoir de zones) pour MSFS 2024",
         "functions": {
             "xrNegotiateLoaderApiLayerInterface": "xrNegotiateLoaderApiLayerInterface"
         },

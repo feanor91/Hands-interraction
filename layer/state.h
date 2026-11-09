@@ -17,7 +17,7 @@
 #include "loader_negotiation.h"
 
 #define HANDS_LAYER_NAME "XR_APILAYER_HANDS_bare"
-#define HANDS_LAYER_VERSION "0.3.0-etape3a"
+#define HANDS_LAYER_VERSION HANDS_VERSION  // defini par CMake depuis le fichier VERSION
 
 namespace layer {
 

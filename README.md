@@ -1,90 +1,122 @@
-# Couche OpenXR « mains nues » pour MSFS 2024
+# Hands Interaction — mains nues pour MSFS 2024
 
-Couche OpenXR implicite (DLL 64 bits) entre MSFS 2024 et VDXR (Virtual Desktop),
-pour piloter le cockpit avec les mains (Meta Quest 3). **Projet arrêté après l'étape 3a : l'interaction aux mains n'est pas assez précise (voir « Bilan »).**
+Couche OpenXR implicite (DLL 64 bits) entre **MSFS 2024 (Store, D3D12)** et **Virtual Desktop (VDXR)** avec un **Meta Quest 3**, pour agir sur le cockpit avec les mains,
+sans manettes. Version courante : voir [VERSION](VERSION) · [journal des versions](CHANGELOG.md).
 
-## État
+## Principe
 
-| Étape | Contenu | État |
+Le **rayon aux mains** (viser une commande comme avec une manette) a été essayé à fond : le suivi des mains tremble de quelques millimètres et le geste de clic
+bouge la main, donc viser une petite cible (interrupteur, tablette) est moins efficace qu'avec une manette ou une souris. Le projet a donc pivoté vers un
+**pochoir** : on **apprend la position de chaque commande** au bout de l'index, puis un contact du doigt (ou un pincement et un geste) envoie la commande au simulateur.
+Pas de visée, donc pas de tremblement qui compte : on touche l'endroit où se trouve la commande.
+
+```
+ Quest 3 ──► Virtual Desktop (VDXR) ──► [couche OpenXR : suivi, zones, menu VR] ──► MSFS 2024
+                                                │ tube nommé
+                                                ▼
+                                      HandsBridge.exe ──SimConnect──► MSFS (événements, variables, Input Events, code H:)
+```
+
+## Installation (utilisateur)
+
+1. Télécharger `HandsInteraction-Setup-<version>.exe` dans les [releases](https://github.com/feanor91/Hands-interraction/releases) et le lancer (droits administrateur).
+   **MSFS doit être fermé** (la couche est chargée par le jeu).
+2. L'installateur copie la couche dans `C:\ProgramData\HandsLayer\`, l'enregistre auprès d'OpenXR, installe la tray et le pont SimConnect dans
+   `C:\Program Files\Hands Interaction\`, et propose de lancer la tray au démarrage de Windows.
+3. Dans **Virtual Desktop**, activer le suivi des mains transmis aux applications (« forward tracking »).
+4. Lancer MSFS : l'icône de la tray passe au vert. Désinstallation : *Paramètres Windows › Applications*. Vos réglages (`hands.ini`), vos zones et les journaux sont conservés.
+
+Seul le suivi des mains de VDXR est testé (Quest 3, MSFS 2024 Store). La couche ne s'active que pour `FlightSimulator2024.exe` (`[general] process_allowlist`).
+
+## Utilisation
+
+### Mode « mains seules »
+VDXR fabrique de lui-même des manettes virtuelles à partir de vos mains (rayon, clics, manettes fantomes sur le bureau). Réglage par défaut : la couche les **masque**
+tant que les mains sont suivies (`[hands] hide_controllers`), et le jeu ne voit plus que des mains. Le rayon aux mains (`[emulation] enabled = true`) reste disponible, mais peu précis.
+
+### Créer une zone
+Deux façons, qui écrivent le même fichier (`C:\ProgramData\HandsLayer\data\zones.ini`, rechargé à chaud) :
+
+* **Dans le casque** : pincer les deux mains pour ouvrir le menu › *Zones du pochoir et leurs commandes* › *Ajouter une zone* › choisir la commande dans la liste
+  (les 48 commandes du Rafale, puis, avec *Lire aussi les commandes de l'avion*, tous les Input Events de l'avion chargé). Le menu se ferme, un compte à rebours de 3 s
+  donne le temps de **poser le bout de l'index sur la commande**, et la zone est enregistrée (son aigu + flash blanc). Le menu se choisit au doigt (toucher la ligne 0,45 s) ou au rayon.
+* **Sur le PC** : icône de la tray › *Zones* › *Configurer les zones et leurs commandes…* (liste, type, étapes, bouton *Tester* qui envoie la commande au simulateur sans passer par le casque).
+  Les positions s'apprennent ensuite en vol avec un **bouton du joystick / HOTAS** (choisi dans la tray) : l'index sur la commande, appui sur le bouton.
+  Repli clavier : Ctrl+Alt+F9 (apprendre), Ctrl+Alt+F10 (effacer les positions).
+
+Repères visibles dans le casque : magenta = zone apprise, jaune = doigt dedans, vert = déclenchée, cyan = saisie en cours, blanc = mémorisée.
+Les positions sont dans l'espace du jeu : **si le cockpit est recalé, réapprendre les zones.**
+
+### Types de commande
+Repris de StreamSim (voir [core/sim/ZoneControl.h](core/sim/ZoneControl.h)) :
+
+| Type | Geste | Envoie |
 |---|---|---|
-| 0 | Couche transparente qui journalise (extensions, profils, actions, suivi des mains) | **Testée en VR** (MSFS 2024 Store + VDXR + Quest 3, option « forward tracking » de Virtual Desktop requise) |
-| 1 | Contrôleur émulé + clic par le pouce (index, côté de l'index, majeur, ou « au plus proche »), deux mains actives | **Testée en VR** : le clic et le glisser des boutons rotatifs fonctionnent |
-| 3a | Squelette des mains en surimpression (D3D12), menu de réglages dans le casque, application de barre des tâches (mise à jour, options) | **Testée en VR** |
-| 2, 3b, 3c, 4 | Swipe, mains stylisées, modèles réalistes, finitions | abandonnées |
+| Poussoir | toucher la zone (index maintenu `dwell_ms`) | la séquence « appui » |
+| Bascule | idem | l'action en mode *toggle* : l'état réel est lu dans le simulateur |
+| Interrupteur à N positions | chaque contact passe à la position suivante (en boucle ou aller-retour) | la séquence de la position ; la position réelle peut être lue (`read`) |
+| Rotatif | **pincer** dans la zone puis **tourner le poignet** : un cran tous les `step_deg` ° ; pincer-relâcher sans tourner = appui | cran + / cran − / appui |
+| Curseur | deux points appris (début et fin de course) ; **pincer et glisser** | une valeur min..max, ou des crans + / − |
 
-## Bilan
+Chaque emplacement est une **séquence d'actions** : événement SimConnect (`PARKING_BRAKES`), variable (`L:...` ou SimVar), Input Event de MSFS 2024, code avionique
+(`(>H:...)`, exécuté par le module MobiFlight WASM fourni avec l'avion) ou pause. Opérations sur variables et Input Events : `set`, `toggle` (bascule entre 0 et la valeur d'après l'état réel),
+`add` (pas, avec min / max ou bouclage, par ex. un cap 0–360).
 
-Ce qui marche : le suivi des mains est exposé à MSFS, le clic se déclenche de façon fiable, le squelette des mains s'affiche, le menu VR et la tray (installation, mises à jour, options) sont utilisables.
+### Le pont SimConnect
+`HandsBridge.exe` (lancé et surveillé par la tray) se connecte à MSFS (2020 ou 2024) et exécute les commandes ; il n'a besoin ni de StreamSim ni d'aucune configuration. Journal : `logs\bridge.log`.
+Outil d'essai en ligne de commande : `simbridge_cli.exe status | event | get-var | set-var | inputs | get-input | set-input | code`.
 
-Ce qui ne marche pas assez bien : **la précision du rayon**. Le suivi des mains tremble de quelques millimètres et le geste de clic bouge la main. MSFS attend un rayon de manette précis, sans zone d'aide ; le rayon est ici estimé (épaule, poignet ou paume vers le doigt, plusieurs modes), ce qui amplifie les écarts. En test réel, manettes ou souris sont plus efficaces, et les tablettes du cockpit (petites cibles, défilement) sont presque inutilisables.
+## Configuration
 
-Essayé sans résoudre : rayon par l'épaule estimée (torse lent, mélange avec la direction du doigt), lissage One Euro, verrouillage de la pose avant le clic (pré-verrouillage dès l'approche du pouce, zone morte). Voies fermées : profondeur (MSFS n'acquiert jamais ses swapchains de profondeur) ; SimConnect / WASM (pas de « clic sous le rayon » générique, seulement des variables par avion) ; masquer le modèle de manette (`hide_controller_model` est sans effet).
+`C:\ProgramData\HandsLayer\hands.ini`, relu à chaud (sauf `[general]` et `[emulation] enabled`, lus au lancement du jeu). Les réglages courants se font depuis la tray. Sections :
+`[general]` (activation, programmes), `[hands]` (squelette, masquage des manettes virtuelles), `[emulation]` (rayon aux mains), `[touch]`, `[menu]` (menu VR), `[zones]` (rayon, délais, boutons du HOTAS).
+Les journaux de la couche sont dans `C:\ProgramData\HandsLayer\logs\layer_<programme>.log`.
 
-Piste non explorée : accroche sur la cible. MSFS dessine une flèche bleue quand le rayon survole un élément interactif ; la détecter dans l'image du jeu permettrait de figer le rayon sur l'élément.
+## Compiler et publier (développeur)
 
-## Zones (pochoir) : essai
-
-Piste ouverte après le bilan : au lieu d'un rayon, des **zones sphériques** apprises au bout de l'index, qui déclenchent une touche de
-StreamSim (`POST /api/press`) au contact (maintien `dwell_ms`). Essai sur le frein de parc (touche « Frein libre » de la page MSFS : profil `default`, page `od16uzxc`, touche 1) ; la batterie n'existe pas sur le Rafale.
-Activé par défaut (`[zones] enabled`, ou menu de la tray *Zones (pochoir)*) ; sans zone apprise, il ne fait rien.
-
-* Mémoriser : poser le bout de l'index sur la commande, puis appuyer sur un **bouton de joystick / HOTAS** choisi dans la tray (*Zones >
-  Choisir le bouton…*, on appuie sur le bouton voulu) ; la zone est enregistrée `teach_delay_ms` plus tard (bip de confirmation). Repli au clavier :
-  Ctrl+Alt+F9 (apprendre), Ctrl+Alt+F10 (tout effacer). Les zones sont dans `zones.ini`, à côté de la DLL, dans l'espace du jeu : à réapprendre si le
-  cockpit est recalé.
-* Code : `core/emulation/ZoneTracker.h` (maintien et réarmement, testé), `layer/zones.cpp`, `win/JoyPoll.*` (DirectInput, partagé avec la tray).
-
-## Ce qui est vérifié, ce qui ne l'est pas (étape 0)
-
-| Élément | Statut |
-|---|---|
-| Cœur portable (INI, config à chaud, journal asynchrone, utilitaires) : compilation + 15 tests unitaires | **Vérifié** (Linux, g++ 13) |
-| Compilation de la couche avec MinGW-w64 ; la DLL exporte `xrNegotiateLoaderApiLayerInterface` | **Vérifié** (syntaxe/édition de liens uniquement, pas MSVC) |
-| Compilation avec Visual Studio 2022 / MSVC | **Non vérifié** |
-| Scripts PowerShell (install / uninstall / check-process) | **Non vérifiés** (aucun PowerShell disponible ici ; relus à la main) |
-| Chargement par le loader OpenXR, négociation, structures `loader_negotiation.h` écrites à la main | **Non vérifié** |
-| Comportement avec MSFS 2024 Store, VDXR, `XR_EXT_hand_tracking`, droits d'écriture du log | **Non vérifié** : c'est l'objet du test de l'étape 0 |
-| Nom exact de l'exécutable de MSFS 2024 (`FlightSimulator2024.exe` n'est qu'une hypothèse) | **Non vérifié** |
-
-## Compilation (Visual Studio 2022)
-
-Prérequis : VS 2022 (charge de travail « Développement Desktop en C++ »), CMake ≥ 3.20, Git.
+Prérequis : Visual Studio 2022 (C++), CMake ≥ 3.20, et, pour `HandsBridge.exe`, le **SDK SimConnect de MSFS** (`C:\MSFS 2024 SDK\SimConnect SDK`, option `-DHANDS_SIMCONNECT_SDK=`).
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure   # tests du coeur
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-La DLL, le manifeste et `hands.ini` se retrouvent dans `build\layer\Release\`.
-
-## Installation / désinstallation (PowerShell **64 bits, en administrateur**)
+Release complète (compilation, tests, installateur [Inno Setup 6](https://jrsoftware.org/isdl.php)) :
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -RemoveFiles
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1              # produit dist\HandsInteraction-Setup-<version>.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version 0.1.0 -Publish   # change la version, tag vX.Y.Z et release GitHub (gh)
 ```
 
-Fichiers installés dans `C:\ProgramData\HandsLayer\` (DLL, manifeste, `hands.ini`, `logs\`).
+La version est dans le fichier [VERSION](VERSION) (X.Y.Z, première publication : 0.0.1) ; elle est compilée dans la couche, la tray et le pont, et reprise par l'installateur.
+L'intégration continue GitHub ([.github/workflows/ci.yml](.github/workflows/ci.yml)) compile la couche et la tray et lance les tests ; elle ne peut pas construire le pont (SDK non redistribuable),
+c'est pourquoi **le Setup complet se construit en local**. Installation sans Setup, pour le développement : `scripts\install.ps1` (administrateur), `scripts\uninstall.ps1`.
 
 ## Arborescence
 
 ```
-core/      cœur portable C++17 (config INI, journal, utilitaires) — testé sous Linux
-layer/     couche OpenXR Windows (entry, layer, hooks, émulation, surimpression, menu VR)
-tray/      application de barre des tâches (HandsTray)
-manifest/  manifeste JSON de la couche
-config/    hands.ini d'exemple (copié à côté de la DLL)
-scripts/   install.ps1, uninstall.ps1, check-process.ps1
-tests/     tests unitaires du cœur (mini cadre maison, sans dépendance)
-docs/procedures-test/   procédure de test à exécuter dans le casque, par étape
-third_party/openxr/     en-têtes OpenXR officiels (voir THIRD_PARTY.md)
-cmake/     toolchain MinGW (vérification de compilation depuis Linux)
+core/       cœur portable C++17 : config INI, journal, calculs (pose, zones, gestes), modèle des zones et des actions — testé
+layer/      couche OpenXR : entry, hooks, masquage des manettes, émulation du rayon, surimpression, menu VR, zones, client du pont
+tray/       HandsTray : icône de barre des tâches, réglages, fenêtre de configuration des zones
+tools/      HandsBridge (pont SimConnect résident), simbridge_cli (essai en ligne de commande)
+win/        code Windows partagé : SimBridge (SimConnect), JoyPoll (DirectInput)
+installer/  HandsSetup.iss (Inno Setup)
+scripts/    build-release.ps1, install.ps1, uninstall.ps1, gen_command_library.py (bibliothèque Rafale), check-process.ps1
+config/     hands.ini d'exemple · manifest/ manifeste de la couche · tests/ tests unitaires · third_party/ en-têtes OpenXR (THIRD_PARTY.md)
 ```
+
+## Bilan de la voie « rayon aux mains » (conservé)
+
+Ce qui marche : suivi des mains exposé à MSFS, clic fiable, squelette des mains, menu VR. Ce qui ne marche pas assez : la **précision du rayon**, surtout sur les tablettes du cockpit.
+Essayé sans le résoudre : rayon par l'épaule estimée (torse lent, mélange avec la direction du doigt), lissage One Euro, pré-verrouillage de la pose avant le clic, zone morte.
+Voies fermées : profondeur (MSFS n'acquiert jamais ses swapchains de profondeur), SimConnect/WASM pour un « clic sous le rayon » générique (seulement des variables par avion).
+Piste non explorée : accroche du rayon sur la flèche bleue d'élément interactif que MSFS dessine.
 
 ## Choix de sécurité
 
-* **Fail-open** : toute erreur => la couche laisse passer sans rien modifier. Chaque hook appelle toujours la vraie fonction, en dehors de tout bloc `try`.
-* Hors processus autorisé (hors mode découverte) : aucun log, aucun thread, aucun hook.
-* Étape 0 : la seule modification du flux OpenXR est l'ajout de `XR_EXT_hand_tracking` aux extensions (désactivable : `enable_hand_tracking_extension = false`) ; si le runtime refuse, la création est retentée sans modification.
+* **Fail-open** : toute erreur laisse passer sans rien modifier ; chaque hook appelle toujours la vraie fonction, en dehors de tout bloc `try`.
+* Hors processus autorisé : aucun journal, aucun thread, aucun hook.
+* La DLL n'est modifiable que par les administrateurs ; seuls `logs\`, `data\` et `hands.ini` sont inscriptibles par le jeu.
+* Le tube nommé du pont n'accepte que des clients locaux.
 * Licence du projet : à choisir.

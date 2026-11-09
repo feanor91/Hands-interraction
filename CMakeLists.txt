@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(HandsInteraction LANGUAGES CXX)
+# Version unique du produit : fichier VERSION a la racine (X.Y.Z), lue par CMake, le script de release et l'installateur.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" HANDS_VERSION_FULL LIMIT_COUNT 1)
+project(HandsInteraction VERSION ${HANDS_VERSION_FULL} LANGUAGES CXX)
+add_compile_definitions(HANDS_VERSION="${HANDS_VERSION_FULL}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

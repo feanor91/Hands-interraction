@@ -1,0 +1,30 @@
+# Integration continue : compile la couche OpenXR, la tray et les tests a chaque envoi.
+# Le pont SimConnect (HandsBridge.exe) demande le SDK de MSFS, non redistribuable : il est ignore ici.
+# Les releases (avec le Setup complet) se construisent en local : scripts/build-release.ps1.
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Compiler
+        run: cmake --build build --config Release --parallel
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Archive (couche + tray, sans le pont SimConnect)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item build/layer/Release/XR_APILAYER_HANDS_bare.dll, build/layer/Release/XR_APILAYER_HANDS_bare.json, build/layer/Release/hands.ini, build/tray/Release/HandsTray.exe out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hands-interaction-build
+          path: out

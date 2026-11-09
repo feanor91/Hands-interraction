@@ -194,7 +194,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     SimBridge sim([](const std::string& s) { Log(s); });
     sim.Start();
-    Log("HandsBridge demarre");
+    Log(std::string("HandsBridge ") + HANDS_VERSION + " demarre");
 
     bool first = true;
     while (!g_quit) {
