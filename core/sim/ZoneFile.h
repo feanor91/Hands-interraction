@@ -1,5 +1,5 @@
 // ZoneFile.h — lecture / ecriture de zones.ini (modele partage par la fenetre de configuration de la tray).
-// Meme format que celui ecrit par la couche (layer/zones.cpp) : une section par zone, action + position apprise.
+// Meme format que celui ecrit par la couche (layer/zones.cpp) : une section par zone, type de commande + actions + positions apprises.
 #pragma once
 
 #include <cstdio>
@@ -7,17 +7,22 @@
 #include <vector>
 
 #include "config/IniFile.h"
-#include "sim/ZoneAction.h"
+#include "sim/ZoneControl.h"
 
 namespace hands::sim {
 
 struct ZoneRecord {
     std::string id;
-    ZoneAction action;
+    ZoneControl control;
     bool hasPos = false;
     double x = 0, y = 0, z = 0;
+    bool hasPos2 = false;  // curseur : fin de course
+    double x2 = 0, y2 = 0, z2 = 0;
     double radiusMm = 0;  // 0 = rayon par defaut de [zones] radius_mm
 };
+
+// Position complete = premier point, et pour un curseur aussi le second.
+inline bool Complete(const ZoneRecord& r) { return r.hasPos && (r.control.kind != "slider" || r.hasPos2); }
 
 inline std::vector<ZoneRecord> ParseZones(const std::string& text) {
     std::vector<ZoneRecord> out;
@@ -25,17 +30,19 @@ inline std::vector<ZoneRecord> ParseZones(const std::string& text) {
     for (const std::string& sec : ini.Sections()) {
         ZoneRecord r;
         r.id = sec;
-        r.action.type = ini.GetString(sec, "action", "");
-        r.action.target = ini.GetString(sec, "target", "");
-        r.action.unit = ini.GetString(sec, "unit", "number");
-        r.action.value = ini.GetDouble(sec, "value", 1.0);
-        r.action.mode = ini.GetString(sec, "mode", r.action.type == "event" || r.action.type == "code" ? "press" : "set");
+        r.control = ParseControl(ini, sec);
         if (ini.Has(sec, "x")) {
             r.hasPos = true;
             r.x = ini.GetDouble(sec, "x", 0);
             r.y = ini.GetDouble(sec, "y", 0);
             r.z = ini.GetDouble(sec, "z", 0);
             r.radiusMm = ini.GetDouble(sec, "radius_mm", 0);
+        }
+        if (ini.Has(sec, "x2")) {
+            r.hasPos2 = true;
+            r.x2 = ini.GetDouble(sec, "x2", 0);
+            r.y2 = ini.GetDouble(sec, "y2", 0);
+            r.z2 = ini.GetDouble(sec, "z2", 0);
         }
         out.push_back(std::move(r));
     }
@@ -44,18 +51,19 @@ inline std::vector<ZoneRecord> ParseZones(const std::string& text) {
 
 inline std::string SerializeZones(const std::vector<ZoneRecord>& zones) {
     std::string s =
-        "; Zones du pochoir. Une section par zone. Position apprise (espace du jeu, metres) = x, y, z ; l'action est envoyee au pont SimConnect.\n"
-        "; action = event | var | input | code     target = nom (PARKING_BRAKES, L:AZP_RAF_X, nom d'Input Event, ou code avionique)\n"
-        "; mode = press | set | toggle              unit = number (variables)      value = 1\n"
+        "; Zones du pochoir. Une section par zone : type de commande (control), actions, position apprise (espace du jeu, metres).\n"
+        "; control = push | toggle | switch | dial | slider ; les actions sont des sequences : type|mode|valeur|unite|min|max|boucle|cible >> ...\n"
+        "; type = event | var | input | code | delay ; mode = press | set | toggle | add. Voir core/sim/ZoneControl.h.\n"
         "; Une zone sans x/y/z attend d'etre apprise : le bouton de memorisation apprend la premiere de la liste qui n'a pas de position.\n\n";
-    char b[160];
+    char b[200];
     for (const ZoneRecord& z : zones) {
-        s += "[" + z.id + "]\naction = " + z.action.type + "\ntarget = " + z.action.target + "\nmode = " + z.action.mode + "\n";
-        if (z.action.type == "var") s += "unit = " + z.action.unit + "\n";
-        std::snprintf(b, sizeof(b), "value = %g\n", z.action.value);
-        s += b;
+        s += "[" + z.id + "]\n" + SerializeControl(z.control);
         if (z.hasPos) {
             std::snprintf(b, sizeof(b), "x = %.4f\ny = %.4f\nz = %.4f\nradius_mm = %.0f\n", z.x, z.y, z.z, z.radiusMm);
+            s += b;
+        }
+        if (z.hasPos2) {
+            std::snprintf(b, sizeof(b), "x2 = %.4f\ny2 = %.4f\nz2 = %.4f\n", z.x2, z.y2, z.z2);
             s += b;
         }
         s += "\n";

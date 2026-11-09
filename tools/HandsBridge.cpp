@@ -12,7 +12,9 @@
 #include <sddl.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +66,21 @@ std::vector<std::string> Split(const std::string& s) {
     return out;
 }
 
+// Ajoute `delta` a `cur`, borne par min / max (« - » = sans borne) ou boucle dans [min, max[ si `wrap`.
+double AddOp(double cur, double delta, const std::string& mn, const std::string& mx, bool wrap) {
+    double next = std::round((cur + delta) * 1e6) / 1e6;
+    const bool hasMin = mn != "-" && !mn.empty(), hasMax = mx != "-" && !mx.empty();
+    const double lo = hasMin ? std::atof(mn.c_str()) : 0.0, hi = hasMax ? std::atof(mx.c_str()) : 0.0;
+    if (wrap && hasMin && hasMax && hi > lo) {
+        const double span = hi - lo;
+        next = std::fmod(std::fmod(next - lo, span) + span, span) + lo;
+    } else {
+        if (hasMin) next = std::max(lo, next);
+        if (hasMax) next = std::min(hi, next);
+    }
+    return next;
+}
+
 // Execute une requete ; renvoie la reponse (sans fin de ligne).
 std::string Handle(SimBridge& sim, const std::string& line) {
     const std::vector<std::string> f = Split(line);
@@ -78,6 +95,25 @@ std::string Handle(SimBridge& sim, const std::string& line) {
     }
     if (c == "quit") {
         g_quit = true;
+        return "ok";
+    }
+    if (c == "getvar" || c == "getinput") {
+        double v = 0;
+        const bool ok = c == "getvar" ? sim.ReadVar(arg(1), arg(2).empty() ? "number" : arg(2), &v, 2000, &err) : sim.ReadInput(arg(1), &v, 4000, &err);
+        if (!ok) return bad(err);
+        return "ok	" + std::to_string(v);
+    }
+    if (c == "addvar") {
+        const std::string unit = arg(2).empty() ? "number" : arg(2);
+        double cur = 0;
+        if (!sim.ReadVar(arg(1), unit, &cur, 2000, &err)) return bad(err);
+        if (!sim.SetVar(arg(1), unit, AddOp(cur, std::atof(arg(3).c_str()), arg(4), arg(5), arg(6) == "1"), &err)) return bad(err);
+        return "ok";
+    }
+    if (c == "addinput") {
+        double cur = 0;
+        if (!sim.ReadInput(arg(1), &cur, 4000, &err)) return bad(err);
+        if (!sim.SetInput(arg(1), AddOp(cur, std::atof(arg(2).c_str()), arg(3), arg(4), arg(5) == "1"), &err)) return bad(err);
         return "ok";
     }
     if (c == "inputs") {  // liste des Input Events de l'avion charge : ok<TAB>nom<TAB>nom...

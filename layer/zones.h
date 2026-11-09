@@ -1,10 +1,12 @@
-// zones.h — pochoir : zones sphériques apprises au bout de l'index, qui déclenchent une touche de StreamSim au contact.
+// zones.h — pochoir : zones apprises au bout de l'index, qui commandent le simulateur par le pont SimConnect (HandsBridge.exe).
 //
-// Apprentissage : Ctrl+Alt+F9 lance un compte a rebours (5 s, un bip par seconde) puis enregistre la position du bout de l'index (main droite,
-// sinon gauche) comme zone "frein_parc" : le temps de poser le doigt sur la commande ; Ctrl+Alt+F10
-// efface toutes les zones. Les positions sont dans l'espace du jeu (celui des couches de projection) et sont enregistrées dans
-// `zones.ini` à côté de la DLL ; si le cockpit est recalé d'une session à l'autre, il faut réapprendre la zone.
-// Contact : le bout de l'index reste `[zones] dwell_ms` dans la zone -> POST http://127.0.0.1:<server_port>/api/press (touche StreamSim).
+// Types de commande (comme les touches de StreamSim, voir core/sim/ZoneControl.h) :
+//   poussoir / bascule   toucher la zone (le bout de l'index y reste `[zones] dwell_ms`) envoie la sequence `press` ;
+//   interrupteur         chaque contact passe a la position suivante (cycle ou aller-retour) ;
+//   rotatif              pincer dans la zone puis tourner le poignet : un cran tous les `step_deg` degres ; pincer-relacher = appui ;
+//   curseur              deux points appris (debut et fin de course) ; pincer et glisser, par valeur ou par crans.
+// Apprentissage : bouton de la tray ou Ctrl+Alt+F9 (premiere zone incomplete), ou menu en VR (zone choisie). Positions dans l'espace du jeu,
+// enregistrees dans `zones.ini` (data a cote de la DLL) ; si le cockpit est recale d'une session a l'autre, il faut reapprendre les zones.
 #pragma once
 
 #include <openxr/openxr.h>

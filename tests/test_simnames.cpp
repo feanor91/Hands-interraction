@@ -49,42 +49,94 @@ TEST(SimNames_code_avionique) {
     CHECK(IsCodeTooLong(std::string(1100, 'a')));
 }
 
-#include "sim/ZoneAction.h"
+#include "sim/ZoneFile.h"
+
+using namespace hands::sim;
 
 TEST(ZoneAction_requetes) {
-    hands::sim::ZoneAction a;
+    ZoneAction a;
     std::string err;
-    CHECK(BuildBridgeRequest(a, &err).empty());  // sans action
+    CHECK(BuildBridgeRequest(a, &err).empty());
     a.type = "event"; a.target = "parking_brakes"; a.value = 1;
     CHECK(BuildBridgeRequest(a, &err) == "event\tPARKING_BRAKES\t1");
-    a.type = "var"; a.target = "l:AZP_X"; a.unit = "bool"; a.value = 1; a.mode = "toggle";
+    a.type = "var"; a.target = "l:AZP_X"; a.unit = "bool"; a.mode = "toggle";
     CHECK(BuildBridgeRequest(a, &err) == "togglevar\tL:AZP_X\tbool\t1");
-    a.mode = "set"; a.value = 0.5;
-    CHECK(BuildBridgeRequest(a, &err) == "setvar\tL:AZP_X\tbool\t0.5");
-    a.type = "input"; a.target = "AZP_RAF_SW"; a.mode = "toggle";
-    CHECK(BuildBridgeRequest(a, &err) == "toggleinput\tAZP_RAF_SW\t0.5");
+    a.mode = "add"; a.value = 0.05; a.hasMin = true; a.min = 0; a.hasMax = true; a.max = 1; a.wrap = false;
+    CHECK(BuildBridgeRequest(a, &err) == "addvar\tL:AZP_X\tbool\t0.05\t0\t1\t0");
+    a.type = "input"; a.target = "AZP_RAF_SW"; a.mode = "add"; a.hasMax = false; a.wrap = true;
+    CHECK(BuildBridgeRequest(a, &err) == "addinput\tAZP_RAF_SW\t0.05\t0\t-\t1");
     a.type = "code"; a.target = "  (>H:AZP_X)  ";
     CHECK(BuildBridgeRequest(a, &err) == "code\t(>H:AZP_X)");
     a.type = "event"; a.target = "bad name";
     CHECK(BuildBridgeRequest(a, &err).empty() && !err.empty());
-    a.type = "zzz";
-    CHECK(BuildBridgeRequest(a, &err).empty());
+    a.type = "delay";
+    CHECK(BuildBridgeRequest(a, &err).empty() && err == "pause");
 }
 
-#include "sim/ZoneFile.h"
+TEST(ZoneControl_sequences) {
+    ActionSeq s = ParseSeq("input|toggle|1|number|||0|LANDING_GEAR_PARKINGBRAKE >> delay|set|300|number|||0| >> code|press|1|number|||0|(>H:A) (>L:B, Bool)");
+    CHECK(s.size() == 3);
+    CHECK(s[0].type == "input" && s[0].mode == "toggle" && s[0].target == "LANDING_GEAR_PARKINGBRAKE");
+    CHECK(s[1].type == "delay" && s[1].value == 300);
+    CHECK(s[2].type == "code" && s[2].target == "(>H:A) (>L:B, Bool)");
+    CHECK(ParseSeq(FormatSeq(s)).size() == 3);
+    CHECK(ParseSeq("n'importe quoi").empty());
+}
 
 TEST(ZoneFile_aller_retour) {
-    hands::sim::ZoneRecord a;
-    a.id = "frein_parc"; a.action.type = "event"; a.action.target = "PARKING_BRAKES"; a.action.mode = "press";
+    ZoneRecord a;
+    a.id = "frein_parc";
+    a.control.kind = "push";
+    a.control.slots["press"] = ParseSeq("event|press|1|number|||0|PARKING_BRAKES");
     a.hasPos = true; a.x = 0.1234; a.y = -0.5; a.z = 0.75; a.radiusMm = 20;
-    hands::sim::ZoneRecord b;
-    b.id = "efb"; b.action.type = "var"; b.action.target = "L:AZP_RAF_EFB_ON"; b.action.mode = "toggle"; b.action.unit = "bool"; b.action.value = 1;
-    const auto back = hands::sim::ParseZones(hands::sim::SerializeZones({a, b}));
-    CHECK(back.size() == 2);
-    CHECK(back[0].id == "efb" || back[1].id == "efb");
-    for (const auto& r : back) {
-        if (r.id == "frein_parc") CHECK(r.hasPos && r.action.target == "PARKING_BRAKES" && r.radiusMm == 20);
-        if (r.id == "efb") CHECK(!r.hasPos && r.action.mode == "toggle" && r.action.unit == "bool");
-    }
-    CHECK(hands::sim::SanitizeZoneId("Frein de Parc.1") == "frein_de_parc1");
+    ZoneRecord b;
+    b.id = "aec";
+    b.control.kind = "slider"; b.control.sliderMode = "value"; b.control.min = 0; b.control.max = 16383;
+    b.control.slots["set"] = ParseSeq("event|set|1|number|||0|THROTTLE_SET");
+    b.hasPos = b.hasPos2 = true; b.x = 1; b.y = 2; b.z = 3; b.x2 = 1; b.y2 = 2.2; b.z2 = 3;
+    ZoneRecord c;
+    c.id = "mode";
+    c.control.kind = "switch"; c.control.count = 3; c.control.switchMode = "cycle";
+    for (const char* k : {"pos1", "pos2", "pos3"}) c.control.slots[k] = ParseSeq("var|set|1|number|||0|L:X");
+    const auto back = ParseZones(SerializeZones({a, b, c}));
+    CHECK(back.size() == 3);
+    CHECK(back[0].id == "frein_parc" && back[1].id == "aec" && back[2].id == "mode");  // ordre conserve
+    CHECK(back[0].hasPos && back[0].control.slots.at("press")[0].target == "PARKING_BRAKES" && back[0].radiusMm == 20);
+    CHECK(back[1].control.kind == "slider" && back[1].hasPos2 && Complete(back[1]) && !Complete([&] { ZoneRecord r = b; r.hasPos2 = false; return r; }()));
+    CHECK(back[2].control.count == 3 && back[2].control.switchMode == "cycle" && !back[2].hasPos);
+    CHECK(Validate(back[0].control).empty() && Validate(back[1].control).empty() && Validate(back[2].control).empty());
+    CHECK(SanitizeZoneId("Frein de Parc.1") == "frein_de_parc1");
+}
+
+TEST(ZoneControl_ancien_format) {
+    const auto z = ParseZones("[frein]\naction = event\ntarget = PARKING_BRAKES\nmode = press\nvalue = 1\nx = 1\ny = 2\nz = 3\n");
+    CHECK(z.size() == 1 && z[0].control.kind == "push");
+    CHECK(z[0].control.slots.at("press").size() == 1 && z[0].control.slots.at("press")[0].target == "PARKING_BRAKES");
+}
+
+TEST(ZoneControl_validation) {
+    ZoneControl c;
+    c.kind = "dial";
+    c.slots["inc"] = ParseSeq("code|press|1|number|||0|(>H:X_INC)");
+    CHECK(!Validate(c).empty());  // dec manquant
+    c.slots["dec"] = ParseSeq("code|press|1|number|||0|(>H:X_DEC)");
+    CHECK(Validate(c).empty());
+    c.kind = "switch"; c.count = 3;
+    CHECK(!Validate(c).empty());
+    c.kind = "push";
+    CHECK(!Validate(c).empty());  // pas de press
+}
+
+TEST(ZoneControl_gestes) {
+    int pos, dir;
+    NextPosition(3, "bounce", 0, 1, &pos, &dir); CHECK(pos == 1 && dir == 1);
+    NextPosition(3, "bounce", 2, 1, &pos, &dir); CHECK(pos == 1 && dir == -1);
+    NextPosition(3, "bounce", 0, -1, &pos, &dir); CHECK(pos == 1 && dir == 1);
+    NextPosition(3, "cycle", 2, 1, &pos, &dir); CHECK(pos == 0);
+    CHECK(PositionOf(37, {0, 25, 37, 50, 63, 75}, 6) == 2);
+    CHECK(PositionOf(1.4, {}, 3) == 1 && PositionOf(9, {}, 3) == 2);
+    CHECK(LevelToValue(0.5, 0, 16383) == 8192 && LevelToValue(2, 0, 100) == 100);
+    CHECK(NotchDelta(0, 1, 10) == 10 && NotchDelta(0.52, 0.48, 10) == 0 && NotchDelta(0.5, 0.2, 10) == -3);
+    DialAccumulator d;
+    CHECK(d.Feed(10, 25) == 0 && d.Feed(20, 25) == 1 && d.Feed(-60, 25) == -2);
 }

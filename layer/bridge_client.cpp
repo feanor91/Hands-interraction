@@ -7,7 +7,10 @@
 #endif
 #include <windows.h>
 
-#include <atomic>
+#include <condition_variable>
+#include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -19,31 +22,41 @@ namespace layer {
 using hands::log::LogLevel;
 using hands::log::Logger;
 
-void Bridge_Send(const std::string& request, const std::string& label) {
-    static std::atomic<int> inFlight{0};
-    if (inFlight.fetch_add(1) >= 3) {  // pont bloque : on ne fait pas s'empiler les fils
-        --inFlight;
-        Logger::Get().Log(LogLevel::Warn, "pont : '%s' ignore (trop de requetes en attente)", label.c_str());
-        return;
-    }
-    std::thread([request, label] {
-        char reply[1024] = {};
-        DWORD got = 0;
-        // Si le tube n'existe pas encore, on attend brievement (la tray relance le pont) ; reponse attendue en moins de 6 s (lecture d'etat).
-        const BOOL ok = CallNamedPipeW(L"\\\\.\\pipe\\HandsBridge", const_cast<char*>(request.data()), static_cast<DWORD>(request.size()), reply,
-                                       sizeof(reply) - 1, &got, 6000);
-        std::string rep(reply, ok ? got : 0);
-        while (!rep.empty() && (rep.back() == '\n' || rep.back() == '\r')) rep.pop_back();
-        if (!ok)
-            Logger::Get().Log(LogLevel::Warn, "pont : '%s' -> pont injoignable (erreur %lu) ; HandsBridge.exe est-il lance (tray) ?", label.c_str(),
-                              static_cast<unsigned long>(GetLastError()));
-        else if (rep.rfind("ok", 0) == 0)
-            Logger::Get().Log(LogLevel::Info, "pont : '%s' -> ok", label.c_str());
-        else
-            Logger::Get().Log(LogLevel::Warn, "pont : '%s' -> %s", label.c_str(), rep.c_str());
-        --inFlight;
-    }).detach();
+namespace {
+
+constexpr size_t kMaxPending = 16;  // taches en attente au maximum (pont bloque : on ne s'empile pas)
+
+struct Worker {
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<std::function<void()>> q;
+    bool started = false;
+};
+
+// Jamais detruit : le fil de travail peut encore tourner quand la DLL se decharge (pas de destructeur statique a risque).
+Worker& W() {
+    static Worker* w = new Worker;
+    return *w;
 }
+
+void Loop() {
+    Worker& w = W();
+    for (;;) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> l(w.m);
+            w.cv.wait(l, [&] { return !w.q.empty(); });
+            task = std::move(w.q.front());
+            w.q.pop_front();
+        }
+        try {
+            task();
+        } catch (...) {
+        }
+    }
+}
+
+}  // namespace
 
 std::string Bridge_Call(const std::string& request, unsigned timeoutMs) {
     std::string buf(256 * 1024, '\0');
@@ -54,6 +67,62 @@ std::string Bridge_Call(const std::string& request, unsigned timeoutMs) {
     buf.resize(got);
     while (!buf.empty() && (buf.back() == '\n' || buf.back() == '\r')) buf.pop_back();
     return buf;
+}
+
+bool Bridge_ReadNumber(const std::string& request, double* out) {
+    const std::string r = Bridge_Call(request, 6000);
+    if (r.rfind("ok", 0) != 0) return false;
+    const size_t t = r.find('\t');
+    if (t == std::string::npos) return false;
+    *out = std::atof(r.c_str() + t + 1);
+    return true;
+}
+
+bool Bridge_Post(std::function<void()> task) {
+    Worker& w = W();
+    {
+        std::lock_guard<std::mutex> l(w.m);
+        if (w.q.size() >= kMaxPending) return false;
+        w.q.push_back(std::move(task));
+        if (!w.started) {
+            w.started = true;
+            std::thread(Loop).detach();
+        }
+    }
+    w.cv.notify_one();
+    return true;
+}
+
+void Bridge_RunSeqNow(const hands::sim::ActionSeq& seq, const std::string& label) {
+    for (const hands::sim::ZoneAction& a : seq) {
+        if (a.type == "delay") {
+            Sleep(static_cast<DWORD>(a.value < 0 ? 0 : (a.value > 5000 ? 5000 : a.value)));
+            continue;
+        }
+        std::string err;
+        const std::string req = hands::sim::BuildBridgeRequest(a, &err);
+        if (req.empty()) {
+            Logger::Get().Log(LogLevel::Warn, "pont : '%s' : action inutilisable (%s)", label.c_str(), err.c_str());
+            return;
+        }
+        const std::string rep = Bridge_Call(req, 8000);
+        if (rep.empty()) {
+            Logger::Get().Log(LogLevel::Warn, "pont : '%s' -> pont injoignable ; HandsBridge.exe est-il lance (tray) ?", label.c_str());
+            return;
+        }
+        if (rep.rfind("ok", 0) != 0) {
+            Logger::Get().Log(LogLevel::Warn, "pont : '%s' -> %s", label.c_str(), rep.c_str());
+            return;
+        }
+    }
+    Logger::Get().Log(LogLevel::Info, "pont : '%s' -> ok", label.c_str());
+}
+
+bool Bridge_RunSeq(const hands::sim::ActionSeq& seq, const std::string& label) {
+    if (seq.empty()) return false;
+    if (Bridge_Post([seq, label] { Bridge_RunSeqNow(seq, label); })) return true;
+    Logger::Get().Log(LogLevel::Warn, "pont : '%s' ignore (file d'attente pleine)", label.c_str());
+    return false;
 }
 
 }  // namespace layer

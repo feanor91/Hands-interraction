@@ -11,11 +11,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -24,11 +26,10 @@
 
 #include "JoyPoll.h"
 #include "bridge_client.h"
-#include "sim/ZoneAction.h"
-#include "sim/ZoneFile.h"
 #include "config/IniFile.h"
 #include "emulation/ZoneTracker.h"
 #include "log/Logger.h"
+#include "sim/ZoneFile.h"
 #include "state.h"
 #include "zones.h"
 
@@ -36,35 +37,56 @@ namespace layer {
 namespace {
 
 namespace em = hands::emulation;
+namespace sim = hands::sim;
 using hands::log::LogLevel;
 using hands::log::Logger;
 
 constexpr int kIndexTip = 10;  // XR_HAND_JOINT_INDEX_TIP_EXT
+constexpr int kPalm = 0, kWrist = 1, kMiddleProximal = 12;
 
-// Une zone : nom, action a envoyer au pont SimConnect, position apprise. Lues dans zones.ini (une section par zone).
+// Une zone : type de commande + actions (zones.ini), position(s) apprise(s), et l'etat des gestes en cours.
 struct ZoneState {
     std::string id;
-    hands::sim::ZoneAction action;
-    bool defined = false;  // position apprise
+    sim::ZoneControl ctrl;
+    bool defined = false;   // premier point appris
     em::Vec3 pos;
+    bool defined2 = false;  // curseur : fin de course apprise
+    em::Vec3 pos2;
     float radius = 0.02f;
     em::ZoneTracker tracker[2];
     ULONGLONG lastNear = 0;
     bool inside = false;        // un bout d'index est dans la zone (derniere image)
     ULONGLONG lastFire = 0;     // dernier declenchement
     ULONGLONG lastCapture = 0;  // derniere memorisation
+    // Gestes (rotatif, curseur) : une main saisit la commande en pincant dedans.
+    bool prevPinch[2] = {false, false};
+    int grabHand = -1;
+    ULONGLONG grabAt = 0;
+    bool rotated = false;
+    em::Vec3 axis0, n0;
+    double lastAngle = 0.0;
+    sim::DialAccumulator dial;
+    double prevLevel = 0.0, lastSentLevel = -1.0;
+    ULONGLONG lastSend = 0;
 };
 std::vector<ZoneState> g_zone;
+
+bool Complete(const ZoneState& z) { return z.defined && (z.ctrl.kind != "slider" || z.defined2); }
 
 bool g_loaded = false;
 FILETIME g_loadedStamp{};
 ULONGLONG g_lastCheck = 0;
-std::string g_teachId;  // zone visee par l'apprentissage en cours (vide = premiere sans position)
+std::string g_teachId;  // zone visee par l'apprentissage en cours (vide = premiere incomplete)
+int g_teachStage = 1;   // curseur : 1 = debut de course, 2 = fin de course
 bool g_prevTeach = false, g_prevClear = false;
 ULONGLONG g_teachAt = 0, g_teachTick = 0;  // enregistrement differe (0 = aucun)
 em::Vec3 g_teachTip;                       // bout d'index qui sera enregistre (pour le repere visuel)
 bool g_teachTipValid = false;
 int g_buttonLogsLeft = 200;
+
+// Interrupteurs a N positions : derniere position envoyee et sens (aller-retour), par zone. Touches depuis le fil du pont.
+std::mutex g_swMutex;
+std::map<std::string, std::pair<int, int>> g_switchState;
 
 // Alloue et jamais detruit : pas de COM dans un destructeur statique (dechargement de la DLL sous verrou du chargeur).
 hands::win::JoyPoll& JoyInstance() {
@@ -72,8 +94,8 @@ hands::win::JoyPoll& JoyInstance() {
     return *p;
 }
 
-// zones.ini : le dossier de la DLL n'est inscriptible que sur logs\ (et data\ depuis la version du 8 novembre de install.ps1) ; on prend data\
-// s'il existe, sinon logs\ (installations anterieures).
+// zones.ini : le dossier de la DLL n'est inscriptible que dans logs (et data depuis la version du 8 novembre de install.ps1) ; on prend data
+// s'il existe, sinon logs (installations anterieures).
 std::string ZonesPath() {
     std::error_code ec;
     const std::filesystem::path data = LayerBaseDir() / "data";
@@ -86,66 +108,58 @@ FILETIME FileStamp() {
     return GetFileAttributesExA(ZonesPath().c_str(), GetFileExInfoStandard, &d) ? d.ftLastWriteTime : FILETIME{};
 }
 
+em::Vec3 V(double x, double y, double z) { return {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)}; }
+
 void LoadZones() {
     g_zone.clear();
     std::ifstream f(ZonesPath());
     if (f) {
         std::stringstream ss;
         ss << f.rdbuf();
-        const auto ini = hands::config::IniFile::Parse(ss.str());
-        for (const std::string& sec : ini.Sections()) {
+        for (const sim::ZoneRecord& r : sim::ParseZones(ss.str())) {
             ZoneState z;
-            z.id = sec;
-            z.action.type = ini.GetString(sec, "action", "");
-            z.action.target = ini.GetString(sec, "target", "");
-            z.action.unit = ini.GetString(sec, "unit", "number");
-            z.action.value = ini.GetDouble(sec, "value", 1.0);
-            z.action.mode = ini.GetString(sec, "mode", z.action.type == "event" || z.action.type == "code" ? "press" : "set");
-            z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
-            if (ini.Has(sec, "x")) {
-                z.pos = {static_cast<float>(ini.GetDouble(sec, "x", 0)), static_cast<float>(ini.GetDouble(sec, "y", 0)),
-                         static_cast<float>(ini.GetDouble(sec, "z", 0))};
-                const double r = ini.GetDouble(sec, "radius_mm", 0.0);
-                if (r >= 5.0 && r <= 100.0) z.radius = static_cast<float>(r / 1000.0);
+            z.id = r.id;
+            z.ctrl = r.control;
+            z.radius = static_cast<float>((r.radiusMm >= 5.0 && r.radiusMm <= 100.0 ? r.radiusMm : CurrentConfig()->zoneRadiusMm) / 1000.0);
+            if (r.hasPos) {
                 z.defined = true;
-                for (auto& t : z.tracker) t.Disarm();  // le doigt est peut-etre deja dans la zone : pas de declenchement au chargement
+                z.pos = V(r.x, r.y, r.z);
             }
+            if (r.hasPos2) {
+                z.defined2 = true;
+                z.pos2 = V(r.x2, r.y2, r.z2);
+            }
+            for (auto& t : z.tracker) t.Disarm();  // le doigt est peut-etre deja dans la zone : pas de declenchement au chargement
             g_zone.push_back(std::move(z));
         }
     }
     if (g_zone.empty()) {  // premier lancement : une zone d'essai (frein de parc), a apprendre
         ZoneState z;
         z.id = "frein_parc";
-        z.action.type = "event";
-        z.action.target = "PARKING_BRAKES";
-        z.action.mode = "press";
+        z.ctrl.kind = "push";
+        z.ctrl.slots["press"] = sim::ParseSeq("event|press|1|number|||0|PARKING_BRAKES");
         z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
         g_zone.push_back(std::move(z));
     }
 }
 
 void SaveZones() {
-    std::ofstream f(ZonesPath(), std::ios::trunc);
+    std::vector<sim::ZoneRecord> recs;
+    for (const ZoneState& z : g_zone) {
+        sim::ZoneRecord r;
+        r.id = z.id;
+        r.control = z.ctrl;
+        r.radiusMm = z.radius * 1000.0;
+        if (z.defined) { r.hasPos = true; r.x = z.pos.x; r.y = z.pos.y; r.z = z.pos.z; }
+        if (z.defined2) { r.hasPos2 = true; r.x2 = z.pos2.x; r.y2 = z.pos2.y; r.z2 = z.pos2.z; }
+        recs.push_back(std::move(r));
+    }
+    std::ofstream f(ZonesPath(), std::ios::trunc | std::ios::binary);
     if (!f) {
         Logger::Get().Log(LogLevel::Warn, "zones : ecriture de zones.ini impossible (%s) ; reinstallez la couche (install.ps1 cree data)", ZonesPath().c_str());
         return;
     }
-    f << "; Zones du pochoir. Une section par zone. Position apprise (espace du jeu, metres) = x, y, z ; l'action est envoyee au pont SimConnect.\n"
-         "; action = event | var | input | code     target = nom (PARKING_BRAKES, L:AZP_RAF_X, nom d'Input Event, ou code avionique)\n"
-         "; mode = press | set | toggle              unit = number (variables)      value = 1\n"
-         "; Une zone sans x/y/z attend d'etre apprise : le bouton de memorisation apprend la premiere de la liste qui n'a pas de position.\n\n";
-    for (const ZoneState& z : g_zone) {
-        char b[160];
-        f << "[" << z.id << "]\naction = " << z.action.type << "\ntarget = " << z.action.target << "\nmode = " << z.action.mode << "\n";
-        if (z.action.type == "var") f << "unit = " << z.action.unit << "\n";
-        std::snprintf(b, sizeof(b), "value = %g\n", z.action.value);
-        f << b;
-        if (z.defined) {
-            std::snprintf(b, sizeof(b), "x = %.4f\ny = %.4f\nz = %.4f\nradius_mm = %.0f\n", z.pos.x, z.pos.y, z.pos.z, z.radius * 1000.0f);
-            f << b;
-        }
-        f << "\n";
-    }
+    f << sim::SerializeZones(recs);
 }
 
 // --- Retour sonore : de petits sons generes en memoire et joues par PlaySound (passent par le peripherique audio par defaut, que Virtual
@@ -190,16 +204,6 @@ void Play(Snd s) {
     }
 }
 
-// Envoie l'action de la zone au pont SimConnect (HandsBridge.exe).
-void Fire(const ZoneState& z) {
-    std::string err;
-    const std::string req = hands::sim::BuildBridgeRequest(z.action, &err);
-    if (req.empty()) {
-        Logger::Get().Log(LogLevel::Warn, "zones : '%s' : action inutilisable (%s) ; corrigez zones.ini", z.id.c_str(), err.c_str());
-        return;
-    }
-    Bridge_Send(req, z.id);
-}
 
 bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
@@ -208,6 +212,155 @@ int TeachHand(const HandsFrame& frame) {
     for (int k : {1, 0})
         if (frame.hand[k].valid && frame.hand[k].jointValid[kIndexTip]) return k;
     return -1;
+}
+
+// --- Actions ------------------------------------------------------------------------------------------------------------------------
+
+// Contact simple (poussoir, bascule) : envoie la sequence `press`.
+void FirePress(const ZoneState& z) { Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id); }
+
+// Interrupteur a N positions : position suivante (lue dans le simulateur si `read` est defini), puis sequence de cette position.
+void FireSwitch(const ZoneState& z) {
+    const sim::ZoneControl c = z.ctrl;
+    const std::string id = z.id;
+    Bridge_Post([c, id] {
+        int cur = 0, dir = 1;
+        {
+            std::lock_guard<std::mutex> l(g_swMutex);
+            auto it = g_switchState.find(id);
+            if (it != g_switchState.end()) { cur = it->second.first; dir = it->second.second; }
+        }
+        if (!c.read.empty()) {  // « var|NOM|unite » ou « input|NOM »
+            std::vector<std::string> f;
+            std::stringstream rs(c.read);
+            for (std::string t; std::getline(rs, t, '|');) f.push_back(t);
+            std::string req;
+            if (f.size() >= 2 && f[0] == "var") req = "getvar	" + f[1] + "	" + (f.size() >= 3 ? f[2] : std::string("number"));
+            else if (f.size() >= 2 && f[0] == "input") req = "getinput	" + f[1];
+            double v = 0;
+            std::vector<double> table;
+            std::stringstream ss(c.readValues);
+            for (std::string t; std::getline(ss, t, ',');) table.push_back(std::atof(t.c_str()));
+            if (!req.empty() && Bridge_ReadNumber(req, &v)) cur = sim::PositionOf(v, table, c.count);
+        }
+        int pos = 0, nd = 1;
+        sim::NextPosition(c.count, c.switchMode, cur, dir, &pos, &nd);
+        {
+            std::lock_guard<std::mutex> l(g_swMutex);
+            g_switchState[id] = {pos, nd};
+        }
+        Bridge_RunSeqNow(sim::Slot(c, "pos" + std::to_string(pos + 1)), id + " position " + std::to_string(pos + 1));
+    });
+}
+
+// --- Gestes de saisie (rotatif, curseur) -------------------------------------------------------------------------------------------
+
+em::Vec3 PerpTo(em::Vec3 v, em::Vec3 axis) { return em::Normalized(v - axis * em::Dot(v, axis)); }
+
+double DistToSegment(em::Vec3 p, em::Vec3 a, em::Vec3 b, double* level) {
+    const em::Vec3 ab = b - a;
+    const double l2 = em::Dot(ab, ab);
+    double t = l2 > 1e-9 ? em::Dot(p - a, ab) / l2 : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    if (level) *level = t;
+    return em::Length(p - (a + ab * static_cast<float>(t)));
+}
+
+void EndGrab(ZoneState& z, ULONGLONG now) {
+    if (z.grabHand < 0) return;
+    // Rotatif : pincer et relacher sans tourner = appui sur le bouton.
+    if (z.ctrl.kind == "dial" && !z.rotated && now - z.grabAt < 800 && !sim::Slot(z.ctrl, "press").empty()) {
+        Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id + " appui");
+        z.lastFire = now;
+        Play(Snd::Trigger);
+    }
+    z.grabHand = -1;
+}
+
+void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
+    z.inside = false;
+    for (int h = 0; h < 2; ++h) {
+        const HandPoseData& hd = frame.hand[h];
+        const bool ok = hd.valid && hd.jointValid[kIndexTip] && hd.jointValid[kPalm] && hd.jointValid[kWrist] && hd.jointValid[kMiddleProximal];
+        const bool isNear = ok && em::Length(hd.joint[kIndexTip].p - z.pos) <= z.radius * 1.3f;
+        if (isNear) z.inside = true;
+        const bool pinch = ok && hd.pressed;
+        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {  // saisie : pincement qui commence dans la zone
+            z.grabHand = h;
+            z.grabAt = now;
+            z.rotated = false;
+            z.dial = sim::DialAccumulator{};
+            z.axis0 = em::Normalized(hd.joint[kMiddleProximal].p - hd.joint[kWrist].p);
+            z.n0 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
+            z.lastAngle = 0.0;
+        } else if (z.grabHand == h) {
+            if (!pinch || em::Length(hd.joint[kIndexTip].p - z.pos) > z.radius * 2.5f) {
+                EndGrab(z, now);
+            } else {
+                const em::Vec3 n1 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
+                const double ang = std::atan2(static_cast<double>(em::Dot(z.axis0, em::Cross(z.n0, n1))), static_cast<double>(em::Dot(z.n0, n1))) * 57.29577951;
+                double d = ang - z.lastAngle;
+                while (d > 180.0) d -= 360.0;
+                while (d < -180.0) d += 360.0;
+                z.lastAngle = ang;
+                const int steps = z.dial.Feed(z.ctrl.invert ? -d : d, z.ctrl.stepDeg);
+                if (steps != 0) {
+                    z.rotated = true;
+                    const char* slot = steps > 0 ? "inc" : "dec";
+                    for (int i = 0; i < std::min(6, std::abs(steps)); ++i) Bridge_RunSeq(sim::Slot(z.ctrl, slot), z.id + (steps > 0 ? " +" : " -"));
+                    z.lastFire = now;
+                    Play(Snd::Tick);
+                }
+            }
+        }
+        z.prevPinch[h] = pinch;
+    }
+}
+
+void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
+    z.inside = false;
+    for (int h = 0; h < 2; ++h) {
+        const HandPoseData& hd = frame.hand[h];
+        const bool ok = hd.valid && hd.jointValid[kIndexTip];
+        double level = 0.0;
+        const double dist = ok ? DistToSegment(hd.joint[kIndexTip].p, z.pos, z.pos2, &level) : 1e9;
+        const bool isNear = dist <= z.radius * 1.5f;
+        if (isNear) z.inside = true;
+        const bool pinch = ok && hd.pressed;
+        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {
+            z.grabHand = h;
+            z.grabAt = now;
+            z.prevLevel = level;
+            z.lastSentLevel = -1.0;
+        } else if (z.grabHand == h) {
+            if (!pinch || dist > z.radius * 3.0f) {
+                EndGrab(z, now);
+            } else if (z.ctrl.sliderMode == "value") {
+                if (std::fabs(level - z.lastSentLevel) >= 0.02 && now - z.lastSend >= 120) {
+                    sim::ActionSeq seq = sim::Slot(z.ctrl, "set");
+                    const double v = sim::LevelToValue(level, z.ctrl.min, z.ctrl.max);
+                    for (sim::ZoneAction& a : seq)
+                        if (a.type != "delay") a.value = v;
+                    if (Bridge_RunSeq(seq, z.id + " valeur")) {
+                        z.lastSentLevel = level;
+                        z.lastSend = now;
+                        z.lastFire = now;
+                    }
+                }
+            } else {
+                const int d = sim::NotchDelta(z.prevLevel, level, z.ctrl.notches);
+                if (d != 0) {
+                    const char* slot = d > 0 ? "inc" : "dec";
+                    for (int i = 0; i < std::min(6, std::abs(d)); ++i) Bridge_RunSeq(sim::Slot(z.ctrl, slot), z.id + (d > 0 ? " +" : " -"));
+                    // La reference avance du nombre de crans effectivement traites.
+                    z.prevLevel += static_cast<double>(d) / z.ctrl.notches;
+                    z.lastFire = now;
+                    Play(Snd::Tick);
+                }
+            }
+        }
+        z.prevPinch[h] = pinch;
+    }
 }
 
 }  // namespace
@@ -224,7 +377,7 @@ void Zones_Frame(const HandsFrame& frame) {
             LoadZones();
             g_loadedStamp = stamp;
             if (!g_loaded)
-                Logger::Get().Log(LogLevel::Info, "zones : activees (fichier : %s) ; Ctrl+Alt+F9 = apprendre la prochaine zone sans position au bout de l'index, Ctrl+Alt+F10 = tout effacer",
+                Logger::Get().Log(LogLevel::Info, "zones : activees (fichier : %s) ; Ctrl+Alt+F9 = apprendre la prochaine zone incomplete au bout de l'index, Ctrl+Alt+F10 = effacer les positions",
                                   ZonesPath().c_str());
             g_loaded = true;
         }
@@ -257,6 +410,10 @@ void Zones_Frame(const HandsFrame& frame) {
     if ((teachKey && !g_prevTeach) || teachBtn) {
         g_teachAt = now + static_cast<ULONGLONG>(cfg->zoneTeachDelayMs);
         g_teachTick = now;
+        // Un curseur dont le premier point est appris attend son second point.
+        g_teachStage = 1;
+        for (const ZoneState& c : g_zone)
+            if (g_teachId.empty() && !Complete(c)) { g_teachStage = c.defined ? 2 : 1; break; }
         Logger::Get().Log(LogLevel::Info, "zones : apprentissage dans %.1f s, posez le bout de l'index sur la commande", cfg->zoneTeachDelayMs / 1000.0);
         Play(Snd::Start);
     }
@@ -276,39 +433,62 @@ void Zones_Frame(const HandsFrame& frame) {
                 // Main pas (encore) suivie : on reessaie a chaque image pendant 5 s avant d'abandonner.
                 if (now >= g_teachAt + 5000) {
                     g_teachAt = 0;
+                    g_teachId.clear();
                     Logger::Get().Log(LogLevel::Warn, "zones : apprentissage abandonne, aucun bout d'index suivi pendant 5 s (la main est-elle visible des cameras ?)");
                     Play(Snd::Fail);
                 }
             } else {
                 g_teachAt = 0;
-                // Zone a apprendre : celle choisie dans le menu en VR, sinon la premiere de la liste qui n'a pas encore de position.
+                // Zone a apprendre : celle choisie dans le menu en VR, sinon la premiere de la liste dont la position est incomplete.
                 ZoneState* target = nullptr;
                 for (ZoneState& c : g_zone)
-                    if (!g_teachId.empty() ? c.id == g_teachId : !c.defined) { target = &c; break; }
-                g_teachId.clear();
+                    if (!g_teachId.empty() ? c.id == g_teachId : !Complete(c)) { target = &c; break; }
                 if (!target) {
-                    Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja une position ; effacez-les (bouton d'effacement) ou ajoutez-en dans zones.ini");
+                    g_teachId.clear();
+                    Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja leur position ; effacez-les (bouton d'effacement) ou ajoutez-en");
                     Play(Snd::Fail);
                 } else {
-                ZoneState& z = *target;
-                z.pos = frame.hand[h].joint[kIndexTip].p;
-                z.radius = static_cast<float>(cfg->zoneRadiusMm / 1000.0);
-                z.defined = true;
-                z.lastCapture = now;
-                for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
-                SaveZones();
-                g_loadedStamp = FileStamp();
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' apprise avec la main %s en (%.3f, %.3f, %.3f), rayon %.0f mm", z.id.c_str(),
-                                  h == 1 ? "droite" : "gauche", z.pos.x, z.pos.y, z.pos.z, z.radius * 1000.0f);
-                Play(Snd::Captured);
+                    ZoneState& z = *target;
+                    const bool second = z.ctrl.kind == "slider" && (g_teachStage == 2 || (z.defined && !z.defined2 && g_teachId.empty()));
+                    const em::Vec3 p = frame.hand[h].joint[kIndexTip].p;
+                    if (second) {
+                        z.pos2 = p;
+                        z.defined2 = true;
+                    } else {
+                        z.pos = p;
+                        z.defined = true;
+                        z.defined2 = z.ctrl.kind == "slider" ? false : z.defined2;
+                        z.radius = static_cast<float>(cfg->zoneRadiusMm / 1000.0);
+                    }
+                    z.lastCapture = now;
+                    for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
+                    SaveZones();
+                    g_loadedStamp = FileStamp();
+                    Logger::Get().Log(LogLevel::Info, "zones : '%s' %s apprise avec la main %s en (%.3f, %.3f, %.3f), rayon %.0f mm", z.id.c_str(),
+                                      second ? "(fin de course)" : (z.ctrl.kind == "slider" ? "(debut de course)" : ""), h == 1 ? "droite" : "gauche", p.x, p.y, p.z,
+                                      z.radius * 1000.0f);
+                    Play(Snd::Captured);
+                    if (z.ctrl.kind == "slider" && !second) {  // curseur : enchaine sur la fin de course
+                        g_teachId = z.id;
+                        g_teachStage = 2;
+                        g_teachAt = now + 3000;
+                        g_teachTick = now;
+                        Logger::Get().Log(LogLevel::Info, "zones : posez maintenant l'index sur la FIN de course de '%s' (3 s)", z.id.c_str());
+                    } else {
+                        g_teachId.clear();
+                    }
                 }
             }
         }
     }
     if (clearNow) {
-        for (auto& z : g_zone) z.defined = false;  // les actions sont conservees, seules les positions sont effacees
+        for (auto& z : g_zone) {
+            z.defined = z.defined2 = false;  // les actions sont conservees, seules les positions sont effacees
+            z.grabHand = -1;
+        }
         SaveZones();
         g_loadedStamp = FileStamp();
+        g_teachId.clear();
         Logger::Get().Log(LogLevel::Info, "zones : positions de toutes les zones effacees");
         Play(Snd::Clear);
     }
@@ -317,7 +497,9 @@ void Zones_Frame(const HandsFrame& frame) {
 
     for (ZoneState& z : g_zone) {
         z.inside = false;
-        if (!z.defined) continue;
+        if (!Complete(z)) continue;
+        if (z.ctrl.kind == "dial") { UpdateDial(z, frame, now); continue; }
+        if (z.ctrl.kind == "slider") { UpdateSlider(z, frame, now); continue; }
         for (int h = 0; h < 2; ++h) {
             const HandPoseData& hd = frame.hand[h];
             const bool ok = hd.valid && hd.jointValid[kIndexTip];
@@ -325,14 +507,14 @@ void Zones_Frame(const HandsFrame& frame) {
             if (ok && em::Length(tip - z.pos) <= z.radius) z.inside = true;
             if (ok && em::Length(tip - z.pos) < 0.10f && now - z.lastNear > 500) {  // trace de mise au point : a quelle distance passe le doigt ?
                 z.lastNear = now;
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche",
-                                  em::Length(tip - z.pos) * 1000.0f);
+                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche", em::Length(tip - z.pos) * 1000.0f);
             }
             if (z.tracker[h].Update(tip, ok, z.pos, z.radius, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs)) {
                 z.lastFire = now;
                 Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", z.id.c_str(), h == 1 ? "droite" : "gauche");
                 Play(Snd::Trigger);
-                Fire(z);
+                if (z.ctrl.kind == "switch") FireSwitch(z);
+                else FirePress(z);
             }
         }
     }
@@ -354,10 +536,16 @@ void Zones_FillMarkers(HandsFrame* frame) {
     if (g_teachAt != 0 && g_teachTipValid) add(g_teachTip, ((now / 250) % 2 == 0) ? 0.012f : 0.020f, 1.0f, 1.0f, 1.0f);
     for (const ZoneState& z : g_zone) {
         if (!z.defined) continue;
-        if (z.lastCapture != 0 && now - z.lastCapture < 800) add(z.pos, 0.040f, 1.0f, 1.0f, 1.0f);       // memorisee : flash blanc
-        else if (z.lastFire != 0 && now - z.lastFire < 800) add(z.pos, 0.030f, 0.10f, 1.0f, 0.20f);   // declenchee : flash vert
-        else if (z.inside) add(z.pos, 0.020f, 1.0f, 1.0f, 0.10f);                                      // doigt dedans : jaune
-        else add(z.pos, 0.010f, 1.0f, 0.25f, 0.90f);                                                    // zone apprise : magenta
+        const bool grabbed = z.grabHand >= 0;
+        auto draw = [&](const em::Vec3& p) {
+            if (z.lastCapture != 0 && now - z.lastCapture < 800) add(p, 0.040f, 1.0f, 1.0f, 1.0f);        // memorisee : flash blanc
+            else if (grabbed) add(p, 0.026f, 0.10f, 0.90f, 1.0f);                                          // saisie en cours : cyan
+            else if (z.lastFire != 0 && now - z.lastFire < 800) add(p, 0.030f, 0.10f, 1.0f, 0.20f);     // declenchee : vert
+            else if (z.inside) add(p, 0.020f, 1.0f, 1.0f, 0.10f);                                        // doigt dedans : jaune
+            else add(p, 0.010f, 1.0f, 0.25f, 0.90f);                                                      // zone apprise : magenta
+        };
+        draw(z.pos);
+        if (z.ctrl.kind == "slider" && z.defined2) draw(z.pos2);
     }
 }
 
@@ -366,9 +554,10 @@ namespace {
 
 struct LibEntry {
     const wchar_t* label;
-    const char* type;
-    const char* target;
-    const char* mode;
+    const char* kind;
+    const char* press;
+    const char* inc;
+    const char* dec;
 };
 const LibEntry kLibrary[] = {
 #include "sim/CommandLibrary.inc"
@@ -397,10 +586,14 @@ std::wstring WideOf(const std::string& s) {
 // Compte a rebours de l'apprentissage lance depuis le menu : plus long qu'avec le bouton (il faut retirer les mains du menu et viser).
 void StartTeach(const std::string& id) {
     g_teachId = id;
+    g_teachStage = 1;
+    for (const ZoneState& z : g_zone)
+        if (z.id == id && z.ctrl.kind == "slider" && z.defined && !z.defined2) g_teachStage = 2;
     const ULONGLONG now = GetTickCount64();
     g_teachAt = now + 3000;
     g_teachTick = now;
-    Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' dans 3 s, posez le bout de l'index sur la commande", id.c_str());
+    Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' dans 3 s, posez le bout de l'index sur la commande%s", id.c_str(),
+                      g_teachStage == 2 ? " (fin de course)" : "");
     Play(Snd::Start);
 }
 
@@ -409,7 +602,7 @@ void StartTeach(const std::string& id) {
 std::vector<ZoneInfo> Zones_List() {
     EnsureLoaded();
     std::vector<ZoneInfo> out;
-    for (const ZoneState& z : g_zone) out.push_back({z.id, WideOf(z.id + " — " + z.action.target), z.defined});
+    for (const ZoneState& z : g_zone) out.push_back({z.id, WideOf(z.id + " — " + sim::Summary(z.ctrl)), Complete(z)});
     return out;
 }
 
@@ -456,19 +649,28 @@ void Zones_RefreshInputs() {
 void Zones_AddCommand(size_t index) {
     EnsureLoaded();
     ZoneState z;
+    std::string base;
     if (index < kLibraryCount) {
-        z.action.type = kLibrary[index].type;
-        z.action.target = kLibrary[index].target;
-        z.action.mode = kLibrary[index].mode;
+        const LibEntry& e = kLibrary[index];
+        z.ctrl.kind = e.kind;
+        if (e.press[0]) z.ctrl.slots["press"] = sim::ParseSeq(e.press);
+        if (e.inc[0]) z.ctrl.slots["inc"] = sim::ParseSeq(e.inc);
+        if (e.dec[0]) z.ctrl.slots["dec"] = sim::ParseSeq(e.dec);
+        for (const char* s : {"press", "inc", "dec"})
+            if (z.ctrl.slots.count(s) && !z.ctrl.slots[s].empty()) { base = z.ctrl.slots[s][0].target; break; }
     } else {
         std::lock_guard<std::mutex> l(g_liveMutex);
         const size_t i = index - kLibraryCount;
         if (i >= g_liveInputs.size()) return;
-        z.action.type = "input";
-        z.action.target = g_liveInputs[i];
-        z.action.mode = "toggle";
+        z.ctrl.kind = "toggle";
+        sim::ZoneAction a;
+        a.type = "input";
+        a.target = g_liveInputs[i];
+        a.mode = "toggle";
+        z.ctrl.slots["press"] = {a};
+        base = a.target;
     }
-    std::string base = hands::sim::SanitizeZoneId(z.action.target);
+    base = sim::SanitizeZoneId(base);
     if (base.size() > 40) base.resize(40);
     if (base.empty()) base = "zone";
     std::string id = base;
@@ -479,7 +681,6 @@ void Zones_AddCommand(size_t index) {
         id = base + "_" + std::to_string(n);
     }
     z.id = id;
-    z.action.value = 1.0;
     z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
     g_zone.push_back(std::move(z));
     SaveZones();
@@ -489,8 +690,9 @@ void Zones_AddCommand(size_t index) {
 
 void Zones_Reteach(const std::string& id) {
     EnsureLoaded();
-    for (const ZoneState& z : g_zone)
+    for (ZoneState& z : g_zone)
         if (z.id == id) {
+            if (z.ctrl.kind == "slider") z.defined = z.defined2 = false;  // un curseur reapprend ses deux points
             StartTeach(id);
             return;
         }
