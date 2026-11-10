@@ -2,6 +2,16 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.6] - 2026-11-10
+
+### Corrige
+- **Les mains ne sont plus cachees par le menu** : la surimpression des mains (et le curseur, les boites) est maintenant dessinee APRES le panneau du menu.
+- **Memorisation d'une zone par pincement** (`[zones] teach_mode = pinch`, defaut ; `timer` = ancien compte a rebours) : on pointe la commande du bout de l'index puis on pince (60 s pour le faire,
+  sons discrets toutes les 2 s) ; la position retenue est celle du doigt 300 ms AVANT le pincement, qui le deplace. Marche depuis le menu en VR comme depuis le bouton de manette / HOTAS et
+  enchaine debut puis fin de course pour un curseur.
+- **Orientation automatique des boites** : a la memorisation, la boite prend la direction du doigt (commande a plat enfoncee par le haut -> boite a plat face vers le haut ; commande verticale ->
+  face vers le pilote, tournee par pas de 15 degres). Menu en VR, page d'une zone : bascule « verticale / a plat » (banquettes et consoles du Rafale).
+
 ## [0.0.5] - 2026-11-10
 
 ### Corrige

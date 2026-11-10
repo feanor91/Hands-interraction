@@ -884,8 +884,9 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     if (!addLayer && !addMenu) return g_dispatch.EndFrame(session, info);
 
     std::vector<const XrCompositionLayerBaseHeader*> layers(info->layers, info->layers + info->layerCount);
+    // Ordre des couches = ordre de dessin : le menu d'abord, puis les mains par-dessus (on voit toujours ses doigts, le curseur et les boites).
+    if (addMenu) layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&menuQuad));
     if (addLayer) layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ourLayer));
-    if (addMenu) layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&menuQuad));  // le menu passe par-dessus les mains
     XrFrameEndInfo modified = *info;
     modified.layerCount = static_cast<uint32_t>(layers.size());
     modified.layers = layers.data();

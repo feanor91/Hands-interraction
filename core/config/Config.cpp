@@ -103,6 +103,7 @@ Config Config::FromIni(const IniFile& ini) {
     c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
     c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);
     c.zoneBoxFaces = ini.GetString("zones", "box_faces", c.zoneBoxFaces) == "face" ? "face" : "full";
+    c.zoneTeachMode = ini.GetString("zones", "teach_mode", c.zoneTeachMode) == "timer" ? "timer" : "pinch";
     c.zoneRecenterKey = ini.GetString("zones", "recenter_key", c.zoneRecenterKey);
     c.zoneRecenterDelayMs = std::max(100.0, std::min(3000.0, ini.GetDouble("zones", "recenter_delay_ms", c.zoneRecenterDelayMs)));
     c.zoneShowBoxes = ini.GetString("zones", "show_boxes", c.zoneShowBoxes);

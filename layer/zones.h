@@ -52,6 +52,8 @@ void Zones_Reteach(const std::string& id);
 std::wstring Zones_GeomText(const std::string& id);
 bool Zones_Scale(const std::string& id, double factor);
 bool Zones_NextShape(const std::string& id);
+bool Zones_ToggleFlat(const std::string& id);  // boite a plat (face vers le haut) <-> verticale
+bool Zones_IsFlat(const std::string& id);
 bool Zones_Delete(const std::string& id);
 
 }  // namespace layer

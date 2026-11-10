@@ -46,8 +46,8 @@ Les positions sont enregistrées relativement au repère posé à la tête lors 
 Deux façons, qui écrivent le même fichier (`C:\ProgramData\HandsLayer\data\zones.ini`, rechargé à chaud) :
 
 * **Dans le casque** : pincer les deux mains (ou la touche / le bouton de manette ou HOTAS choisi dans la tray › *Menu en VR*) pour ouvrir ou fermer le menu › *Zones du pochoir et leurs commandes* › *Ajouter une zone* › choisir la commande dans la liste
-  (les 48 commandes du Rafale, puis, avec *Lire aussi les commandes de l'avion*, tous les Input Events de l'avion chargé). Le menu se ferme, un compte à rebours de 3 s
-  donne le temps de **poser le bout de l'index sur la commande**, et la zone est enregistrée (son aigu + flash blanc). Le menu se choisit au doigt (toucher la ligne 0,45 s) ou au rayon.
+  (les 48 commandes du Rafale, puis, avec *Lire aussi les commandes de l'avion*, tous les Input Events de l'avion chargé). Le menu se ferme : **pointez la commande du bout de l'index, puis pincez**
+  (60 s pour le faire) ; la zone est enregistrée à la position du doigt juste avant le pincement (son aigu + flash blanc), avec une orientation déduite de la direction du doigt (à plat ou verticale). Le menu se choisit au doigt (toucher la ligne 0,45 s) ou au rayon.
 * **Sur le PC** : icône de la tray › *Zones* › *Configurer les zones et leurs commandes…* (liste, type, étapes, bouton *Tester* qui envoie la commande au simulateur sans passer par le casque).
   Les positions s'apprennent ensuite en vol avec un **bouton du joystick / HOTAS** (choisi dans la tray) : l'index sur la commande, appui sur le bouton.
   Repli clavier : Ctrl+Alt+F9 (apprendre), Ctrl+Alt+F10 (effacer les positions).

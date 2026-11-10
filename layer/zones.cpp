@@ -111,6 +111,27 @@ std::string g_teachId;  // zone visee par l'apprentissage en cours (vide = premi
 int g_teachStage = 1;   // curseur : 1 = debut de course, 2 = fin de course
 bool g_prevTeach = false, g_prevClear = false;
 ULONGLONG g_teachAt = 0, g_teachTick = 0;  // enregistrement differe (0 = aucun)
+ULONGLONG g_teachPinchUntil = 0;           // attente d'un pincement : jusqu'a cet instant (0 = pas en attente)
+ULONGLONG g_teachBegan = 0;                // debut de l'attente (les 600 premieres ms ne comptent pas : on vient de lacher le menu)
+bool g_prevPress[2] = {false, false};      // pincement de chaque main a l'image precedente
+
+// Historique du bout de l'index de chaque main : la position memorisee est celle d'AVANT le pincement (qui deplace le doigt de quelques centimetres).
+struct TipSample {
+    ULONGLONG t = 0;
+    bool valid = false;
+    em::Vec3 tip, dir;  // bout de l'index et sa direction (articulation distale -> bout)
+};
+constexpr int kHist = 96;
+TipSample g_hist[2][kHist];
+int g_histHead[2] = {0, 0};
+
+TipSample SampleAt(int hand, ULONGLONG t) {  // dernier echantillon valide a l'instant t ou avant
+    for (int i = 0; i < kHist; ++i) {
+        const TipSample& s = g_hist[hand][(g_histHead[hand] - 1 - i + kHist * 2) % kHist];
+        if (s.valid && s.t <= t) return s;
+    }
+    return TipSample{};
+}
 em::Vec3 g_teachTip;                       // bout d'index qui sera enregistre (pour le repere visuel)
 bool g_teachTipValid = false;
 int g_buttonLogsLeft = 200;
@@ -567,24 +588,133 @@ void Zones_Frame(const HandsFrame& frame) {
         }
     }
     const bool clearNow = (clearKey && !g_prevClear) || clearBtn;
-    // L'enregistrement a lieu `teach_delay_ms` apres l'appui (un son par seconde, repere blanc au bout de l'index), le temps de poser le doigt.
+    // Historique du bout de l'index (jamais interrompu).
+    for (int h = 0; h < 2; ++h) {
+        TipSample& sm = g_hist[h][g_histHead[h]];
+        const HandPoseData& hd = frame.hand[h];
+        sm.t = now;
+        sm.valid = hd.valid && hd.jointValid[kIndexTip] && hd.jointValid[9];
+        if (sm.valid) {
+            sm.tip = hd.joint[kIndexTip].p;
+            const em::Vec3 d = hd.joint[kIndexTip].p - hd.joint[9].p;
+            const float l = em::Length(d);
+            sm.dir = l > 1e-4f ? d * (1.0f / l) : em::Vec3{0, 0, -1};
+        }
+        g_histHead[h] = (g_histHead[h] + 1) % kHist;
+    }
+    const bool pinchMode = cfg->zoneTeachMode != "timer";
+
+    // Demande d'apprentissage (bouton de manette / HOTAS, ou Ctrl+Alt+F9) : par pincement (defaut) ou compte a rebours.
     if ((teachKey && !g_prevTeach) || teachBtn) {
-        g_teachAt = now + static_cast<ULONGLONG>(cfg->zoneTeachDelayMs);
-        g_teachTick = now;
-        // Un curseur dont le premier point est appris attend son second point.
         g_teachStage = 1;
         for (const ZoneState& c : g_zone)
             if (g_teachId.empty() && !Complete(c)) { g_teachStage = c.defined ? 2 : 1; break; }
-        Logger::Get().Log(LogLevel::Info, "zones : apprentissage dans %.1f s, posez le bout de l'index sur la commande", cfg->zoneTeachDelayMs / 1000.0);
+        if (pinchMode) {
+            g_teachPinchUntil = now + 60000;
+            g_teachBegan = now;
+            g_teachAt = 0;
+            Logger::Get().Log(LogLevel::Info, "zones : apprentissage : pointez la commande du bout de l'index puis PINCEZ (60 s)");
+        } else {
+            g_teachAt = now + static_cast<ULONGLONG>(cfg->zoneTeachDelayMs);
+            g_teachTick = now;
+            Logger::Get().Log(LogLevel::Info, "zones : apprentissage dans %.1f s, posez le bout de l'index sur la commande", cfg->zoneTeachDelayMs / 1000.0);
+        }
         Play(Snd::Start);
     }
     g_teachTipValid = false;
-    if (g_teachAt != 0) {
-        const int h = TeachHand(frame);
-        if (h >= 0) {
-            g_teachTip = frame.hand[h].joint[kIndexTip].p;
+    if (g_teachAt != 0 || g_teachPinchUntil != 0) {
+        const int th = TeachHand(frame);
+        if (th >= 0) {
+            g_teachTip = frame.hand[th].joint[kIndexTip].p;
             g_teachTipValid = true;
         }
+    }
+
+    // Capture d'une position : choisit la zone visee, enregistre, enchaine sur la fin de course d'un curseur.
+    auto capture = [&](const em::Vec3& p, const em::Vec3& dir, int h) {
+        ZoneState* target = nullptr;
+        for (ZoneState& c : g_zone)
+            if (!g_teachId.empty() ? c.id == g_teachId : !Complete(c)) { target = &c; break; }
+        if (!target) {
+            g_teachId.clear();
+            g_teachPinchUntil = 0;
+            Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja leur position ; effacez-les (bouton d'effacement) ou ajoutez-en");
+            Play(Snd::Fail);
+            return;
+        }
+        ZoneState& z = *target;
+        const bool second = z.ctrl.kind == "slider" && (g_teachStage == 2 || (z.defined && !z.defined2 && g_teachId.empty()));
+        if (second) {
+            z.pos2 = g_anchor.ToRel(p);
+            z.defined2 = true;
+        } else {
+            z.pos = g_anchor.ToRel(p);
+            z.defined = true;
+            z.defined2 = z.ctrl.kind == "slider" ? false : z.defined2;
+            if (z.geom.sx <= 0) DefaultGeom(z);
+            // Orientation de la boite d'apres la direction du doigt : la face de la commande est opposee au doigt qui l'enfonce (commande a plat :
+            // doigt vers le bas -> boite a plat face vers le haut ; commande verticale : face vers le pilote, tournee de la direction du doigt, par pas de 15 degres).
+            if (z.ctrl.kind != "slider" && z.geom.yaw == 0 && z.geom.pitch == 0 && z.geom.roll == 0) {
+                const em::Vec3 n = em::Rotate(em::Conjugate(g_anchor.q), dir * -1.0f);  // normale de la face, dans le repere du cockpit
+                if (n.y > 0.7f) z.geom.pitch = -90.0;
+                else if (n.y < -0.7f) z.geom.pitch = 90.0;
+                else {
+                    const double yaw = std::atan2(static_cast<double>(n.x), static_cast<double>(n.z)) * 57.29577951;
+                    z.geom.yaw = std::max(-60.0, std::min(60.0, std::round(yaw / 15.0) * 15.0));
+                }
+            }
+        }
+        z.lastCapture = GetTickCount64();
+        for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
+        SaveZones();
+        g_loadedStamp = FileStamp();
+        Logger::Get().Log(LogLevel::Info, "zones : '%s' %s apprise avec la main %s en (%.3f, %.3f, %.3f), boite %.0fx%.0fx%.0f mm, rotation (%.0f, %.0f, %.0f)", z.id.c_str(),
+                          second ? "(fin de course)" : (z.ctrl.kind == "slider" ? "(debut de course)" : ""), h == 1 ? "droite" : "gauche", p.x, p.y, p.z,
+                          z.geom.sx, z.geom.sy, z.geom.sz, z.geom.yaw, z.geom.pitch, z.geom.roll);
+        Play(Snd::Captured);
+        if (z.ctrl.kind == "slider" && !second) {  // curseur : enchaine sur la fin de course
+            g_teachId = z.id;
+            g_teachStage = 2;
+            if (cfg->zoneTeachMode != "timer") {
+                g_teachPinchUntil = GetTickCount64() + 60000;
+                g_teachBegan = GetTickCount64();
+                Logger::Get().Log(LogLevel::Info, "zones : pointez maintenant la FIN de course de '%s' et pincez", z.id.c_str());
+            } else {
+                g_teachAt = GetTickCount64() + 3000;
+                g_teachTick = GetTickCount64();
+                Logger::Get().Log(LogLevel::Info, "zones : posez maintenant l'index sur la FIN de course de '%s' (3 s)", z.id.c_str());
+            }
+        } else {
+            g_teachId.clear();
+            g_teachPinchUntil = 0;
+        }
+    };
+
+    // --- Attente d'un pincement : la position memorisee est celle du doigt 300 ms avant le pincement ---------------------------------
+    if (g_teachPinchUntil != 0) {
+        if (now - g_teachTick >= 2000) {
+            g_teachTick = now;
+            Play(Snd::Tick);
+        }
+        for (int h : {1, 0}) {
+            const bool edge = frame.hand[h].valid && frame.hand[h].pressed && !g_prevPress[h];
+            if (!edge || now - g_teachBegan < 600) continue;
+            const TipSample sm = SampleAt(h, now > 300 ? now - 300 : 0);
+            if (!sm.valid) continue;
+            capture(sm.tip, sm.dir, h);
+            break;
+        }
+        if (g_teachPinchUntil != 0 && now > g_teachPinchUntil) {
+            g_teachPinchUntil = 0;
+            g_teachId.clear();
+            Logger::Get().Log(LogLevel::Warn, "zones : apprentissage abandonne (aucun pincement pendant 60 s)");
+            Play(Snd::Fail);
+        }
+    }
+
+    // --- Compte a rebours (teach_mode = timer) ------------------------------------------------------------------------------------
+    if (g_teachAt != 0) {
+        const int h = TeachHand(frame);
         if (now < g_teachAt && now - g_teachTick >= 1000) {
             g_teachTick = now;
             Play(Snd::Tick);
@@ -600,48 +730,12 @@ void Zones_Frame(const HandsFrame& frame) {
                 }
             } else {
                 g_teachAt = 0;
-                // Zone a apprendre : celle choisie dans le menu en VR, sinon la premiere de la liste dont la position est incomplete.
-                ZoneState* target = nullptr;
-                for (ZoneState& c : g_zone)
-                    if (!g_teachId.empty() ? c.id == g_teachId : !Complete(c)) { target = &c; break; }
-                if (!target) {
-                    g_teachId.clear();
-                    Logger::Get().Log(LogLevel::Warn, "zones : toutes les zones ont deja leur position ; effacez-les (bouton d'effacement) ou ajoutez-en");
-                    Play(Snd::Fail);
-                } else {
-                    ZoneState& z = *target;
-                    const bool second = z.ctrl.kind == "slider" && (g_teachStage == 2 || (z.defined && !z.defined2 && g_teachId.empty()));
-                    const em::Vec3 p = frame.hand[h].joint[kIndexTip].p;
-                    if (second) {
-                        z.pos2 = g_anchor.ToRel(p);
-                        z.defined2 = true;
-                    } else {
-                        z.pos = g_anchor.ToRel(p);
-                        z.defined = true;
-                        z.defined2 = z.ctrl.kind == "slider" ? false : z.defined2;
-                        if (z.geom.sx <= 0) DefaultGeom(z);
-                    }
-                    z.lastCapture = now;
-                    for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
-                    SaveZones();
-                    g_loadedStamp = FileStamp();
-                    Logger::Get().Log(LogLevel::Info, "zones : '%s' %s apprise avec la main %s en (%.3f, %.3f, %.3f), boite %.0fx%.0fx%.0f mm", z.id.c_str(),
-                                      second ? "(fin de course)" : (z.ctrl.kind == "slider" ? "(debut de course)" : ""), h == 1 ? "droite" : "gauche", p.x, p.y, p.z,
-                                      z.geom.sx, z.geom.sy, z.geom.sz);
-                    Play(Snd::Captured);
-                    if (z.ctrl.kind == "slider" && !second) {  // curseur : enchaine sur la fin de course
-                        g_teachId = z.id;
-                        g_teachStage = 2;
-                        g_teachAt = now + 3000;
-                        g_teachTick = now;
-                        Logger::Get().Log(LogLevel::Info, "zones : posez maintenant l'index sur la FIN de course de '%s' (3 s)", z.id.c_str());
-                    } else {
-                        g_teachId.clear();
-                    }
-                }
+                const TipSample sm = SampleAt(h, now);
+                capture(frame.hand[h].joint[kIndexTip].p, sm.valid ? sm.dir : em::Vec3{0, 0, -1}, h);
             }
         }
     }
+    for (int h = 0; h < 2; ++h) g_prevPress[h] = frame.hand[h].valid && frame.hand[h].pressed;
     if (clearNow) {
         for (auto& z : g_zone) {
             z.defined = z.defined2 = false;  // les actions sont conservees, seules les positions sont effacees
@@ -704,7 +798,7 @@ void Zones_FillMarkers(HandsFrame* frame) {
         m.b = b;
     };
     // Apprentissage en cours : repere blanc qui pulse au bout de l'index (c'est ce point qui sera enregistre).
-    if (g_teachAt != 0 && g_teachTipValid) add(g_teachTip, ((now / 250) % 2 == 0) ? 0.012f : 0.020f, 1.0f, 1.0f, 1.0f);
+    if ((g_teachAt != 0 || g_teachPinchUntil != 0) && g_teachTipValid) add(g_teachTip, ((now / 250) % 2 == 0) ? 0.012f : 0.020f, 1.0f, 1.0f, 1.0f);
     // Boites en fil de fer : couleur selon le type de commande, plus epaisses et claires quand le doigt est dedans / saisie / declenchee.
     const auto cfg = CurrentConfig();
     if (cfg->zoneShowBoxes == "hidden") return;
@@ -808,17 +902,25 @@ std::wstring WideOf(const std::string& s) {
     return w;
 }
 
-// Compte a rebours de l'apprentissage lance depuis le menu : plus long qu'avec le bouton (il faut retirer les mains du menu et viser).
+// Apprentissage lance depuis le menu : on pointe la commande puis on pince (60 s), ou compte a rebours de 3 s si `teach_mode = timer`.
 void StartTeach(const std::string& id) {
     g_teachId = id;
     g_teachStage = 1;
     for (const ZoneState& z : g_zone)
         if (z.id == id && z.ctrl.kind == "slider" && z.defined && !z.defined2) g_teachStage = 2;
     const ULONGLONG now = GetTickCount64();
-    g_teachAt = now + 3000;
     g_teachTick = now;
-    Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' dans 3 s, posez le bout de l'index sur la commande%s", id.c_str(),
-                      g_teachStage == 2 ? " (fin de course)" : "");
+    if (CurrentConfig()->zoneTeachMode != "timer") {
+        g_teachPinchUntil = now + 60000;
+        g_teachBegan = now;
+        g_teachAt = 0;
+        Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' : pointez la commande du bout de l'index puis PINCEZ (60 s)%s", id.c_str(),
+                          g_teachStage == 2 ? " (fin de course)" : "");
+    } else {
+        g_teachAt = now + 3000;
+        Logger::Get().Log(LogLevel::Info, "zones : apprentissage de '%s' dans 3 s, posez le bout de l'index sur la commande%s", id.c_str(),
+                          g_teachStage == 2 ? " (fin de course)" : "");
+    }
     Play(Snd::Start);
 }
 
@@ -985,6 +1087,21 @@ bool Zones_NextShape(const std::string& id) {
     for (auto& t : z->tracker) t.Disarm();
     SaveNow();
     return true;
+}
+
+// Boite a plat (face vers le haut : banquettes, consoles) ou verticale (face vers le pilote).
+bool Zones_ToggleFlat(const std::string& id) {
+    ZoneState* z = FindZone(id);
+    if (!z) return false;
+    z->geom.pitch = (z->geom.pitch == 0.0) ? -90.0 : 0.0;
+    for (auto& t : z->tracker) t.Disarm();
+    SaveNow();
+    return true;
+}
+
+bool Zones_IsFlat(const std::string& id) {
+    const ZoneState* z = FindZone(id);
+    return z && std::fabs(z->geom.pitch + 90.0) < 1.0;
 }
 
 bool Zones_Delete(const std::string& id) {

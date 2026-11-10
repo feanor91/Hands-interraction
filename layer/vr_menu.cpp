@@ -179,7 +179,8 @@ std::vector<Row> BuildZoneRows() {
     rows.push_back({L"Boîte plus grande  (+25 %)", true, [id] { Zones_Scale(id, 1.25); }});
     rows.push_back({L"Boîte plus petite  (−20 %)", true, [id] { Zones_Scale(id, 0.8); }});
     rows.push_back({L"Forme suivante (bouton, interrupteur, molette, écran…)", true, [id] { Zones_NextShape(id); }});
-    rows.push_back({L"Réapprendre la position  (compte à rebours 3 s)", true, [id] {
+    rows.push_back({Zones_IsFlat(id) ? L"Orientation : à plat (face vers le haut)  →  verticale" : L"Orientation : verticale (face vers vous)  →  à plat", true, [id] { Zones_ToggleFlat(id); }});
+    rows.push_back({L"Réapprendre la position  (pointer puis pincer)", true, [id] {
                         CloseMenu();
                         Zones_Reteach(id);
                     }});

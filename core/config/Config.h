@@ -161,6 +161,7 @@ struct Config {
     bool hideControllersProfile = true;
     bool zonesEnabled = true;
     double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone (ancien format ; les zones ont maintenant une boîte)
+    std::string zoneTeachMode = "pinch";  // pinch : pointer la commande puis pincer ; timer : compte a rebours (zone_teach_delay_ms)
     std::string zoneRecenterKey = "LSHIFT";  // touche de recentrage de MSFS : les zones suivent le cockpit (vide = aucune)
     double zoneRecenterDelayMs = 600.0;      // attente apres l'appui avant de relever la pose de la tete
     std::string zoneBoxFaces = "full";  // boîtes : full (12 arêtes) ou face (seulement la face avant : un carré / rectangle)
