@@ -128,6 +128,9 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.zoneServerPort < 1 || c.zoneServerPort > 65535) c.zoneServerPort = 3210;
     c.menuEnabled = ini.GetBool("menu", "enabled", c.menuEnabled);
     c.menuHoldMs = ini.GetInt("menu", "open_hold_ms", c.menuHoldMs);
+    c.menuToggleKey = ini.GetString("menu", "toggle_key", c.menuToggleKey);
+    c.menuToggleButton = std::max(0, ini.GetInt("menu", "toggle_button", c.menuToggleButton));
+    c.menuToggleJoystick = ini.GetString("menu", "toggle_joystick", c.menuToggleJoystick);
     if (c.menuHoldMs < 400) c.menuHoldMs = 400;
     if (c.menuHoldMs > 5000) c.menuHoldMs = 5000;
     c.captureMax = ini.GetInt("touch", "capture_max", c.captureMax);

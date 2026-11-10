@@ -45,7 +45,7 @@ Les positions sont enregistrées relativement au repère posé à la tête lors 
 ### Créer une zone
 Deux façons, qui écrivent le même fichier (`C:\ProgramData\HandsLayer\data\zones.ini`, rechargé à chaud) :
 
-* **Dans le casque** : pincer les deux mains pour ouvrir le menu › *Zones du pochoir et leurs commandes* › *Ajouter une zone* › choisir la commande dans la liste
+* **Dans le casque** : pincer les deux mains (ou la touche / le bouton de manette ou HOTAS choisi dans la tray › *Menu en VR*) pour ouvrir ou fermer le menu › *Zones du pochoir et leurs commandes* › *Ajouter une zone* › choisir la commande dans la liste
   (les 48 commandes du Rafale, puis, avec *Lire aussi les commandes de l'avion*, tous les Input Events de l'avion chargé). Le menu se ferme, un compte à rebours de 3 s
   donne le temps de **poser le bout de l'index sur la commande**, et la zone est enregistrée (son aigu + flash blanc). Le menu se choisit au doigt (toucher la ligne 0,45 s) ou au rayon.
 * **Sur le PC** : icône de la tray › *Zones* › *Configurer les zones et leurs commandes…* (liste, type, étapes, bouton *Tester* qui envoie la commande au simulateur sans passer par le casque).

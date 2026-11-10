@@ -22,7 +22,9 @@
 #include <string>
 #include <vector>
 
+#include "JoyPoll.h"
 #include "emulate.h"
+#include "util/KeyNames.h"
 #include "zones.h"
 #include "menu_render.h"
 #include "texture_uploader.h"
@@ -445,6 +447,42 @@ bool Redraw(const std::vector<Row>& rows) {
 
 }  // namespace
 
+// Ouvre le menu devant la tete, ou le ferme. `via` : origine (geste, touche, bouton), pour le journal.
+static void ToggleMenu(const XrCompositionLayerProjection* game, XrTime displayTime, const hands::config::Config& cfg, const char* via) {
+    if (g.open) {
+        g.open = false;
+        Emu_SetMenuOpen(false);
+        Logger::Get().Log(LogLevel::Info, "menu : ferme (%s)", via);
+        return;
+    }
+    XrPosef head;
+    g.panelW = cfg.emulationEnabled ? kPanelWidthRay : kPanelWidthTouch;
+    g.panelDist = cfg.emulationEnabled ? kPanelDistRay : kPanelDistTouch;
+    g_page = Page::Main;
+    if (!Emu_HeadPose(game->space, displayTime, &head)) {
+        Logger::Get().Log(LogLevel::Warn, "menu : position de la tete indisponible, ouverture impossible");
+        return;
+    }
+    const em::Pose hp{{head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w}, {head.position.x, head.position.y, head.position.z}};
+    const em::Vec3 fwd = em::Rotate(hp.q, em::Vec3{0.0f, 0.0f, -1.0f});
+    em::Vec3 fh = em::Normalized(em::Vec3{fwd.x, 0.0f, fwd.z});
+    if (em::Length(fh) < 0.5f) fh = em::Vec3{0.0f, 0.0f, -1.0f};
+    const em::Vec3 up{0.0f, 1.0f, 0.0f};
+    g.quad = {em::LookAlong(fh, up), hp.p + fh * g.panelDist - up * 0.05f};  // devant la tete, un peu plus bas
+    g.open = true;
+    g.dirty = true;
+    g.hover = -1;
+    g.status.clear();
+    Emu_SetMenuOpen(true);
+    Logger::Get().Log(LogLevel::Info, "menu : ouvert (%s)", via);
+}
+
+// Peripherique de manette / HOTAS du menu : instance a part (ses fronts montants ne se melangent pas a ceux des zones). Jamais detruite.
+static hands::win::JoyPoll& MenuJoy() {
+    static hands::win::JoyPoll* p = new hands::win::JoyPoll;
+    return *p;
+}
+
 bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* queue, const XrCompositionLayerProjection* game, XrTime displayTime,
                   const HandsFrame& frame, XrCompositionLayerQuad* quad) {
     const auto cfg = CurrentConfig();
@@ -466,35 +504,22 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
         else if (now - g.bothSince >= static_cast<ULONGLONG>(cfg->menuHoldMs)) {
             g.bothSince = 0;
             g.armed = false;
-            if (g.open) {
-                g.open = false;
-                Emu_SetMenuOpen(false);
-                Logger::Get().Log(LogLevel::Info, "menu : ferme (geste)");
-            } else {
-                XrPosef head;
-                g.panelW = cfg->emulationEnabled ? kPanelWidthRay : kPanelWidthTouch;
-                g.panelDist = cfg->emulationEnabled ? kPanelDistRay : kPanelDistTouch;
-                g_page = Page::Main;
-                if (Emu_HeadPose(game->space, displayTime, &head)) {
-                    const em::Pose hp{{head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w}, {head.position.x, head.position.y, head.position.z}};
-                    const em::Vec3 fwd = em::Rotate(hp.q, em::Vec3{0.0f, 0.0f, -1.0f});
-                    em::Vec3 fh = em::Normalized(em::Vec3{fwd.x, 0.0f, fwd.z});
-                    if (em::Length(fh) < 0.5f) fh = em::Vec3{0.0f, 0.0f, -1.0f};
-                    const em::Vec3 up{0.0f, 1.0f, 0.0f};
-                    g.quad = {em::LookAlong(fh, up), hp.p + fh * g.panelDist - up * 0.05f};  // devant la tete, un peu plus bas
-                    g.open = true;
-                    g.dirty = true;
-                    g.hover = -1;
-                    g.status.clear();
-                    Emu_SetMenuOpen(true);
-                    Logger::Get().Log(LogLevel::Info, "menu : ouvert (geste des deux mains)");
-                } else {
-                    Logger::Get().Log(LogLevel::Warn, "menu : position de la tete indisponible, ouverture impossible");
-                }
-            }
+            ToggleMenu(game, displayTime, *cfg, "geste des deux mains");
         }
     } else if (!(p[0] && p[1])) {
         g.bothSince = 0;
+    }
+    // --- Touche du clavier ou bouton de manette / HOTAS (tray) ---------------------------------------------------------------
+    {
+        static bool prevKey = false;
+        const int vk = hands::util::ParseVirtualKey(cfg->menuToggleKey);
+        const bool down = vk != 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+        if (down && !prevKey) ToggleMenu(game, displayTime, *cfg, "touche");
+        prevKey = down;
+        if (cfg->menuToggleButton > 0) {
+            for (const hands::win::JoyEvent& ev : MenuJoy().PollAllPressed(cfg->menuToggleJoystick))
+                if (ev.button == cfg->menuToggleButton) ToggleMenu(game, displayTime, *cfg, "bouton de manette");
+        }
     }
     const bool prev[2] = {g.prevPressed[0], g.prevPressed[1]};
     g.prevPressed[0] = p[0];

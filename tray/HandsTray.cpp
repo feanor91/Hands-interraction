@@ -46,7 +46,7 @@ enum Cmd : UINT {
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
     ID_FINGER_INDEX, ID_FINGER_MIDDLE,
     ID_SHARED,
-    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF, ID_ZONES_EDIT, ID_ZONES_RECENTER_KEY
+    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF, ID_ZONES_EDIT, ID_ZONES_RECENTER_KEY, ID_MENU_KEY, ID_MENU_KEY_OFF, ID_MENU_BTN, ID_MENU_BTN_OFF
 };
 
 HWND g_hwnd = nullptr;
@@ -83,6 +83,8 @@ struct State {
     bool hideHandCtrl = true;                     // mains seules : manettes virtuelles issues des mains masquees
     bool zonesOn = false;                         // pochoir : zones apprises, contact -> touche StreamSim
     std::string zoneJoystick;                     // nom (ou morceau de nom) du joystick / HOTAS des boutons de zones
+    std::string menuKey;                           // touche qui affiche / cache le menu en VR
+    int menuButton = 0;                            // bouton de manette / HOTAS pour le meme usage
     std::string zoneRecenterKey = "LSHIFT";        // touche de recentrage de MSFS
     int zoneTeachButton = 0, zoneClearButton = 0;  // boutons de memorisation / d'effacement (0 = aucun)
 };
@@ -155,6 +157,8 @@ State ReadState() {
         s.zoneTeachButton = ini.GetInt("zones", "teach_button", 0);
         s.zoneClearButton = ini.GetInt("zones", "clear_button", 0);
         s.zoneRecenterKey = ini.GetString("zones", "recenter_key", "LSHIFT");
+        s.menuKey = ini.GetString("menu", "toggle_key", "");
+        s.menuButton = ini.GetInt("menu", "toggle_button", 0);
     }
     return s;
 }
@@ -452,8 +456,13 @@ void StartDetect(int what) {
     g_detectUntil = GetTickCount64() + 30000;
     g_joyPoll.PollAllPressed("");  // memorise l'etat actuel : seul un NOUVEL appui compte
     SetTimer(g_hwnd, kDetectTimerId, 50, nullptr);
-    if (what == 3) {
-        Balloon(L"Appuyez maintenant sur la touche de RECENTRAGE de MSFS (la meme : 30 s).");
+    if (what == 3 || what == 4) {
+        Balloon(what == 3 ? L"Appuyez maintenant sur la touche de RECENTRAGE de MSFS (la meme : 30 s)."
+                          : L"Appuyez maintenant sur la touche qui AFFICHERA / CACHERA le menu en VR (30 s).");
+        return;
+    }
+    if (what == 5) {
+        Balloon(L"Appuyez maintenant sur le bouton de la manette / HOTAS qui AFFICHERA / CACHERA le menu en VR (30 s).");
         return;
     }
     Balloon(what == 1 ? L"Appuyez maintenant sur le bouton de la manette / HOTAS qui MÉMORISERA la zone (30 s)."
@@ -468,7 +477,7 @@ void PollDetect() {
         Balloon(L"Aucun bouton détecté : choix annulé (le joystick est-il branché ?).");
         return;
     }
-    if (g_detectWhat == 3) {  // touche du clavier : on cherche la premiere touche enfoncee (hors souris), les touches precises avant les generiques
+    if (g_detectWhat == 3 || g_detectWhat == 4) {  // touche du clavier : on cherche la premiere touche enfoncee (hors souris), les touches precises avant les generiques
         int found = 0;
         static const int order[] = {0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5};
         for (int vk : order)
@@ -476,6 +485,7 @@ void PollDetect() {
         for (int vk = 8; vk < 255 && !found; ++vk)
             if (vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU && (GetAsyncKeyState(vk) & 0x8000)) found = vk;
         if (!found) return;
+        const int keyWhat = g_detectWhat;
         g_detectWhat = 0;
         KillTimer(g_hwnd, kDetectTimerId);
         static const struct { int vk; const char* name; } names[] = {{0xA0, "LSHIFT"}, {0xA1, "RSHIFT"}, {0xA2, "LCTRL"}, {0xA3, "RCTRL"}, {0xA4, "LALT"},
@@ -490,11 +500,12 @@ void PollDetect() {
             else { std::snprintf(b, sizeof(b), "0x%02X", found); name = b; }
         }
         std::wstring err;
-        if (!WriteIniValue("zones", "recenter_key", name, &err)) {
+        if (!WriteIniValue(keyWhat == 3 ? "zones" : "menu", keyWhat == 3 ? "recenter_key" : "toggle_key", name, &err)) {
             MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
             return;
         }
-        Balloon(L"Touche de recentrage : " + std::wstring(name.begin(), name.end()) + L". Elle doit etre la meme que celle de MSFS.");
+        const std::wstring wn(name.begin(), name.end());
+        Balloon(keyWhat == 3 ? L"Touche de recentrage : " + wn + L". Elle doit etre la meme que celle de MSFS." : L"Menu en VR : touche " + wn + L" pour l'afficher / le cacher.");
         return;
     }
     hands::win::JoyEvent ev;
@@ -503,16 +514,17 @@ void PollDetect() {
     g_detectWhat = 0;
     KillTimer(g_hwnd, kDetectTimerId);
     std::wstring err;
-    // Le nom du peripherique est commun aux deux boutons : le dernier choix gagne.
-    if (!WriteIniValue("zones", "joystick", ev.device, &err) ||
-        !WriteIniValue("zones", what == 1 ? "teach_button" : "clear_button", std::to_string(ev.button), &err)) {
+    // Le nom du peripherique est commun aux deux boutons des zones : le dernier choix gagne. Le menu a le sien.
+    const bool forMenu = what == 5;
+    if (!WriteIniValue(forMenu ? "menu" : "zones", forMenu ? "toggle_joystick" : "joystick", ev.device, &err) ||
+        !WriteIniValue(forMenu ? "menu" : "zones", forMenu ? "toggle_button" : (what == 1 ? "teach_button" : "clear_button"), std::to_string(ev.button), &err)) {
         MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
         return;
     }
     int wl = MultiByteToWideChar(CP_UTF8, 0, ev.device.c_str(), -1, nullptr, 0);
     std::wstring name(wl > 0 ? wl - 1 : 0, L'\0');
     if (wl > 1) MultiByteToWideChar(CP_UTF8, 0, ev.device.c_str(), -1, name.data(), wl);
-    Balloon(std::wstring(what == 1 ? L"Mémorisation de la zone : bouton " : L"Effacement des zones : bouton ") + std::to_wstring(ev.button) + L" de « " + name + L" ».");
+    Balloon(std::wstring(forMenu ? L"Menu en VR (afficher / cacher) : bouton " : (what == 1 ? L"Mémorisation de la zone : bouton " : L"Effacement des zones : bouton ")) + std::to_wstring(ev.button) + L" de « " + name + L" ».");
 }
 
 // Ajoute (dpitch, dyaw) degrés à l'inclinaison du pointeur (bornée à ±45°) et l'enregistre.
@@ -647,6 +659,17 @@ void ShowMenu() {
     AppendMenuW(zones, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(zones, MF_STRING | MF_DISABLED, 0, L"En vol : pointez la commande du bout de l'index, puis appuyez sur le bouton.");
     AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(zones), L"Zones (pochoir)");
+    {
+        HMENU vr = CreatePopupMenu();
+        AppendMenuW(vr, MF_STRING | MF_DISABLED, 0, L"Menu dans le casque : toujours possible en pinçant les deux mains.");
+        std::wstring k(s.menuKey.begin(), s.menuKey.end());
+        AppendMenuW(vr, MF_STRING | cfgGray, ID_MENU_KEY, (L"Choisir la touche qui affiche / cache le menu : " + (k.empty() ? std::wstring(L"(aucune)") : k) + L"…").c_str());
+        if (!s.menuKey.empty()) AppendMenuW(vr, MF_STRING | cfgGray, ID_MENU_KEY_OFF, L"   Ne plus utiliser cette touche");
+        AppendMenuW(vr, MF_STRING | cfgGray, ID_MENU_BTN,
+                    (std::wstring(L"Choisir le bouton de manette / HOTAS qui affiche / cache le menu : ") + (s.menuButton > 0 ? L"bouton " + std::to_wstring(s.menuButton) : std::wstring(L"(aucun)")) + L"…").c_str());
+        if (s.menuButton > 0) AppendMenuW(vr, MF_STRING | cfgGray, ID_MENU_BTN_OFF, L"   Ne plus utiliser ce bouton");
+        AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(vr), L"Menu en VR (touche / bouton)");
+    }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_INSTALL, L"Installer / réparer la couche…");
     AppendMenuW(m, MF_STRING | (s.installed ? 0 : MF_GRAYED), ID_UNINSTALL, L"Désinstaller la couche…");
@@ -704,6 +727,10 @@ void ShowMenu() {
         case ID_ZONES_CLEAR_BTN: StartDetect(2); break;
         case ID_ZONES_TEACH_OFF: ApplySetting("zones", "teach_button", "0", L"Plus de bouton de mémorisation (touche Ctrl+Alt+F9 seulement)."); break;
         case ID_ZONES_RECENTER_KEY: StartDetect(3); break;
+        case ID_MENU_KEY: StartDetect(4); break;
+        case ID_MENU_BTN: StartDetect(5); break;
+        case ID_MENU_KEY_OFF: ApplySetting("menu", "toggle_key", "", L"Plus de touche pour le menu en VR (pincement des deux mains seulement)."); break;
+        case ID_MENU_BTN_OFF: ApplySetting("menu", "toggle_button", "0", L"Plus de bouton pour le menu en VR (pincement des deux mains seulement)."); break;
         case ID_ZONES_EDIT: ZoneEditor_Show(g_hwnd, GetModuleHandleW(nullptr)); break;
         case ID_ZONES_CLEAR_OFF: ApplySetting("zones", "clear_button", "0", L"Plus de bouton d'effacement (touche Ctrl+Alt+F10 seulement)."); break;
         case ID_HANDS_DRAW:

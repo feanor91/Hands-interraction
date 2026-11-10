@@ -178,6 +178,10 @@ struct Config {
     int zoneServerPort = 3210;    // port de StreamSim (127.0.0.1)
     bool menuEnabled = true;
     int menuHoldMs = 1200;
+    // Autres facons d'afficher / cacher le menu : une touche du clavier (nom : LSHIFT, F9, M... ; vide = aucune) et / ou un bouton de manette / HOTAS.
+    std::string menuToggleKey;
+    int menuToggleButton = 0;            // numero du bouton (joy.cpl), 0 = aucun
+    std::string menuToggleJoystick;      // morceau du nom du peripherique ("" = n'importe lequel)
 
     // --- [hands] (étape 3a) : squelette des mains dessiné en surimpression (Direct3D 12) ---
     std::string handsStyle = "skeleton";  // skeleton (cubes), glove (gant), bare (main nue), ghost (main translucide)
