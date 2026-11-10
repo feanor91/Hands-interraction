@@ -2,6 +2,14 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.12] - 2026-11-10
+
+### Ajoute (essai)
+- **Clic virtuel, etape 1** : une zone (poussoir ou bascule) peut cliquer dans le simulateur au lieu d'envoyer une commande. Une manette fantome apparait le temps du clic, avec un rayon qui part
+  de 10 cm devant la zone, dans le sens du doigt de l'apprentissage, et traverse son centre ; la gachette est pressee 180 ms. C'est le simulateur lui-meme qui traite le clic, comme avec une vraie
+  manette (aucune commande a connaitre). Active par `click = true` dans la zone de `zones.ini`, ou dans le menu en VR (page d'une zone : « Action : commande / clic virtuel »).
+  Mode « mains seules » uniquement. Vise le glissement de la verriere et les ecrans tactiles aux etapes suivantes.
+
 ## [0.0.11] - 2026-11-10
 
 ### Modifie

@@ -52,6 +52,7 @@ struct HandsFrame {
     int markerCount = 0;
     BoxData box[kMaxBoxes];
     int boxCount = 0;
+    void* gameSpace = nullptr;  // XrSpace : espace de reference du jeu : celui dans lequel sont exprimees toutes les poses de cette image
     bool headValid = false;            // pose de la tete (espace du jeu)
     hands::emulation::Pose head;
 };

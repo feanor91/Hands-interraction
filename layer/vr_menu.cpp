@@ -181,6 +181,9 @@ std::vector<Row> BuildZoneRows() {
     rows.push_back({L"Boîte plus petite  (−20 %)", true, [id] { Zones_Scale(id, 0.8); }});
     rows.push_back({L"Forme suivante (bouton, interrupteur, molette, écran…)", true, [id] { Zones_NextShape(id); }});
     rows.push_back({Zones_IsFlat(id) ? L"Orientation : à plat (face vers le haut)  →  verticale" : L"Orientation : verticale (face vers vous)  →  à plat", true, [id] { Zones_ToggleFlat(id); }});
+    if (Zones_CanClick(id))
+        rows.push_back({Zones_IsClick(id) ? L"Action : clic virtuel dans le simulateur (essai)  →  commande" : L"Action : commande du simulateur  →  clic virtuel (essai)", true,
+                        [id] { Zones_ToggleClick(id); }});
     rows.push_back({L"Réapprendre la position  (pointer puis pincer)", true, [id] {
                         g_reopenAfterTeach = true;
                         CloseMenu();

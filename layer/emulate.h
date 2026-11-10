@@ -46,6 +46,10 @@ bool Emu_ShouldHideProfile(XrPath topLevelUserPath);
 // Évènement « profil d'interaction changé » synthétique en attente (à livrer par xrPollEvent quand le runtime n'a rien d'autre) ?
 bool Emu_TakePendingProfileEvent(XrSession* session);
 
+// Clic virtuel (mode « mains seules ») : une manette fantome apparait le temps du clic, avec un rayon (aim) issu de `pose`
+// (exprimee dans `space`, l'espace du jeu) ; la gachette est enfoncee `holdMs` apres une courte visee. Sans effet si l'emulation de manette est activee.
+void Emu_SyntheticClick(const XrPosef& pose, XrSpace space, unsigned holdMs);
+
 // Fournis par emulate.cpp : hooks supplémentaires de l'étape 1 (nullptr si inconnu).
 PFN_xrVoidFunction FindEmulationHook(const char* name);
 

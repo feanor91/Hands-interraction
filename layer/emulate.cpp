@@ -524,6 +524,45 @@ void UpdateEngaged(const hands::config::Config& cfg) {
     }
 }
 
+// --- Clic virtuel ---------------------------------------------------------------------------------
+struct Synth {
+    ULONGLONG start = 0;
+    unsigned holdMs = 0;
+    XrPosef pose{};
+    XrSpace space = XR_NULL_HANDLE;
+};
+Synth g_synth;                           // protege par g_mutex
+std::atomic<bool> g_synthActive{false};  // lu sans verrou par les hooks et par Emu_UpdateHandPresence
+constexpr ULONGLONG kSynthLeadMs = 220, kSynthTailMs = 200;  // visee avant l'appui, maintien de la visee apres
+
+// 0 = inactif, 1 = visee seule, 2 = gachette enfoncee (g_mutex pris).
+int SynthPhase() {
+    if (g_synth.start == 0) return 0;
+    const ULONGLONG t = GetTickCount64() - g_synth.start;
+    if (t < kSynthLeadMs) return 1;
+    if (t < kSynthLeadMs + g_synth.holdMs) return 2;
+    if (t < kSynthLeadMs + g_synth.holdMs + kSynthTailMs) return 1;
+    g_synth.start = 0;
+    g_synthActive.store(false);
+    return 0;
+}
+
+// Pose du rayon fantome dans `base` a l'instant `time`. Faux si l'espace du jeu n'est pas localisable dans `base`.
+bool SynthPoseIn(XrSpace base, XrTime time, XrPosef* out) {
+    if (g_synth.space == XR_NULL_HANDLE) return false;
+    if (g_synth.space == base) {
+        *out = g_synth.pose;
+        return true;
+    }
+    XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(g_dispatch.LocateSpace(g_synth.space, base, time, &loc)) || (loc.locationFlags & kPoseValid) != kPoseValid) return false;
+    const em::Pose a{{loc.pose.orientation.x, loc.pose.orientation.y, loc.pose.orientation.z, loc.pose.orientation.w}, {loc.pose.position.x, loc.pose.position.y, loc.pose.position.z}};
+    const em::Pose b{{g_synth.pose.orientation.x, g_synth.pose.orientation.y, g_synth.pose.orientation.z, g_synth.pose.orientation.w},
+                     {g_synth.pose.position.x, g_synth.pose.position.y, g_synth.pose.position.z}};
+    *out = ToXr(em::Multiply(a, b));
+    return true;
+}
+
 // --- Hooks ---------------------------------------------------------------------------------
 
 XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpace, XrTime time, XrSpaceLocation* location) {
@@ -532,6 +571,21 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrLocateSpace(XrSpace space, XrSpace baseSpa
     Safe("xrLocateSpace", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->emulationEnabled) {
+            if (g_synthActive.load()) {  // clic virtuel en cours : la manette fantome est la, rayon sur la commande visee
+                std::lock_guard<std::mutex> lock(g_mutex);
+                const auto sh = g_spaces.find(Key(space));
+                if (sh != g_spaces.end() && SynthPhase() > 0) {
+                    XrPosef p;
+                    if (SynthPoseIn(baseSpace, time, &p)) {
+                        if (sh->second.kind == ActionKind::GripPose && cfg->hideControllerModel) p.position.y -= 100.0f;  // modele de manette cache
+                        location->pose = p;
+                        location->locationFlags = kPoseValid | kPoseTracked;
+                        for (auto* n = static_cast<XrBaseOutStructure*>(location->next); n; n = n->next)
+                            if (n->type == XR_TYPE_SPACE_VELOCITY) reinterpret_cast<XrSpaceVelocity*>(n)->velocityFlags = 0;
+                        return;
+                    }
+                }
+            }
             // Mode « mains seules » : la pose de l'action (aim ou grip) d'une main suivie est déclarée non localisable.
             if (!cfg->hideHandControllers) return;
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -606,6 +660,20 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateBoolean(XrSession session, c
     Safe("xrGetActionStateBoolean", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->emulationEnabled) {
+            if (g_synthActive.load()) {  // clic virtuel : la gachette est enfoncee pendant la phase 2
+                std::lock_guard<std::mutex> lock(g_mutex);
+                const auto ak = g_actionKinds.find(Key(getInfo->action));
+                const int ph = ak != g_actionKinds.end() && ak->second == ActionKind::TriggerBool ? SynthPhase() : 0;
+                if (ph > 0) {
+                    uint8_t& lastS = g_reported[Key(getInfo->action) * 4 + 3];
+                    const uint8_t now2 = ph == 2 ? 1 : 0;
+                    state->changedSinceLastSync = (lastS != now2) ? XR_TRUE : XR_FALSE;
+                    lastS = now2;
+                    state->currentState = now2 ? XR_TRUE : XR_FALSE;
+                    state->isActive = XR_TRUE;
+                    return;
+                }
+            }
             if (!cfg->hideHandControllers) return;
             std::lock_guard<std::mutex> lock(g_mutex);
             if (g_handBound.find(Key(getInfo->action)) == g_handBound.end()) return;
@@ -645,6 +713,20 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStateFloat(XrSession session, con
     Safe("xrGetActionStateFloat", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->emulationEnabled) {
+            if (g_synthActive.load()) {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                const auto ak = g_actionKinds.find(Key(getInfo->action));
+                const int ph = ak != g_actionKinds.end() && ak->second == ActionKind::TriggerFloat ? SynthPhase() : 0;
+                if (ph > 0) {
+                    uint8_t& lastS = g_reported[Key(getInfo->action) * 4 + 3];
+                    const uint8_t now2 = ph == 2 ? 1 : 0;
+                    state->changedSinceLastSync = (lastS != now2) ? XR_TRUE : XR_FALSE;
+                    lastS = now2;
+                    state->currentState = now2 ? 1.0f : 0.0f;
+                    state->isActive = XR_TRUE;
+                    return;
+                }
+            }
             if (!cfg->hideHandControllers) return;
             std::lock_guard<std::mutex> lock(g_mutex);
             if (g_handBound.find(Key(getInfo->action)) == g_handBound.end()) return;
@@ -684,6 +766,14 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrGetActionStatePose(XrSession session, cons
     Safe("xrGetActionStatePose", [&] {
         const auto cfg = CurrentConfig();
         if (!cfg->emulationEnabled) {
+            if (g_synthActive.load()) {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                const auto ak = g_actionKinds.find(Key(getInfo->action));
+                if (ak != g_actionKinds.end() && (ak->second == ActionKind::AimPose || ak->second == ActionKind::GripPose) && SynthPhase() > 0) {
+                    state->isActive = XR_TRUE;
+                    return;
+                }
+            }
             if (!cfg->hideHandControllers) return;
             std::lock_guard<std::mutex> lock(g_mutex);
             if (ShouldMask(getInfo->action, getInfo->subactionPath)) state->isActive = XR_FALSE;
@@ -841,6 +931,17 @@ void Emu_Stop(XrSession session) {
     Logger::Get().Log(LogLevel::Info, "emulation : arretee (hand trackers detruits)");
 }
 
+void Emu_SyntheticClick(const XrPosef& pose, XrSpace space, unsigned holdMs) {
+    if (!g_live.load(std::memory_order_acquire) || CurrentConfig()->emulationEnabled) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_synth.pose = pose;
+    g_synth.space = space;
+    g_synth.holdMs = holdMs;
+    g_synth.start = GetTickCount64();
+    g_synthActive.store(true);
+    g_profileEventPending = true;
+}
+
 void Emu_OnAction(XrAction action, const std::string& fullName) {
     const ActionKind k = Classify(fullName);
     if (k == ActionKind::None) return;
@@ -903,6 +1004,7 @@ void Emu_UpdateHandPresence(XrTime displayTime) {
         bool present = false;
         if (want) present = g_presence[h].Update(active, nowMs, cfg->hideControllersHoldMs);
         else g_presence[h].Reset();
+        if (g_synthActive.load()) present = false;  // clic virtuel : les manettes ne sont plus declarees « aucun profil », le jeu relit les profils
         const bool prev = g_hideHand[h].exchange(present);
         if (present != prev) {
             g_profileEventPending = true;

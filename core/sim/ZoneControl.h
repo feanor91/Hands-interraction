@@ -89,6 +89,7 @@ struct ZoneControl {
     // rotatif
     double stepDeg = 25.0;                // pas : degres (geste twist) ou millimetres (geste slide)
     bool invert = false;
+    bool click = false;                   // poussoir / bascule : au lieu d'une commande, un clic virtuel (manette fantome) dans le simulateur, sur la zone
     bool dual = false;                    // deux niveaux (molette concentrique : bague exterieure + bouton central) : emplacements inc2 / dec2 / press2
     double innerRatio = 0.5;              // taille de la boite du bouton central par rapport a la boite exterieure (X et Y)
     std::string gesture = "twist";        // twist : pincer et tourner le poignet ; slide : pincer et glisser le long de la boite (axe X local)
@@ -146,6 +147,7 @@ inline ZoneControl ParseControl(const hands::config::IniFile& ini, const std::st
     c.readValues = ini.GetString(sec, "read_values", "");
     c.stepDeg = std::max(2.0, std::min(90.0, ini.GetDouble(sec, "step_deg", 25.0)));
     c.invert = ini.GetBool(sec, "invert", false);
+    c.click = ini.GetBool(sec, "click", false);
     c.gesture = ini.GetString(sec, "gesture", "twist") == "slide" ? "slide" : "twist";
     c.dual = ini.GetInt(sec, "levels", 1) >= 2;
     c.innerRatio = std::max(0.2, std::min(0.9, ini.GetDouble(sec, "inner_ratio", 0.5)));
@@ -189,6 +191,7 @@ inline std::string SerializeControl(const ZoneControl& c) {
     } else if (c.kind == "slider") {
         s += "slider_mode = " + c.sliderMode + "\nnotches = " + std::to_string(c.notches) + "\nmin = " + Num(c.min) + "\nmax = " + Num(c.max) + "\n";
     }
+    if (c.click && (c.kind == "push" || c.kind == "toggle")) s += "click = true\n";
     for (const std::string& n : SlotNames(c)) {
         const ActionSeq& q = Slot(c, n);
         if (!q.empty()) s += n + " = " + FormatSeq(q) + "\n";

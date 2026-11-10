@@ -27,6 +27,7 @@
 
 #include "JoyPoll.h"
 #include "bridge_client.h"
+#include "emulate.h"
 #include "config/IniFile.h"
 #include "emulation/CockpitAnchor.h"
 #include "emulation/ZoneBox.h"
@@ -287,7 +288,28 @@ int TeachHand(const HandsFrame& frame) {
 // --- Actions ------------------------------------------------------------------------------------------------------------------------
 
 // Contact simple (poussoir, bascule) : envoie la sequence `press`.
-void FirePress(const ZoneState& z) { Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id); }
+XrSpace g_gameSpace = XR_NULL_HANDLE;  // espace du jeu de la derniere image (les poses des zones y sont exprimees)
+
+// Clic virtuel : une manette fantome vise la zone (rayon qui part de 10 cm devant, dans le sens du doigt de l'apprentissage, et traverse son centre)
+// puis presse la gachette ; c'est le simulateur lui-meme qui traite le clic, comme avec une vraie manette.
+void FireClick(const ZoneState& z) {
+    if (g_gameSpace == XR_NULL_HANDLE) return;
+    const em::ZoneBox box = BoxOf(z);
+    const em::Vec3 dir = em::Normalized(em::Rotate(box.q, em::Vec3{0.0f, 0.0f, -1.0f}));  // de l'avant vers le fond de la boite = sens du doigt
+    const em::Vec3 origin = box.center - dir * 0.10f;
+    const em::Quat q = em::LookAlong(dir, em::Vec3{0.0f, 1.0f, 0.0f});
+    XrPosef p;
+    p.orientation = {q.x, q.y, q.z, q.w};
+    p.position = {origin.x, origin.y, origin.z};
+    Emu_SyntheticClick(p, g_gameSpace, 180);
+    Logger::Get().Log(LogLevel::Info, "zones : '%s' clic virtuel : rayon de (%.3f %.3f %.3f) vers (%.3f %.3f %.3f)", z.id.c_str(), origin.x, origin.y, origin.z, box.center.x,
+                      box.center.y, box.center.z);
+}
+
+void FirePress(const ZoneState& z) {
+    if (z.ctrl.click) FireClick(z);
+    else Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id);
+}
 
 // Interrupteur a N positions : position suivante (lue dans le simulateur si `read` est defini), puis sequence de cette position.
 void FireSwitch(const ZoneState& z) {
@@ -527,6 +549,7 @@ void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
 void Zones_Frame(const HandsFrame& frame) {
     const auto cfg = CurrentConfig();
     if (!cfg->zonesEnabled) return;
+    if (frame.gameSpace) g_gameSpace = reinterpret_cast<XrSpace>(frame.gameSpace);
     const ULONGLONG now = GetTickCount64();
 
     if (!g_loaded || now - g_lastCheck > 1000) {  // rechargement a chaud de zones.ini
@@ -1145,6 +1168,26 @@ bool Zones_ToggleFlat(const std::string& id) {
     for (auto& t : z->tracker) t.Disarm();
     SaveNow();
     return true;
+}
+
+// Clic virtuel (poussoirs et bascules) : la zone clique dans le simulateur au lieu d'envoyer une commande.
+bool Zones_ToggleClick(const std::string& id) {
+    ZoneState* z = FindZone(id);
+    if (!z || (z->ctrl.kind != "push" && z->ctrl.kind != "toggle")) return false;
+    z->ctrl.click = !z->ctrl.click;
+    for (auto& t : z->tracker) t.Disarm();
+    SaveNow();
+    return true;
+}
+
+bool Zones_IsClick(const std::string& id) {
+    const ZoneState* z = FindZone(id);
+    return z && z->ctrl.click;
+}
+
+bool Zones_CanClick(const std::string& id) {
+    const ZoneState* z = FindZone(id);
+    return z && (z->ctrl.kind == "push" || z->ctrl.kind == "toggle");
 }
 
 bool Zones_IsFlat(const std::string& id) {

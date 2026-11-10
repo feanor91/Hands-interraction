@@ -224,6 +224,7 @@ void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFr
     *anyHand = false;
     {
         XrPosef hp;
+        frame->gameSpace = reinterpret_cast<void*>(game->space);
         frame->headValid = Emu_HeadPose(game->space, time, &hp);
         if (frame->headValid) frame->head = {{hp.orientation.x, hp.orientation.y, hp.orientation.z, hp.orientation.w}, {hp.position.x, hp.position.y, hp.position.z}};
     }
