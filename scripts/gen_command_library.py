@@ -67,6 +67,8 @@ for lab, ev in [("Pilote automatique : ALT", "AZP_RAF_AP_ALT_TOGGLE"), ("Pilote 
     entries.append((lab, "push", H(ev), "", "", "", "", ""))
 entries.append(("Commande moteur AEC gauche (cran)", "dial", "", H("AZP_RAF_ENGINE_AEC_LEFT_INC"), H("AZP_RAF_ENGINE_AEC_LEFT_DEC"), "", "", ""))
 entries.append(("Commande moteur AEC droite (cran)", "dial", "", H("AZP_RAF_ENGINE_AEC_RIGHT_INC"), H("AZP_RAF_ENGINE_AEC_RIGHT_DEC"), "", "", ""))
+# Releves en vol avec le debogueur de MSFS (Behaviors > Mouser) : couvercle de protection de la verriere (1 = ouvert). Le bouton lui-meme n'a pas de commande externe connue.
+entries.append(("Verrière : couvercle de protection", "toggle", act("var", "toggle", 1, "L:AZP_RAF_CANOPY_SWITCH_HOOD"), "", ""))
 entries = [e + ("",) * (8 - len(e)) for e in entries]
 
 seen = set()

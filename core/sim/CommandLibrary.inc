@@ -55,3 +55,4 @@
 {L"Pilote automatique : ILS", "push", "code|press|1|number|||0|(>H:AZP_RAF_AP_ILS_TOGGLE)", "", "", "", "", ""},
 {L"Commande moteur AEC gauche (cran)", "dial", "", "code|press|1|number|||0|(>H:AZP_RAF_ENGINE_AEC_LEFT_INC)", "code|press|1|number|||0|(>H:AZP_RAF_ENGINE_AEC_LEFT_DEC)", "", "", ""},
 {L"Commande moteur AEC droite (cran)", "dial", "", "code|press|1|number|||0|(>H:AZP_RAF_ENGINE_AEC_RIGHT_INC)", "code|press|1|number|||0|(>H:AZP_RAF_ENGINE_AEC_RIGHT_DEC)", "", "", ""},
+{L"Verrière : couvercle de protection", "toggle", "var|toggle|1|number|||0|L:AZP_RAF_CANOPY_SWITCH_HOOD", "", "", "", "", ""},

@@ -219,8 +219,12 @@ std::vector<Row> BuildCommandRows() {
     rows.push_back({b, g_cmdPage > 0, [] { --g_cmdPage; }});
     rows.push_back({L"Page suivante  ▸", static_cast<size_t>(g_cmdPage) + 1 < pages, [] { ++g_cmdPage; }});
     if (Zones_InputsLoaded()) {
-        swprintf(b, 64, L"%zu commandes (avion lu)", n);
-        rows.push_back({b, false, nullptr});
+        const size_t adv = Zones_AdvancedCount();
+        swprintf(b, 64, Zones_AdvancedShown() ? L"Masquer les commandes avancées (%zu)" : L"Afficher les commandes avancées (%zu)", adv);
+        rows.push_back({b, adv > 0, [] {
+                            Zones_ToggleAdvanced();
+                            g_cmdPage = 0;
+                        }});
     } else {
         rows.push_back({L"Lire aussi les commandes de l'avion (MSFS lancé)", true, [] { Zones_RefreshInputs(); }});
     }

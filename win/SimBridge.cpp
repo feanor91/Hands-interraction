@@ -73,11 +73,14 @@ struct SimBridge::Impl {
     std::deque<std::function<void()>> tasks;
     std::vector<InputEventInfo> inputCache;
     bool inputCached = false;
+    std::vector<std::string> lvarNames;  // liste des L: recue du module MobiFlight (sous `mu`)
+    bool lvarListing = false, lvarDone = false;
 
     // Réservé au fil du pont (aucun verrou) :
     HANDLE h = nullptr;
     std::map<std::string, int> eventIds;
     std::map<std::string, int> writeDefs;
+    std::map<std::string, int> readDefs;  // definitions de lecture par « nom|unite »
     std::map<int, std::shared_ptr<Query>> pending;      // lectures de variables / d'Input Events en cours
     std::map<int, std::shared_ptr<Query>> listPending;  // énumérations d'Input Events en cours
     std::map<int, std::vector<InputEventInfo>> listItems;
@@ -119,6 +122,7 @@ struct SimBridge::Impl {
         h = nullptr;
         eventIds.clear();
         writeDefs.clear();
+        readDefs.clear();
         mfReady = false;
         mfQueue.clear();
         failures = 0;
@@ -258,7 +262,18 @@ struct SimBridge::Impl {
                 const auto* c = static_cast<SIMCONNECT_RECV_CLIENT_DATA*>(r);
                 if (c->dwRequestID != kMfRespReq) break;
                 const char* text = reinterpret_cast<const char*>(&c->dwData);
-                if (std::strncmp(text, "MF.Pong", 7) == 0) {
+                if (std::strncmp(text, "MF.LVars.List.Start", 19) == 0) {
+                    std::lock_guard<std::mutex> l(mu);
+                    lvarNames.clear();
+                    lvarListing = true;
+                } else if (std::strncmp(text, "MF.LVars.List.End", 17) == 0) {
+                    std::lock_guard<std::mutex> l(mu);
+                    lvarListing = false;
+                    lvarDone = true;
+                } else if (std::strncmp(text, "MF.", 3) != 0) {
+                    std::lock_guard<std::mutex> l(mu);
+                    if (lvarListing) lvarNames.emplace_back(text);
+                } else if (std::strncmp(text, "MF.Pong", 7) == 0) {
                     bool first = false;
                     {
                         std::lock_guard<std::mutex> l(mu);
@@ -483,6 +498,34 @@ bool SimBridge::ExecCode(const std::string& codeIn, std::string* err) {
     return true;
 }
 
+bool SimBridge::ListLVars(std::vector<std::string>* out, int timeoutMs, std::string* err) {
+    if (!p_->CheckConnected(err)) return false;
+    Impl* p = p_;
+    {
+        std::lock_guard<std::mutex> l(p->mu);
+        p->lvarNames.clear();
+        p->lvarListing = false;
+        p->lvarDone = false;
+    }
+    p->Post([p] {
+        if (!p->h) return;
+        p->EnsureMf();
+        p->mfQueue.push_back("MF.LVars.List");
+    });
+    const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(timeoutMs);
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> l(p->mu);
+            if (p->lvarDone) {
+                if (out) *out = p->lvarNames;
+                return true;
+            }
+        }
+        if (GetTickCount64() > until) return p->Fail(err, "le module MobiFlight WASM n'a pas repondu (est-il dans le dossier Community ?)");
+        Sleep(50);
+    }
+}
+
 bool SimBridge::ReadVar(const std::string& nameIn, const std::string& unitIn, double* out, int timeoutMs, std::string* err) {
     const std::string name = sim::NormalizeVar(nameIn);
     const std::string unit = unitIn.empty() ? "number" : sim::Trim(unitIn);
@@ -492,9 +535,17 @@ bool SimBridge::ReadVar(const std::string& nameIn, const std::string& unitIn, do
     Impl* p = p_;
     p->Post([p, q, name, unit] {
         if (!p->h) return q->Finish(false, "deconnecte");
+        // Une definition par variable (reutilisee) : en relevant des centaines de variables en boucle, en creer une a chaque lecture saturait SimConnect.
         const int id = p->nextId++;
-        const HRESULT hr1 = SimConnect_AddToDataDefinition(p->h, static_cast<SIMCONNECT_DATA_DEFINITION_ID>(id), name.c_str(), unit.c_str(), SIMCONNECT_DATATYPE_FLOAT64);
-        const HRESULT hr2 = SimConnect_RequestDataOnSimObject(p->h, static_cast<SIMCONNECT_DATA_REQUEST_ID>(id), static_cast<SIMCONNECT_DATA_DEFINITION_ID>(id),
+        const std::string key = name + "|" + unit;
+        auto it = p->readDefs.find(key);
+        HRESULT hr1 = S_OK;
+        if (it == p->readDefs.end()) {
+            const int def = p->nextId++;
+            hr1 = SimConnect_AddToDataDefinition(p->h, static_cast<SIMCONNECT_DATA_DEFINITION_ID>(def), name.c_str(), unit.c_str(), SIMCONNECT_DATATYPE_FLOAT64);
+            if (SUCCEEDED(hr1)) it = p->readDefs.emplace(key, def).first;
+        }
+        const HRESULT hr2 = it == p->readDefs.end() ? E_FAIL : SimConnect_RequestDataOnSimObject(p->h, static_cast<SIMCONNECT_DATA_REQUEST_ID>(id), static_cast<SIMCONNECT_DATA_DEFINITION_ID>(it->second),
                                                               SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_PERIOD_ONCE);
         if (FAILED(hr1) || FAILED(hr2)) return q->Finish(false, "requete refusee");
         p->pending[id] = q;

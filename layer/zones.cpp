@@ -887,6 +887,28 @@ constexpr size_t kLibraryCount = sizeof(kLibrary) / sizeof(kLibrary[0]);
 
 std::mutex g_liveMutex;
 std::vector<std::string> g_liveInputs;
+std::atomic<bool> g_showAdvanced{false};  // montrer aussi les Input Events « avances » (UNKNOWN_*, entrees des manettes AZP_RAF_CONTROLS_*)
+
+// Input Event deja couvert par une commande de la bibliotheque (meme nom dans une de ses sequences).
+bool InLibrary(const std::string& name) {
+    for (const LibEntry& e : kLibrary)
+        for (const char* s : {e.press, e.inc, e.dec, e.press2, e.inc2, e.dec2})
+            if (s[0] && std::strstr(s, name.c_str())) return true;
+    return false;
+}
+bool IsAdvancedInput(const std::string& n) { return n.rfind("UNKNOWN_", 0) == 0 || n.rfind("AZP_RAF_CONTROLS_", 0) == 0; }
+
+// Input Events proposes dans le menu : ceux de la bibliotheque sont deja la, les « avances » ne se montrent qu'a la demande (verrou `g_liveMutex` pris).
+std::vector<size_t> VisibleLive() {
+    std::vector<size_t> v;
+    for (size_t i = 0; i < g_liveInputs.size(); ++i) {
+        const std::string& n = g_liveInputs[i];
+        if (InLibrary(n)) continue;
+        if (IsAdvancedInput(n) && !g_showAdvanced) continue;
+        v.push_back(i);
+    }
+    return v;
+}
 std::atomic<bool> g_liveLoaded{false}, g_liveLoading{false};
 
 void EnsureLoaded() {
@@ -937,14 +959,28 @@ std::vector<ZoneInfo> Zones_List() {
 
 size_t Zones_CommandCount() {
     std::lock_guard<std::mutex> l(g_liveMutex);
-    return kLibraryCount + g_liveInputs.size();
+    return kLibraryCount + VisibleLive().size();
 }
+
+size_t Zones_AdvancedCount() {
+    std::lock_guard<std::mutex> l(g_liveMutex);
+    size_t n = 0;
+    for (const std::string& s : g_liveInputs)
+        if (IsAdvancedInput(s) && !InLibrary(s)) ++n;
+    return n;
+}
+
+bool Zones_AdvancedShown() { return g_showAdvanced.load(); }
+void Zones_ToggleAdvanced() { g_showAdvanced = !g_showAdvanced.load(); }
 
 std::wstring Zones_CommandLabel(size_t index) {
     if (index < kLibraryCount) return kLibrary[index].label;
     std::lock_guard<std::mutex> l(g_liveMutex);
     index -= kLibraryCount;
-    return index < g_liveInputs.size() ? L"Input : " + WideOf(g_liveInputs[index]) : std::wstring();
+    const std::vector<size_t> vis = VisibleLive();
+    if (index >= vis.size()) return std::wstring();
+    const std::string& n = g_liveInputs[vis[index]];
+    return (IsAdvancedInput(n) ? L"(avancé) " : L"Input : ") + WideOf(n);
 }
 
 bool Zones_InputsLoaded() { return g_liveLoaded; }
@@ -993,12 +1029,13 @@ void Zones_AddCommand(size_t index) {
             if (z.ctrl.slots.count(s) && !z.ctrl.slots[s].empty()) { base = z.ctrl.slots[s][0].target; break; }
     } else {
         std::lock_guard<std::mutex> l(g_liveMutex);
+        const std::vector<size_t> vis = VisibleLive();
         const size_t i = index - kLibraryCount;
-        if (i >= g_liveInputs.size()) return;
+        if (i >= vis.size()) return;
         z.ctrl.kind = "toggle";
         sim::ZoneAction a;
         a.type = "input";
-        a.target = g_liveInputs[i];
+        a.target = g_liveInputs[vis[i]];
         a.mode = "toggle";
         z.ctrl.slots["press"] = {a};
         base = a.target;

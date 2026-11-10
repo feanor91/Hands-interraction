@@ -55,6 +55,8 @@ public:
     bool ReadVar(const std::string& name, const std::string& unit, double* out, int timeoutMs, std::string* err);
     bool ListInputs(std::vector<InputEventInfo>* out, bool force, int timeoutMs, std::string* err);
     bool ReadInput(const std::string& name, double* out, int timeoutMs, std::string* err);
+    // Liste des variables « L: » de l'avion, par le module MobiFlight WASM (installe dans Community ; 1000 noms au plus, tries, sans « L: »).
+    bool ListLVars(std::vector<std::string>* out, int timeoutMs, std::string* err);
 
 private:
     struct Impl;

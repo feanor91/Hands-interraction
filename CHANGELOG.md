@@ -2,6 +2,18 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.10] - 2026-11-10
+
+### Modifie
+- **Liste des commandes triee** : de 19 pages a 8. Les Input Events deja couverts par la bibliotheque ne sont plus proposes en double, et les « avances » (`UNKNOWN_*` : verins, trappes, cales, capots du sol ; `AZP_RAF_CONTROLS_*` : entrees des manettes) sont masques par defaut. Une ligne en bas de la page « Commandes » les affiche ou les masque (« Afficher les commandes avancees »).
+- **Outils de decouverte** (`simbridge_cli`) : `dump`, `watch` (Input Events), `lvars` / `watchl` (variables L: du Rafale par le module MobiFlight, 1000 noms au plus), `watchs` (SimVars standard) ; filtres avec exclusion (`AZP_RAF,!SHAKE`). Le relevé affiche ce qui change quand on manipule une commande dans le cockpit. Pause entre deux passages pour ne pas surcharger le simulateur.
+
+### Ajoute
+- **Verriere : couvercle de protection** (`L:AZP_RAF_CANOPY_SWITCH_HOOD`, 1 = ouvert), releve avec le debogueur de MSFS. Le bouton de la verriere (a maintenir, trois positions) n'a pas de commande externe connue pour l'instant ; son etat se lit par la SimVar `CANOPY OPEN`.
+
+### Corrige
+- Lectures de variables en boucle (`ReadVar`) : une definition SimConnect par variable, reutilisee, au lieu d'une par lecture (saturait le simulateur lors des releves).
+
 ## [0.0.9] - 2026-11-10
 
 ### Modifie

@@ -42,6 +42,10 @@ size_t Zones_CommandCount();
 std::wstring Zones_CommandLabel(size_t index);
 void Zones_RefreshInputs();  // lecture asynchrone via le pont (MSFS doit tourner)
 bool Zones_InputsLoaded();
+// Input Events « avances » (UNKNOWN_*, entrees des manettes AZP_RAF_CONTROLS_*) : masques par defaut, ainsi que ceux deja couverts par la bibliotheque.
+size_t Zones_AdvancedCount();
+bool Zones_AdvancedShown();
+void Zones_ToggleAdvanced();
 
 // Cree une zone pour la commande choisie et lance son apprentissage (compte a rebours puis memorisation du bout de l'index).
 void Zones_AddCommand(size_t index);
