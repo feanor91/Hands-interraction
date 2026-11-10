@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.14] - 2026-11-10
+
+### Corrige
+- **Clic virtuel : le rayon part de l'oeil** (comme une souris) et traverse le centre de la zone. Avec le sens du doigt, le rayon rasait la surface et touchait un point plus loin que le bouton (frein de parc manque). Le doigt n'est plus utilise que si la tete n'est pas suivie.
+
 ## [0.0.13] - 2026-11-10
 
 ### Corrige

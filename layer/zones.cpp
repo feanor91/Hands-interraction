@@ -288,7 +288,9 @@ int TeachHand(const HandsFrame& frame) {
 // --- Actions ------------------------------------------------------------------------------------------------------------------------
 
 // Contact simple (poussoir, bascule) : envoie la sequence `press`.
-XrSpace g_gameSpace = XR_NULL_HANDLE;  // espace du jeu de la derniere image (les poses des zones y sont exprimees)
+XrSpace g_gameSpace = XR_NULL_HANDLE;
+em::Pose g_head;  // pose de la tete (espace du jeu) de la derniere image
+bool g_headValid = false;  // espace du jeu de la derniere image (les poses des zones y sont exprimees)
 
 // Clic virtuel : une manette fantome vise la zone (rayon qui part de 10 cm devant, dans le sens du doigt de l'apprentissage, et traverse son centre)
 // puis presse la gachette ; c'est le simulateur lui-meme qui traite le clic, comme avec une vraie manette.
@@ -297,7 +299,11 @@ void FireClick(const ZoneState& z, const HandPoseData* hd) {
     const em::ZoneBox box = BoxOf(z);
     em::Vec3 dir = em::Normalized(em::Rotate(box.q, em::Vec3{0.0f, 0.0f, -1.0f}));  // repli : sens appris de la boite
     em::Vec3 target = box.center;
-    if (hd && hd->valid && hd->jointValid[kIndexTip] && hd->jointValid[8]) {  // sens reel du doigt (articulation du milieu -> bout), passant par le bout
+    if (g_headValid && em::Length(box.center - g_head.p) > 0.15f) {
+        // Comme une souris : le rayon part de l'oeil et traverse le centre de la zone, il touche donc ce que l'on voit a cet endroit (le bouton),
+        // meme quand le doigt arrive de biais ou a ras de la surface.
+        dir = em::Normalized(box.center - g_head.p);
+    } else if (hd && hd->valid && hd->jointValid[kIndexTip] && hd->jointValid[8]) {  // sans tete : sens reel du doigt
         const em::Vec3 d = hd->joint[kIndexTip].p - hd->joint[8].p;
         if (em::Length(d) > 0.005f) {
             dir = em::Normalized(d);
