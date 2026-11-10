@@ -107,6 +107,7 @@ bool Complete(const ZoneState& z) { return z.defined && (z.ctrl.kind != "slider"
 bool g_loaded = false;
 FILETIME g_loadedStamp{};
 ULONGLONG g_lastCheck = 0;
+std::string g_capturedId;  // derniere zone dont l'apprentissage vient de se terminer (lue une fois par Zones_TakeCaptured)
 std::string g_teachId;  // zone visee par l'apprentissage en cours (vide = premiere incomplete)
 int g_teachStage = 1;   // curseur : 1 = debut de course, 2 = fin de course
 bool g_prevTeach = false, g_prevClear = false;
@@ -687,6 +688,7 @@ void Zones_Frame(const HandsFrame& frame) {
         } else {
             g_teachId.clear();
             g_teachPinchUntil = 0;
+            g_capturedId = z.id;  // apprentissage termine : le menu en VR peut se rouvrir sur cette zone
         }
     };
 
@@ -1017,6 +1019,13 @@ void Zones_AddCommand(size_t index) {
     SaveZones();
     g_loadedStamp = FileStamp();
     StartTeach(id);
+}
+
+bool Zones_TakeCaptured(std::string* id) {
+    if (g_capturedId.empty()) return false;
+    *id = g_capturedId;
+    g_capturedId.clear();
+    return true;
 }
 
 void Zones_Reteach(const std::string& id) {

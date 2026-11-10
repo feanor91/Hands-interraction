@@ -49,6 +49,7 @@ bool g_fine = false;                   // page des réglages fins affichée
 enum class Page { Main, Zones, Commands, Zone, Display, Pointer };
 Page g_page = Page::Main;
 std::string g_zoneId;  // zone ouverte dans la page de detail
+bool g_reopenAfterTeach = false;  // l'apprentissage en cours vient du menu : le rouvrir une fois la zone apprise
 int g_cmdPage = 0;
 size_t g_lastCmdCount = 0;
 constexpr size_t kCmdPerPage = 8;
@@ -181,6 +182,7 @@ std::vector<Row> BuildZoneRows() {
     rows.push_back({L"Forme suivante (bouton, interrupteur, molette, écran…)", true, [id] { Zones_NextShape(id); }});
     rows.push_back({Zones_IsFlat(id) ? L"Orientation : à plat (face vers le haut)  →  verticale" : L"Orientation : verticale (face vers vous)  →  à plat", true, [id] { Zones_ToggleFlat(id); }});
     rows.push_back({L"Réapprendre la position  (pointer puis pincer)", true, [id] {
+                        g_reopenAfterTeach = true;
                         CloseMenu();
                         Zones_Reteach(id);
                     }});
@@ -208,6 +210,7 @@ std::vector<Row> BuildCommandRows() {
         }
         rows.push_back({Zones_CommandLabel(idx), true, [idx] {
                             Zones_AddCommand(idx);
+                            g_reopenAfterTeach = true;
                             CloseMenu();
                         }});
     }
@@ -497,7 +500,12 @@ static void ToggleMenu(const XrCompositionLayerProjection* game, XrTime displayT
     em::Vec3 fh = em::Normalized(em::Vec3{fwd.x, 0.0f, fwd.z});
     if (em::Length(fh) < 0.5f) fh = em::Vec3{0.0f, 0.0f, -1.0f};
     const em::Vec3 up{0.0f, 1.0f, 0.0f};
-    g.quad = {em::LookAlong(fh, up), hp.p + fh * g.panelDist - up * 0.05f};  // devant la tete, un peu plus bas
+    // Mode mains seules : panneau bas, a hauteur de ventre/pupitre et incline vers la tete (on le regarde de haut, le bras reste detendu).
+    // Mode rayon : devant la tete, un peu plus bas.
+    const float drop = cfg.emulationEnabled ? 0.05f : 0.32f;
+    const em::Vec3 pos = hp.p + fh * g.panelDist - up * drop;
+    const em::Vec3 toPanel = em::Normalized(pos - hp.p);
+    g.quad = {em::LookAlong(toPanel, up), pos};
     g.open = true;
     g.dirty = true;
     g.hover = -1;
@@ -555,7 +563,26 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     const bool prev[2] = {g.prevPressed[0], g.prevPressed[1]};
     g.prevPressed[0] = p[0];
     g.prevPressed[1] = p[1];
+    // Apprentissage d'une zone lance depuis le menu et termine : on rouvre le menu sur la page de cette zone.
+    {
+        std::string capturedId;
+        if (Zones_TakeCaptured(&capturedId) && g_reopenAfterTeach) {
+            g_reopenAfterTeach = false;
+            if (!g.open) ToggleMenu(game, displayTime, *cfg, "zone apprise");
+            if (g.open) {
+                g_zoneId = capturedId;
+                g_page = Page::Zone;
+            }
+        }
+    }
     if (!g.open) return false;
+    {  // changement de page : le doigt est deja devant la ligne suivante, il doit d'abord en sortir
+        static Page lastPage = Page::Main;
+        if (g_page != lastPage) {
+            lastPage = g_page;
+            DisarmRows();
+        }
+    }
 
     // --- Panneau et image ------------------------------------------------------------------------------------------
     if (g_page == Page::Commands && Zones_CommandCount() != g_lastCmdCount) {

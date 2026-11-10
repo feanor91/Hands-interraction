@@ -2,6 +2,15 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.7] - 2026-11-10
+
+### Modifie
+- **Menu en mode « mains seules » plus bas** : le panneau s'ouvre 32 cm sous les yeux et s'incline vers la tete (on le regarde de dessus, le bras reste detendu).
+- **Menu rouvert apres l'apprentissage** : quand une zone est apprise depuis le menu (ajout ou reapprentissage), le menu se rouvre sur la page de cette zone.
+
+### Corrige
+- **Selection immediate dans le menu** : a chaque changement de page, le doigt doit d'abord sortir de la ligne qu'il touche avant d'en choisir une (le choix d'une commande n'est plus declenche aussitot).
+
 ## [0.0.6] - 2026-11-10
 
 ### Corrige

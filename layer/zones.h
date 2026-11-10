@@ -45,6 +45,8 @@ bool Zones_InputsLoaded();
 
 // Cree une zone pour la commande choisie et lance son apprentissage (compte a rebours puis memorisation du bout de l'index).
 void Zones_AddCommand(size_t index);
+// Vrai une fois quand l'apprentissage d'une zone vient de se terminer (id renseigne) : le menu se rouvre alors sur cette zone.
+bool Zones_TakeCaptured(std::string* id);
 // Relance l'apprentissage de la position d'une zone existante.
 void Zones_Reteach(const std::string& id);
 
