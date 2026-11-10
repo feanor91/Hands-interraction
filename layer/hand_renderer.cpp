@@ -131,11 +131,11 @@ void AddWireBox(std::vector<Prim>& out, const BoxData& bx) {
         const em::Pose p{bx.pose.q, bx.pose.p + em::Rotate(bx.pose.q, em::Vec3{ox, oy, oz})};
         AddCube(out, p, sx, sy, sz, bx.r, bx.g, bx.b);
     };
-    if (bx.faceOnly) {  // face avant : 4 aretes a z = +hz
-        edge(0, hy, hz, bx.size.x + t, t, t);
-        edge(0, -hy, hz, bx.size.x + t, t, t);
-        edge(hx, 0, hz, t, bx.size.y + t, t);
-        edge(-hx, 0, hz, t, bx.size.y + t, t);
+    if (bx.faceOnly) {  // face arriere (z = -hz : le fond de la boite, a plat = le dessous) : le carre n'est plus entre le doigt et la commande
+        edge(0, hy, -hz, bx.size.x + t, t, t);
+        edge(0, -hy, -hz, bx.size.x + t, t, t);
+        edge(hx, 0, -hz, t, bx.size.y + t, t);
+        edge(-hx, 0, -hz, t, bx.size.y + t, t);
         return;
     }
     for (float a : {-1.0f, 1.0f})

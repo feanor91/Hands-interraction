@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.9] - 2026-11-10
+
+### Modifie
+- **Boites en « faces seulement »** : le carre dessine est maintenant la face arriere (pour une boite a plat, le dessous), et non plus la face avant / le dessus, pour ne pas passer entre le doigt et la commande.
+
 ## [0.0.8] - 2026-11-10
 
 ### Corrige
