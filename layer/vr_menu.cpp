@@ -42,8 +42,9 @@ constexpr float kPanelWidthTouch = 0.44f, kPanelDistTouch = 0.50f;
 constexpr ULONGLONG kPokeDwellMs = 450;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
-enum class Page { Main, Zones, Commands };
+enum class Page { Main, Zones, Commands, Zone };
 Page g_page = Page::Main;
+std::string g_zoneId;  // zone ouverte dans la page de detail
 int g_cmdPage = 0;
 size_t g_lastCmdCount = 0;
 constexpr size_t kCmdPerPage = 8;
@@ -99,6 +100,14 @@ std::string Num(double v) {
     return b;
 }
 
+std::wstring Wide(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
 void CloseMenu() {
     g.open = false;
     g_fine = false;
@@ -120,12 +129,34 @@ std::vector<Row> BuildZonesRows() {
     for (size_t i = 0; i < zones.size() && rows.size() < kMenuRows - 2; ++i) {
         const ZoneInfo z = zones[i];
         rows.push_back({std::wstring(z.hasPos ? L"✔  " : L"…  ") + z.text + (z.hasPos ? L"" : L"   (à apprendre)"), true, [z] {
-                            CloseMenu();
-                            Zones_Reteach(z.id);
+                            g_zoneId = z.id;
+                            g_page = Page::Zone;
                         }});
     }
     if (zones.empty()) rows.push_back({L"Aucune zone pour l'instant.", false, nullptr});
-    rows.push_back({L"Toucher une zone de la liste = réapprendre sa position", false, nullptr});
+    rows.push_back({L"Toucher une zone : taille, forme, nouvel apprentissage", false, nullptr});
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
+// Page « une zone » : taille et forme de sa boite, nouvel apprentissage, suppression.
+std::vector<Row> BuildZoneRows() {
+    std::vector<Row> rows;
+    const std::string id = g_zoneId;
+    rows.push_back({L"◂  Retour aux zones", true, [] { g_page = Page::Zones; }});
+    rows.push_back({Wide(id) + L"  —  boîte " + Zones_GeomText(id), false, nullptr});
+    rows.push_back({L"Boîte plus grande  (+25 %)", true, [id] { Zones_Scale(id, 1.25); }});
+    rows.push_back({L"Boîte plus petite  (−20 %)", true, [id] { Zones_Scale(id, 0.8); }});
+    rows.push_back({L"Forme suivante (bouton, interrupteur, molette, écran…)", true, [id] { Zones_NextShape(id); }});
+    rows.push_back({L"Réapprendre la position  (compte à rebours 3 s)", true, [id] {
+                        CloseMenu();
+                        Zones_Reteach(id);
+                    }});
+    rows.push_back({L"Supprimer cette zone", true, [id] {
+                        Zones_Delete(id);
+                        g_page = Page::Zones;
+                    }});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;
@@ -165,6 +196,7 @@ std::vector<Row> BuildCommandRows() {
 std::vector<Row> BuildRows() {
     if (g_page == Page::Zones) return BuildZonesRows();
     if (g_page == Page::Commands) return BuildCommandRows();
+    if (g_page == Page::Zone) return BuildZoneRows();
     const auto cfg = CurrentConfig();
     std::vector<Row> rows;
 
@@ -236,6 +268,14 @@ std::vector<Row> BuildRows() {
                         Set("hands", "enabled", on ? "false" : "true", on ? L"Squelette : NON" : L"Squelette : OUI");
                     }});
     if (!g_fine) {
+        {
+            const std::string m = cfg->zoneShowBoxes;
+            const wchar_t* name = m == "near" ? L"près des doigts" : (m == "hidden" ? L"cachées" : L"toutes");
+            rows.push_back({std::wstring(L"Boîtes des zones : ") + name, true, [m] {
+                                const char* n = m == "all" ? "near" : (m == "near" ? "hidden" : "all");
+                                Set("zones", "show_boxes", n, L"Boîtes des zones modifiées");
+                            }});
+        }
         rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
         rows.push_back({L"Réglages fins du rayon  ▸", true, [] { g_fine = true; }});
     } else {

@@ -116,7 +116,23 @@ void AddCube(std::vector<Prim>& out, const em::Pose& pose, float sx, float sy, f
     out.push_back(p);
 }
 
+// Boite en fil de fer : 12 aretes, chacune un cube tres fin le long d'un axe local.
+void AddWireBox(std::vector<Prim>& out, const BoxData& bx) {
+    const float hx = bx.size.x * 0.5f, hy = bx.size.y * 0.5f, hz = bx.size.z * 0.5f, t = bx.edge;
+    auto edge = [&](float ox, float oy, float oz, float sx, float sy, float sz) {
+        const em::Pose p{bx.pose.q, bx.pose.p + em::Rotate(bx.pose.q, em::Vec3{ox, oy, oz})};
+        AddCube(out, p, sx, sy, sz, bx.r, bx.g, bx.b);
+    };
+    for (float a : {-1.0f, 1.0f})
+        for (float b : {-1.0f, 1.0f}) {
+            edge(0, a * hy, b * hz, bx.size.x + t, t, t);  // aretes le long de X
+            edge(a * hx, 0, b * hz, t, bx.size.y + t, t);  // le long de Y
+            edge(a * hx, b * hy, 0, t, t, bx.size.z + t);  // le long de Z
+        }
+}
+
 void BuildPrims(const HandsFrame& frame, const RenderStyle& style, std::vector<Prim>& out) {
+    for (int i = 0; i < frame.boxCount && i < kMaxBoxes; ++i) AddWireBox(out, frame.box[i]);
     for (int m = 0; m < frame.markerCount && m < kMaxMarkers; ++m) {
         const MarkerData& mk = frame.marker[m];
         AddCube(out, em::Pose{em::Quat{0, 0, 0, 1}, mk.pos}, mk.size, mk.size, mk.size, mk.r, mk.g, mk.b);
@@ -364,7 +380,7 @@ struct HandRenderer::Impl {
         if (!EnsureDepth(mw, mh)) return false;
 
         std::vector<Prim> prims;
-        prims.reserve(256);
+        prims.reserve(1400);
         BuildPrims(frame, style, prims);
 
         const int slot = static_cast<int>(frame_++ % kSlots);

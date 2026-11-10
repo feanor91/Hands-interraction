@@ -44,4 +44,10 @@ void Zones_AddCommand(size_t index);
 // Relance l'apprentissage de la position d'une zone existante.
 void Zones_Reteach(const std::string& id);
 
+// Boite d'une zone : texte des dimensions (« 30 x 30 x 40 mm »), mise a l'echelle, forme suivante parmi les formes predefinies, suppression.
+std::wstring Zones_GeomText(const std::string& id);
+bool Zones_Scale(const std::string& id, double factor);
+bool Zones_NextShape(const std::string& id);
+bool Zones_Delete(const std::string& id);
+
 }  // namespace layer

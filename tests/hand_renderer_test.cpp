@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "hand_renderer.h"
+#include "emulation/ZoneBox.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace layer;
@@ -149,6 +150,11 @@ int main(int argc, char** argv) {
     HandsFrame frame;
     MakeFlatHand(frame.hand[0], -0.09f, -0.35f, false);  // gauche
     MakeFlatHand(frame.hand[1], 0.09f, -0.35f, true);    // droite, pincement allumé (bouts verts)
+
+    // Boites en fil de fer (zones) : un bouton bleu, un rotatif orange incline, un ecran rouge.
+    frame.box[frame.boxCount++] = {{{0, 0, 0, 1}, {-0.05f, 0.02f, -0.45f}}, {0.03f, 0.03f, 0.04f}, 0.30f, 0.60f, 1.0f, 0.0016f};
+    frame.box[frame.boxCount++] = {{hands::emulation::QuatFromEulerDeg(25, 15, 0), {0.06f, 0.0f, -0.5f}}, {0.05f, 0.05f, 0.05f}, 1.0f, 0.55f, 0.10f, 0.0016f};
+    frame.box[frame.boxCount++] = {{{0, 0, 0, 1}, {0.0f, 0.12f, -0.6f}}, {0.16f, 0.11f, 0.06f}, 1.0f, 0.25f, 0.25f, 0.0016f};
 
     RenderTarget targets[2];
     for (int i = 0; i < 2; ++i) {

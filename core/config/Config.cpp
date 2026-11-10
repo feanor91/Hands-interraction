@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "Config.h"
 
 #include <fstream>
@@ -101,6 +102,10 @@ Config Config::FromIni(const IniFile& ini) {
     c.zonesEnabled = ini.GetBool("zones", "enabled", c.zonesEnabled);
     c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
     c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);
+    c.zoneShowBoxes = ini.GetString("zones", "show_boxes", c.zoneShowBoxes);
+    if (c.zoneShowBoxes != "near" && c.zoneShowBoxes != "hidden") c.zoneShowBoxes = "all";
+    c.zoneFingerMm = std::max(0.0, std::min(30.0, ini.GetDouble("zones", "finger_mm", c.zoneFingerMm)));
+    c.zoneNearCm = std::max(5.0, std::min(100.0, ini.GetDouble("zones", "near_cm", c.zoneNearCm)));
     c.zoneRearmMs = ini.GetDouble("zones", "rearm_ms", c.zoneRearmMs);
     c.zoneTeachDelayMs = ini.GetDouble("zones", "teach_delay_ms", c.zoneTeachDelayMs);
     if (c.zoneTeachDelayMs < 0.0) c.zoneTeachDelayMs = 0.0;

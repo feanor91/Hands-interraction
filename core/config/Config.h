@@ -160,7 +160,10 @@ struct Config {
     // le jeu cesse alors de croire à une manette connectée.
     bool hideControllersProfile = true;
     bool zonesEnabled = true;
-    double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone
+    double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone (ancien format ; les zones ont maintenant une boîte)
+    std::string zoneShowBoxes = "all";  // boîtes en fil de fer : all (toutes), near (près des doigts), hidden (cachées)
+    double zoneFingerMm = 6.0;    // taille du bout du doigt : la boîte est agrandie d'autant
+    double zoneNearCm = 30.0;     // mode near : distance du bout du doigt en dessous de laquelle une boîte s'affiche
     double zoneDwellMs = 250.0;   // durée de maintien du doigt dans la zone avant de déclencher
     double zoneRearmMs = 400.0;   // durée hors de la zone avant de pouvoir redéclencher
     double zoneTeachDelayMs = 1500.0;  // delai entre Ctrl+Alt+F9 et l'enregistrement (le temps de poser le doigt)

@@ -44,7 +44,11 @@ Deux façons, qui écrivent le même fichier (`C:\ProgramData\HandsLayer\data\zo
   Les positions s'apprennent ensuite en vol avec un **bouton du joystick / HOTAS** (choisi dans la tray) : l'index sur la commande, appui sur le bouton.
   Repli clavier : Ctrl+Alt+F9 (apprendre), Ctrl+Alt+F10 (effacer les positions).
 
-Repères visibles dans le casque : magenta = zone apprise, jaune = doigt dedans, vert = déclenchée, cyan = saisie en cours, blanc = mémorisée.
+Chaque zone est une **boîte orientée en fil de fer** (comme dans Archan XR) : sa taille dépend de la commande (petite pour un bouton, grande pour une molette ou un écran) et seules ses arêtes sont
+dessinées, pour ne pas cacher la commande. Couleurs : bleu = poussoir / bascule, jaune = interrupteur, orange = rotatif, vert = curseur ; arête épaissie et claire = doigt dedans, cyan = saisie en cours,
+vert vif = déclenchée, blanc = mémorisée. Le contact se teste dans la boîte, agrandie de la taille du bout du doigt (`[zones] finger_mm`).
+Dimensions et rotation se règlent dans la fenêtre de configuration (L/H/P en mm, lacet / tangage / roulis) ou dans le menu VR (*zone › boîte plus grande / plus petite / forme suivante*) ;
+l'affichage (`[zones] show_boxes` : toutes, près des doigts, cachées) se change dans le menu VR.
 Les positions sont dans l'espace du jeu : **si le cockpit est recalé, réapprendre les zones.**
 
 ### Types de commande

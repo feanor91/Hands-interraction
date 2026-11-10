@@ -27,6 +27,7 @@
 #include "JoyPoll.h"
 #include "bridge_client.h"
 #include "config/IniFile.h"
+#include "emulation/ZoneBox.h"
 #include "emulation/ZoneTracker.h"
 #include "log/Logger.h"
 #include "sim/ZoneFile.h"
@@ -52,7 +53,7 @@ struct ZoneState {
     em::Vec3 pos;
     bool defined2 = false;  // curseur : fin de course apprise
     em::Vec3 pos2;
-    float radius = 0.02f;
+    sim::ZoneGeom geom;  // boite : dimensions (mm) et orientation (deg)
     em::ZoneTracker tracker[2];
     ULONGLONG lastNear = 0;
     bool inside = false;        // un bout d'index est dans la zone (derniere image)
@@ -70,6 +71,20 @@ struct ZoneState {
     ULONGLONG lastSend = 0;
 };
 std::vector<ZoneState> g_zone;
+
+// Boite de la zone (espace du jeu). Curseur : le long de la course apprise ; sinon centree sur le point appris.
+em::ZoneBox BoxOf(const ZoneState& z) {
+    if (z.ctrl.kind == "slider" && z.defined2) return em::SegmentBox(z.pos, z.pos2, static_cast<float>(z.geom.sx / 1000.0), static_cast<float>(z.geom.sy / 1000.0));
+    em::ZoneBox b;
+    b.center = z.pos;
+    b.q = em::QuatFromEulerDeg(z.geom.yaw, z.geom.pitch, z.geom.roll);
+    b.size = {static_cast<float>(z.geom.sx / 1000.0), static_cast<float>(z.geom.sy / 1000.0), static_cast<float>(z.geom.sz / 1000.0)};
+    return b;
+}
+
+void DefaultGeom(ZoneState& z) {
+    sim::DefaultSizeMm(z.ctrl.kind, &z.geom.sx, &z.geom.sy, &z.geom.sz);
+}
 
 bool Complete(const ZoneState& z) { return z.defined && (z.ctrl.kind != "slider" || z.defined2); }
 
@@ -120,7 +135,8 @@ void LoadZones() {
             ZoneState z;
             z.id = r.id;
             z.ctrl = r.control;
-            z.radius = static_cast<float>((r.radiusMm >= 5.0 && r.radiusMm <= 100.0 ? r.radiusMm : CurrentConfig()->zoneRadiusMm) / 1000.0);
+            z.geom = r.geom;
+            if (z.geom.sx <= 0) DefaultGeom(z);
             if (r.hasPos) {
                 z.defined = true;
                 z.pos = V(r.x, r.y, r.z);
@@ -138,7 +154,7 @@ void LoadZones() {
         z.id = "frein_parc";
         z.ctrl.kind = "push";
         z.ctrl.slots["press"] = sim::ParseSeq("event|press|1|number|||0|PARKING_BRAKES");
-        z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
+        DefaultGeom(z);
         g_zone.push_back(std::move(z));
     }
 }
@@ -149,7 +165,7 @@ void SaveZones() {
         sim::ZoneRecord r;
         r.id = z.id;
         r.control = z.ctrl;
-        r.radiusMm = z.radius * 1000.0;
+        r.geom = z.geom;
         if (z.defined) { r.hasPos = true; r.x = z.pos.x; r.y = z.pos.y; r.z = z.pos.z; }
         if (z.defined2) { r.hasPos2 = true; r.x2 = z.pos2.x; r.y2 = z.pos2.y; r.z2 = z.pos2.z; }
         recs.push_back(std::move(r));
@@ -282,7 +298,9 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
     for (int h = 0; h < 2; ++h) {
         const HandPoseData& hd = frame.hand[h];
         const bool ok = hd.valid && hd.jointValid[kIndexTip] && hd.jointValid[kPalm] && hd.jointValid[kWrist] && hd.jointValid[kMiddleProximal];
-        const bool isNear = ok && em::Length(hd.joint[kIndexTip].p - z.pos) <= z.radius * 1.3f;
+        const em::ZoneBox box = BoxOf(z);
+        const float margin = static_cast<float>(CurrentConfig()->zoneFingerMm / 2000.0);
+        const bool isNear = ok && em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.2f);
         if (isNear) z.inside = true;
         const bool pinch = ok && hd.pressed;
         if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {  // saisie : pincement qui commence dans la zone
@@ -294,7 +312,7 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
             z.n0 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
             z.lastAngle = 0.0;
         } else if (z.grabHand == h) {
-            if (!pinch || em::Length(hd.joint[kIndexTip].p - z.pos) > z.radius * 2.5f) {
+            if (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f)) {
                 EndGrab(z, now);
             } else {
                 const em::Vec3 n1 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
@@ -323,8 +341,10 @@ void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
         const HandPoseData& hd = frame.hand[h];
         const bool ok = hd.valid && hd.jointValid[kIndexTip];
         double level = 0.0;
-        const double dist = ok ? DistToSegment(hd.joint[kIndexTip].p, z.pos, z.pos2, &level) : 1e9;
-        const bool isNear = dist <= z.radius * 1.5f;
+        if (ok) DistToSegment(hd.joint[kIndexTip].p, z.pos, z.pos2, &level);
+        const em::ZoneBox box = BoxOf(z);
+        const float margin = static_cast<float>(CurrentConfig()->zoneFingerMm / 2000.0);
+        const bool isNear = ok && em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.2f);
         if (isNear) z.inside = true;
         const bool pinch = ok && hd.pressed;
         if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {
@@ -333,7 +353,7 @@ void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
             z.prevLevel = level;
             z.lastSentLevel = -1.0;
         } else if (z.grabHand == h) {
-            if (!pinch || dist > z.radius * 3.0f) {
+            if (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f)) {
                 EndGrab(z, now);
             } else if (z.ctrl.sliderMode == "value") {
                 if (std::fabs(level - z.lastSentLevel) >= 0.02 && now - z.lastSend >= 120) {
@@ -458,15 +478,15 @@ void Zones_Frame(const HandsFrame& frame) {
                         z.pos = p;
                         z.defined = true;
                         z.defined2 = z.ctrl.kind == "slider" ? false : z.defined2;
-                        z.radius = static_cast<float>(cfg->zoneRadiusMm / 1000.0);
+                        if (z.geom.sx <= 0) DefaultGeom(z);
                     }
                     z.lastCapture = now;
                     for (auto& t : z.tracker) t.Disarm();  // le doigt est deja dans la zone : il doit en sortir avant de declencher
                     SaveZones();
                     g_loadedStamp = FileStamp();
-                    Logger::Get().Log(LogLevel::Info, "zones : '%s' %s apprise avec la main %s en (%.3f, %.3f, %.3f), rayon %.0f mm", z.id.c_str(),
+                    Logger::Get().Log(LogLevel::Info, "zones : '%s' %s apprise avec la main %s en (%.3f, %.3f, %.3f), boite %.0fx%.0fx%.0f mm", z.id.c_str(),
                                       second ? "(fin de course)" : (z.ctrl.kind == "slider" ? "(debut de course)" : ""), h == 1 ? "droite" : "gauche", p.x, p.y, p.z,
-                                      z.radius * 1000.0f);
+                                      z.geom.sx, z.geom.sy, z.geom.sz);
                     Play(Snd::Captured);
                     if (z.ctrl.kind == "slider" && !second) {  // curseur : enchaine sur la fin de course
                         g_teachId = z.id;
@@ -504,12 +524,15 @@ void Zones_Frame(const HandsFrame& frame) {
             const HandPoseData& hd = frame.hand[h];
             const bool ok = hd.valid && hd.jointValid[kIndexTip];
             const em::Vec3 tip = ok ? hd.joint[kIndexTip].p : em::Vec3{};
-            if (ok && em::Length(tip - z.pos) <= z.radius) z.inside = true;
+            const em::ZoneBox box = BoxOf(z);
+            const float margin = static_cast<float>(cfg->zoneFingerMm / 2000.0);
+            const bool in = ok && em::BoxContains(box, tip, margin), inWide = ok && em::BoxContains(box, tip, margin, 1.5f);
+            if (in) z.inside = true;
             if (ok && em::Length(tip - z.pos) < 0.10f && now - z.lastNear > 500) {  // trace de mise au point : a quelle distance passe le doigt ?
                 z.lastNear = now;
                 Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche", em::Length(tip - z.pos) * 1000.0f);
             }
-            if (z.tracker[h].Update(tip, ok, z.pos, z.radius, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs)) {
+            if (z.tracker[h].UpdateInside(ok, in, inWide, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs)) {
                 z.lastFire = now;
                 Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", z.id.c_str(), h == 1 ? "droite" : "gauche");
                 Play(Snd::Trigger);
@@ -534,18 +557,33 @@ void Zones_FillMarkers(HandsFrame* frame) {
     };
     // Apprentissage en cours : repere blanc qui pulse au bout de l'index (c'est ce point qui sera enregistre).
     if (g_teachAt != 0 && g_teachTipValid) add(g_teachTip, ((now / 250) % 2 == 0) ? 0.012f : 0.020f, 1.0f, 1.0f, 1.0f);
+    // Boites en fil de fer : couleur selon le type de commande, plus epaisses et claires quand le doigt est dedans / saisie / declenchee.
+    const auto cfg = CurrentConfig();
+    if (cfg->zoneShowBoxes == "hidden") return;
+    const float nearM = static_cast<float>(cfg->zoneNearCm / 100.0);
     for (const ZoneState& z : g_zone) {
         if (!z.defined) continue;
-        const bool grabbed = z.grabHand >= 0;
-        auto draw = [&](const em::Vec3& p) {
-            if (z.lastCapture != 0 && now - z.lastCapture < 800) add(p, 0.040f, 1.0f, 1.0f, 1.0f);        // memorisee : flash blanc
-            else if (grabbed) add(p, 0.026f, 0.10f, 0.90f, 1.0f);                                          // saisie en cours : cyan
-            else if (z.lastFire != 0 && now - z.lastFire < 800) add(p, 0.030f, 0.10f, 1.0f, 0.20f);     // declenchee : vert
-            else if (z.inside) add(p, 0.020f, 1.0f, 1.0f, 0.10f);                                        // doigt dedans : jaune
-            else add(p, 0.010f, 1.0f, 0.25f, 0.90f);                                                      // zone apprise : magenta
-        };
-        draw(z.pos);
-        if (z.ctrl.kind == "slider" && z.defined2) draw(z.pos2);
+        const em::ZoneBox box = BoxOf(z);
+        if (cfg->zoneShowBoxes == "near") {
+            bool close = z.lastFire != 0 && now - z.lastFire < 800;
+            for (int h = 0; h < 2 && !close; ++h)
+                if (frame->hand[h].valid && frame->hand[h].jointValid[kIndexTip] && em::Length(frame->hand[h].joint[kIndexTip].p - box.center) < nearM + box.size.z) close = true;
+            if (!close && g_teachId != z.id) continue;
+        }
+        if (frame->boxCount >= kMaxBoxes) break;
+        BoxData& bx = frame->box[frame->boxCount++];
+        bx.pose = {box.q, box.center};
+        bx.size = box.size;
+        const std::string& k = z.ctrl.kind;
+        if (k == "switch") { bx.r = 1.0f; bx.g = 0.85f; bx.b = 0.15f; }          // jaune : interrupteur
+        else if (k == "dial") { bx.r = 1.0f; bx.g = 0.55f; bx.b = 0.10f; }      // orange : rotatif
+        else if (k == "slider") { bx.r = 0.30f; bx.g = 0.95f; bx.b = 0.35f; }   // vert : curseur
+        else { bx.r = 0.30f; bx.g = 0.60f; bx.b = 1.0f; }                        // bleu : poussoir, bascule
+        bx.edge = 0.0016f;
+        if (z.lastCapture != 0 && now - z.lastCapture < 800) { bx.r = bx.g = bx.b = 1.0f; bx.edge = 0.004f; }              // memorisee : blanc
+        else if (z.grabHand >= 0) { bx.r = 0.10f; bx.g = 0.95f; bx.b = 1.0f; bx.edge = 0.0035f; }                           // saisie : cyan
+        else if (z.lastFire != 0 && now - z.lastFire < 800) { bx.r = 0.15f; bx.g = 1.0f; bx.b = 0.25f; bx.edge = 0.0045f; } // declenchee : vert vif
+        else if (z.inside) { bx.r = 1.0f; bx.g = 1.0f; bx.b = 0.35f; bx.edge = 0.0035f; }                                    // doigt dedans : jaune clair
     }
 }
 
@@ -681,7 +719,7 @@ void Zones_AddCommand(size_t index) {
         id = base + "_" + std::to_string(n);
     }
     z.id = id;
-    z.radius = static_cast<float>(CurrentConfig()->zoneRadiusMm / 1000.0);
+    DefaultGeom(z);
     g_zone.push_back(std::move(z));
     SaveZones();
     g_loadedStamp = FileStamp();
@@ -696,6 +734,75 @@ void Zones_Reteach(const std::string& id) {
             StartTeach(id);
             return;
         }
+}
+
+// --- Boites : taille et forme depuis le menu en VR ------------------------------------------------------------------------------------
+
+namespace {
+struct Shape {
+    const wchar_t* name;
+    double x, y, z;
+};
+const Shape kShapes[] = {{L"petit bouton", 16, 16, 30}, {L"bouton", 30, 30, 40}, {L"interrupteur", 30, 40, 40}, {L"molette", 50, 50, 50},
+                         {L"grand panneau", 90, 60, 50}, {L"ecran", 160, 110, 60}};
+ZoneState* FindZone(const std::string& id) {
+    EnsureLoaded();
+    for (ZoneState& z : g_zone)
+        if (z.id == id) return &z;
+    return nullptr;
+}
+void SaveNow() {
+    SaveZones();
+    g_loadedStamp = FileStamp();
+}
+}  // namespace
+
+std::wstring Zones_GeomText(const std::string& id) {
+    const ZoneState* z = FindZone(id);
+    if (!z) return {};
+    wchar_t b[96];
+    std::swprintf(b, 96, L"%.0f x %.0f x %.0f mm", z->geom.sx, z->geom.sy, z->geom.sz);
+    return b;
+}
+
+bool Zones_Scale(const std::string& id, double factor) {
+    ZoneState* z = FindZone(id);
+    if (!z) return false;
+    auto clamp = [](double v) { return std::max(8.0, std::min(300.0, v)); };
+    z->geom.sx = clamp(z->geom.sx * factor);
+    z->geom.sy = clamp(z->geom.sy * factor);
+    z->geom.sz = clamp(z->geom.sz * factor);
+    for (auto& t : z->tracker) t.Disarm();
+    SaveNow();
+    return true;
+}
+
+bool Zones_NextShape(const std::string& id) {
+    ZoneState* z = FindZone(id);
+    if (!z) return false;
+    constexpr int n = sizeof(kShapes) / sizeof(kShapes[0]);
+    int best = 0;
+    double bestD = 1e18;
+    for (int i = 0; i < n; ++i) {
+        const double d = std::fabs(kShapes[i].x - z->geom.sx) + std::fabs(kShapes[i].y - z->geom.sy) + std::fabs(kShapes[i].z - z->geom.sz);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    const Shape& s = kShapes[(best + 1) % n];
+    z->geom.sx = s.x;
+    z->geom.sy = s.y;
+    z->geom.sz = s.z;
+    for (auto& t : z->tracker) t.Disarm();
+    SaveNow();
+    return true;
+}
+
+bool Zones_Delete(const std::string& id) {
+    EnsureLoaded();
+    const size_t before = g_zone.size();
+    g_zone.erase(std::remove_if(g_zone.begin(), g_zone.end(), [&](const ZoneState& z) { return z.id == id; }), g_zone.end());
+    if (g_zone.size() == before) return false;
+    SaveNow();
+    return true;
 }
 
 }  // namespace layer

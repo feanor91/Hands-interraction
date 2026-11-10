@@ -88,7 +88,7 @@ TEST(ZoneFile_aller_retour) {
     a.id = "frein_parc";
     a.control.kind = "push";
     a.control.slots["press"] = ParseSeq("event|press|1|number|||0|PARKING_BRAKES");
-    a.hasPos = true; a.x = 0.1234; a.y = -0.5; a.z = 0.75; a.radiusMm = 20;
+    a.hasPos = true; a.x = 0.1234; a.y = -0.5; a.z = 0.75; a.geom = {30, 20, 40, 15, 0, 0};
     ZoneRecord b;
     b.id = "aec";
     b.control.kind = "slider"; b.control.sliderMode = "value"; b.control.min = 0; b.control.max = 16383;
@@ -101,7 +101,7 @@ TEST(ZoneFile_aller_retour) {
     const auto back = ParseZones(SerializeZones({a, b, c}));
     CHECK(back.size() == 3);
     CHECK(back[0].id == "frein_parc" && back[1].id == "aec" && back[2].id == "mode");  // ordre conserve
-    CHECK(back[0].hasPos && back[0].control.slots.at("press")[0].target == "PARKING_BRAKES" && back[0].radiusMm == 20);
+    CHECK(back[0].hasPos && back[0].control.slots.at("press")[0].target == "PARKING_BRAKES" && back[0].geom.sx == 30 && back[0].geom.sz == 40 && back[0].geom.yaw == 15);
     CHECK(back[1].control.kind == "slider" && back[1].hasPos2 && Complete(back[1]) && !Complete([&] { ZoneRecord r = b; r.hasPos2 = false; return r; }()));
     CHECK(back[2].control.count == 3 && back[2].control.switchMode == "cycle" && !back[2].hasPos);
     CHECK(Validate(back[0].control).empty() && Validate(back[1].control).empty() && Validate(back[2].control).empty());
@@ -139,4 +139,12 @@ TEST(ZoneControl_gestes) {
     CHECK(NotchDelta(0, 1, 10) == 10 && NotchDelta(0.52, 0.48, 10) == 0 && NotchDelta(0.5, 0.2, 10) == -3);
     DialAccumulator d;
     CHECK(d.Feed(10, 25) == 0 && d.Feed(20, 25) == 1 && d.Feed(-60, 25) == -2);
+}
+
+TEST(ZoneFile_ancien_rayon_devient_cube) {
+    const auto z = ParseZones("[a]\ncontrol = push\npress = event|press|1|number|||0|PARKING_BRAKES\nx = 1\ny = 2\nz = 3\nradius_mm = 20\n");
+    CHECK(z.size() == 1 && z[0].geom.sx == 40 && z[0].geom.sy == 40 && z[0].geom.sz == 40);
+    double sx, sy, sz;
+    DefaultSizeMm("dial", &sx, &sy, &sz);
+    CHECK(sx == 50);
 }

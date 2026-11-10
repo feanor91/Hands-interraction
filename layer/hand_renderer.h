@@ -36,10 +36,21 @@ struct MarkerData {
 };
 constexpr int kMaxMarkers = 8;
 
+// Boite en fil de fer (zones du pochoir) : seules les 12 aretes sont dessinees, pour ne pas cacher les commandes qu'elle designe.
+struct BoxData {
+    hands::emulation::Pose pose;      // centre et orientation
+    hands::emulation::Vec3 size;      // dimensions totales selon les axes locaux (metres)
+    float r = 1.0f, g = 1.0f, b = 1.0f;
+    float edge = 0.0016f;             // epaisseur des aretes (metres)
+};
+constexpr int kMaxBoxes = 96;
+
 struct HandsFrame {
     HandPoseData hand[2];  // 0 = gauche, 1 = droite
     MarkerData marker[kMaxMarkers];
     int markerCount = 0;
+    BoxData box[kMaxBoxes];
+    int boxCount = 0;
 };
 
 // Point de vue d'un œil : pose dans l'espace de référence + champ de vision (angles en radians, comme OpenXR).

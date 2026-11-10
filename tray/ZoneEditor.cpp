@@ -56,11 +56,12 @@ const struct {
 enum Ctl {
     IDC_LIST = 100, IDC_NEW, IDC_DELETE, IDC_CLEARPOS, IDC_NAME, IDC_FILTER, IDC_CMD, IDC_KIND, IDC_COUNT, IDC_SWMODE, IDC_STEPDEG, IDC_INVERT,
     IDC_SLMODE, IDC_NOTCHES, IDC_MIN, IDC_MAX, IDC_SLOT, IDC_STEPS, IDC_TYPE, IDC_MODE, IDC_VALUE, IDC_UNIT, IDC_TARGET, IDC_AMIN, IDC_AMAX, IDC_WRAP,
-    IDC_ADDSTEP, IDC_SETSTEP, IDC_DELSTEP, IDC_ADDPAUSE, IDC_APPLY, IDC_TEST, IDC_REFRESH, IDC_CLOSE, IDC_STATUS
+    IDC_SX, IDC_SY, IDC_SZ, IDC_YAW, IDC_PITCH, IDC_ROLL, IDC_ADDSTEP, IDC_SETSTEP, IDC_DELSTEP, IDC_ADDPAUSE, IDC_APPLY, IDC_TEST, IDC_REFRESH, IDC_CLOSE, IDC_STATUS
 };
 
 HWND g_wnd = nullptr;
 HWND g_list, g_name, g_filter, g_cmd, g_kind, g_count, g_swmode, g_stepdeg, g_invert, g_slmode, g_notches, g_min, g_max, g_slot, g_steps;
+HWND g_sx, g_sy, g_sz, g_yaw, g_pitch, g_roll;
 HWND g_type, g_mode, g_value, g_unit, g_target, g_amin, g_amax, g_wrap, g_status;
 std::vector<ZoneRecord> g_view;  // zones affichees (derniere lecture du fichier)
 ZoneControl g_ctl;               // commande en cours d'edition
@@ -237,6 +238,29 @@ void ShowControl(const ZoneControl& c) {
     FillSlots("");
 }
 
+void ShowGeom(const sim::ZoneGeom& g, const std::string& kind) {
+    sim::ZoneGeom d = g;
+    if (d.sx <= 0) sim::DefaultSizeMm(kind, &d.sx, &d.sy, &d.sz);
+    SetText(g_sx, sim::Num(d.sx));
+    SetText(g_sy, sim::Num(d.sy));
+    SetText(g_sz, sim::Num(d.sz));
+    SetText(g_yaw, sim::Num(d.yaw));
+    SetText(g_pitch, sim::Num(d.pitch));
+    SetText(g_roll, sim::Num(d.roll));
+}
+
+sim::ZoneGeom ReadGeom() {
+    sim::ZoneGeom g;
+    auto sz = [](HWND h, double def) { return std::max(3.0, std::min(500.0, Number(h, def))); };
+    g.sx = sz(g_sx, 30);
+    g.sy = sz(g_sy, 30);
+    g.sz = sz(g_sz, 40);
+    g.yaw = Number(g_yaw, 0);
+    g.pitch = Number(g_pitch, 0);
+    g.roll = Number(g_roll, 0);
+    return g;
+}
+
 void ShowStepFields(const ZoneAction* a) {
     ZoneAction d;
     if (a) d = *a;
@@ -343,6 +367,7 @@ void Apply() {
     }
     rec->id = id;
     rec->control = g_ctl;
+    rec->geom = ReadGeom();
     if (!SaveFile(disk)) {
         SetStatus(L"Ecriture de zones.ini impossible (droits ? reinstallez la couche).");
         return;
@@ -446,52 +471,60 @@ void Build() {
     Label(L"Type de commande", rx, 100, 110);
     g_kind = Combo(rx + 115, 100, 250, IDC_KIND);
 
-    Make(L"BUTTON", L"Reglages du type", BS_GROUPBOX, rx, 128, 510, 100, 0);
-    Label(L"Positions", rx + 10, 148, 70);
-    g_count = Edit(rx + 85, 148, 40, IDC_COUNT);
-    Label(L"Parcours", rx + 140, 148, 60);
-    g_swmode = Combo(rx + 205, 148, 100, IDC_SWMODE);
-    Label(L"Degres/cran", rx + 10, 176, 75);
-    g_stepdeg = Edit(rx + 85, 176, 40, IDC_STEPDEG);
-    g_invert = Make(L"BUTTON", L"Inverser le sens", BS_AUTOCHECKBOX, rx + 140, 176, 130, 22, IDC_INVERT);
-    Label(L"Curseur", rx + 10, 202, 70);
-    g_slmode = Combo(rx + 85, 202, 80, IDC_SLMODE);
-    Label(L"Crans", rx + 175, 202, 40);
-    g_notches = Edit(rx + 215, 202, 40, IDC_NOTCHES);
-    Label(L"Min", rx + 265, 202, 30);
-    g_min = Edit(rx + 295, 202, 65, IDC_MIN);
-    Label(L"Max", rx + 370, 202, 30);
-    g_max = Edit(rx + 400, 202, 65, IDC_MAX);
+    Label(L"Boite L/H/P mm", rx, 128, 74);
+    g_sx = Edit(rx + 80, 128, 40, IDC_SX);
+    g_sy = Edit(rx + 124, 128, 40, IDC_SY);
+    g_sz = Edit(rx + 168, 128, 40, IDC_SZ);
+    Label(L"Rotation lac./tang./roul.", rx + 214, 128, 130);
+    g_yaw = Edit(rx + 348, 128, 38, IDC_YAW);
+    g_pitch = Edit(rx + 390, 128, 38, IDC_PITCH);
+    g_roll = Edit(rx + 432, 128, 38, IDC_ROLL);
+    Make(L"BUTTON", L"Reglages du type", BS_GROUPBOX, rx, 158, 510, 100, 0);
+    Label(L"Positions", rx + 10, 178, 70);
+    g_count = Edit(rx + 85, 178, 40, IDC_COUNT);
+    Label(L"Parcours", rx + 140, 178, 60);
+    g_swmode = Combo(rx + 205, 178, 100, IDC_SWMODE);
+    Label(L"Degres/cran", rx + 10, 206, 75);
+    g_stepdeg = Edit(rx + 85, 206, 40, IDC_STEPDEG);
+    g_invert = Make(L"BUTTON", L"Inverser le sens", BS_AUTOCHECKBOX, rx + 140, 206, 130, 22, IDC_INVERT);
+    Label(L"Curseur", rx + 10, 232, 70);
+    g_slmode = Combo(rx + 85, 232, 80, IDC_SLMODE);
+    Label(L"Crans", rx + 175, 232, 40);
+    g_notches = Edit(rx + 215, 232, 40, IDC_NOTCHES);
+    Label(L"Min", rx + 265, 232, 30);
+    g_min = Edit(rx + 295, 232, 65, IDC_MIN);
+    Label(L"Max", rx + 370, 232, 30);
+    g_max = Edit(rx + 400, 232, 65, IDC_MAX);
 
-    Label(L"Emplacement", rx, 238, 100);
-    g_slot = Combo(rx + 115, 238, 220, IDC_SLOT);
-    g_steps = Make(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, rx, 266, 510, 84, IDC_STEPS);
+    Label(L"Emplacement", rx, 268, 100);
+    g_slot = Combo(rx + 115, 268, 220, IDC_SLOT);
+    g_steps = Make(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, rx, 296, 510, 84, IDC_STEPS);
 
-    Label(L"Type", rx, 360, 40);
-    g_type = Combo(rx + 45, 360, 90, IDC_TYPE);
-    Label(L"Mode", rx + 145, 360, 40);
-    g_mode = Combo(rx + 185, 360, 80, IDC_MODE);
-    Label(L"Valeur", rx + 275, 360, 45);
-    g_value = Edit(rx + 320, 360, 65, IDC_VALUE);
-    Label(L"Unite", rx + 395, 360, 40);
-    g_unit = Edit(rx + 435, 360, 75, IDC_UNIT);
-    Label(L"Cible", rx, 390, 40);
-    g_target = Edit(rx + 45, 390, 465, IDC_TARGET);
-    Label(L"Borne min", rx, 420, 60);
-    g_amin = Edit(rx + 65, 420, 60, IDC_AMIN);
-    Label(L"max", rx + 135, 420, 30);
-    g_amax = Edit(rx + 165, 420, 60, IDC_AMAX);
-    g_wrap = Make(L"BUTTON", L"Boucler (ex. cap 0-360)", BS_AUTOCHECKBOX, rx + 240, 420, 200, 22, IDC_WRAP);
-    Button(L"Ajouter l'etape", rx, 448, 110, IDC_ADDSTEP);
-    Button(L"Remplacer", rx + 115, 448, 85, IDC_SETSTEP);
-    Button(L"Supprimer", rx + 205, 448, 80, IDC_DELSTEP);
-    Button(L"+ Pause", rx + 290, 448, 70, IDC_ADDPAUSE);
+    Label(L"Type", rx, 390, 40);
+    g_type = Combo(rx + 45, 390, 90, IDC_TYPE);
+    Label(L"Mode", rx + 145, 390, 40);
+    g_mode = Combo(rx + 185, 390, 80, IDC_MODE);
+    Label(L"Valeur", rx + 275, 390, 45);
+    g_value = Edit(rx + 320, 390, 65, IDC_VALUE);
+    Label(L"Unite", rx + 395, 390, 40);
+    g_unit = Edit(rx + 435, 390, 75, IDC_UNIT);
+    Label(L"Cible", rx, 420, 40);
+    g_target = Edit(rx + 45, 420, 465, IDC_TARGET);
+    Label(L"Borne min", rx, 450, 60);
+    g_amin = Edit(rx + 65, 450, 60, IDC_AMIN);
+    Label(L"max", rx + 135, 450, 30);
+    g_amax = Edit(rx + 165, 450, 60, IDC_AMAX);
+    g_wrap = Make(L"BUTTON", L"Boucler (ex. cap 0-360)", BS_AUTOCHECKBOX, rx + 240, 450, 200, 22, IDC_WRAP);
+    Button(L"Ajouter l'etape", rx, 478, 110, IDC_ADDSTEP);
+    Button(L"Remplacer", rx + 115, 478, 85, IDC_SETSTEP);
+    Button(L"Supprimer", rx + 205, 478, 80, IDC_DELSTEP);
+    Button(L"+ Pause", rx + 290, 478, 70, IDC_ADDPAUSE);
 
-    Button(L"Appliquer", rx, 482, 90, IDC_APPLY, BS_DEFPUSHBUTTON);
-    Button(L"Tester", rx + 95, 482, 80, IDC_TEST);
-    Button(L"Lire les Input Events", rx + 180, 482, 150, IDC_REFRESH);
-    Button(L"Fermer", rx + 425, 482, 85, IDC_CLOSE);
-    g_status = Make(L"STATIC", L"", SS_LEFT, 10, 518, 780, 22, IDC_STATUS);
+    Button(L"Appliquer", rx, 512, 90, IDC_APPLY, BS_DEFPUSHBUTTON);
+    Button(L"Tester", rx + 95, 512, 80, IDC_TEST);
+    Button(L"Lire les Input Events", rx + 180, 512, 150, IDC_REFRESH);
+    Button(L"Fermer", rx + 425, 512, 85, IDC_CLOSE);
+    g_status = Make(L"STATIC", L"", SS_LEFT, 10, 548, 780, 22, IDC_STATUS);
 
     for (int i = 0; i < 5; ++i) SendMessageW(g_kind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kKindNames[i]));
     for (const wchar_t* t : {L"bounce", L"cycle"}) SendMessageW(g_swmode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
@@ -508,9 +541,11 @@ void SelectZone(int s) {
     if (s >= 0 && s < static_cast<int>(g_view.size())) {
         SetText(g_name, g_view[static_cast<size_t>(s)].id);
         ShowControl(g_view[static_cast<size_t>(s)].control);
+        ShowGeom(g_view[static_cast<size_t>(s)].geom, g_ctl.kind);
     } else {
         SetText(g_name, "");
         ShowControl(ZoneControl{});
+        ShowGeom(sim::ZoneGeom{}, g_ctl.kind);
     }
     ShowStepFields(nullptr);
 }
@@ -570,6 +605,7 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             ZoneControl keep = g_ctl;  // les reglages (positions, crans...) du type precedent ne servent plus
                             (void)keep;
                             ShowControl(it.ctl);
+                            ShowGeom(sim::ZoneGeom{}, it.ctl.kind);
                             ShowStepFields(nullptr);
                             if (GetText(g_name).empty()) {
                                 std::string nm;
@@ -589,6 +625,11 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         ReadParams();
                         const int i = static_cast<int>(SendMessageW(g_kind, CB_GETCURSEL, 0, 0));
                         g_ctl.kind = kKinds[std::max(0, std::min(4, i))];
+                        {
+                            sim::ZoneGeom keep = ReadGeom();  // la rotation reste, les dimensions repartent de la valeur par defaut du type
+                            keep.sx = 0;
+                            ShowGeom(keep, g_ctl.kind);
+                        }
                         EnableParams();
                         FillSlots("");
                     }
@@ -679,7 +720,7 @@ void ZoneEditor_Show(HWND, HINSTANCE inst) {
         RegisterClassW(&wc);
         registered = true;
     }
-    RECT r{0, 0, 810, 548};
+    RECT r{0, 0, 810, 578};
     const DWORD style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
     g_wnd = CreateWindowExW(0, kClass, L"Zones du pochoir", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst,
