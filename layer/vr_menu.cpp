@@ -499,7 +499,8 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     const ULONGLONG now = GetTickCount64();
     const bool p[2] = {frame.hand[0].valid && frame.hand[0].pressed, frame.hand[1].valid && frame.hand[1].pressed};
     if (!p[0] && !p[1]) g.armed = true;
-    if (p[0] && p[1] && g.armed) {
+    if (p[0] && p[1] && Zones_AnyGrab()) g.bothSince = 0;  // deux rotatifs tenus en meme temps : pas un geste de menu
+    if (p[0] && p[1] && g.armed && !Zones_AnyGrab()) {
         if (g.bothSince == 0) g.bothSince = now;
         else if (now - g.bothSince >= static_cast<ULONGLONG>(cfg->menuHoldMs)) {
             g.bothSince = 0;

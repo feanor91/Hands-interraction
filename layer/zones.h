@@ -25,6 +25,10 @@ void Zones_Frame(const HandsFrame& frame);
 // l'apprentissage) et le repere de l'apprentissage en cours (au bout de l'index).
 void Zones_FillMarkers(HandsFrame* frame);
 
+// Une main tient en ce moment un rotatif ou un curseur : le geste d'ouverture du menu (pincement des deux mains) est alors suspendu,
+// sinon deux rotatifs pinces ensemble ouvriraient le menu.
+bool Zones_AnyGrab();
+
 // --- Pilotage depuis le menu en VR (vr_menu.cpp) --------------------------------------------------------------------------------
 struct ZoneInfo {
     std::string id;

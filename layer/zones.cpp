@@ -669,11 +669,12 @@ void Zones_Frame(const HandsFrame& frame) {
             const float margin = static_cast<float>(cfg->zoneFingerMm / 2000.0);
             const bool in = ok && em::BoxContains(box, tip, margin), inWide = ok && em::BoxContains(box, tip, margin, 1.5f);
             if (in) z.inside = true;
-            if (ok && em::Length(tip - z.pos) < 0.10f && now - z.lastNear > 500) {  // trace de mise au point : a quelle distance passe le doigt ?
+            if (ok && em::Length(tip - box.center) < 0.10f && now - z.lastNear > 500) {  // trace de mise au point : a quelle distance passe le doigt ?
                 z.lastNear = now;
-                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche", em::Length(tip - z.pos) * 1000.0f);
+                Logger::Get().Log(LogLevel::Info, "zones : '%s' main %s a %.0f mm", z.id.c_str(), h == 1 ? "droite" : "gauche", em::Length(tip - box.center) * 1000.0f);
             }
-            if (z.tracker[h].UpdateInside(ok, in, inWide, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs)) {
+            // Les deux mains peuvent toucher la meme zone : un seul declenchement (200 ms de garde entre les deux mains).
+            if (z.tracker[h].UpdateInside(ok, in, inWide, static_cast<double>(now), cfg->zoneDwellMs, cfg->zoneRearmMs) && now - z.lastFire >= 200) {
                 z.lastFire = now;
                 Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", z.id.c_str(), h == 1 ? "droite" : "gauche");
                 Play(Snd::Trigger);
@@ -682,6 +683,12 @@ void Zones_Frame(const HandsFrame& frame) {
             }
         }
     }
+}
+
+bool Zones_AnyGrab() {
+    for (const ZoneState& z : g_zone)
+        if (z.grabHand >= 0) return true;
+    return false;
 }
 
 void Zones_FillMarkers(HandsFrame* frame) {
