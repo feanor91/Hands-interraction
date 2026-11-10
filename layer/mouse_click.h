@@ -18,5 +18,7 @@ bool Mouse_IsCalibrated();
 bool Mouse_Calibrating();
 bool Mouse_ModeOn();
 void Mouse_ToggleMode();
+// Lance l'etalonnage (comme Ctrl+Alt+F10) ; les reperes suivants se prennent avec Ctrl+Alt+F10.
+void Mouse_StartCalibration();
 
 }  // namespace layer

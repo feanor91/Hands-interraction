@@ -196,6 +196,18 @@ void Mouse_ToggleMode() {
     hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : mode souris %s", g_mode ? "ACTIVE" : "desactive");
 }
 
+void Mouse_StartCalibration() {
+    Load();
+    if (g_calibrating) return;
+    ReleaseButton();
+    g_mode = false;
+    g_calibrating = true;
+    g_calStep = 0;
+    g_samples.clear();
+    g_calStart = GetTickCount64();
+    hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage lance ; pointeur sur le repere 1/5 puis Ctrl+Alt+F10");
+}
+
 void Mouse_Frame(const HandsFrame& frame) {
     Load();
     g_headValid = frame.headValid;
@@ -218,12 +230,7 @@ void Mouse_Frame(const HandsFrame& frame) {
 
     if (!calEdge) return;
     if (!g_calibrating) {
-        ReleaseButton();
-        g_calibrating = true;
-        g_calStep = 0;
-        g_samples.clear();
-        g_calStart = now;
-        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage lance ; pointeur sur le repere 1/5 puis Ctrl+Alt+F10");
+        Mouse_StartCalibration();
         return;
     }
     POINT p;

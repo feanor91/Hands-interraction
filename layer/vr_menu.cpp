@@ -28,6 +28,7 @@
 #include "emulation/ZoneTracker.h"
 #include "util/KeyNames.h"
 #include "zones.h"
+#include "mouse_click.h"
 #include "menu_render.h"
 #include "texture_uploader.h"
 #include "vr_menu.h"
@@ -352,6 +353,14 @@ std::vector<Row> BuildMainRows() {
     rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
     rows.push_back({L"Affichage : mains et boîtes des zones  ▸", true, [] { g_page = Page::Display; }});
     rows.push_back({L"Rayon et clic (mode rayon aux mains)  ▸", true, [] { g_page = Page::Pointer; }});
+    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_IsCalibrated() ? L"Mode souris : désactivé  →  activer (le doigt pilote la souris)" : L"Mode souris : étalonnez d'abord"), Mouse_ModeOn() || Mouse_IsCalibrated(), [] {
+                        Mouse_ToggleMode();
+                        CloseMenu();
+                    }});
+    rows.push_back({L"Étalonner la souris  (puis Ctrl+Alt+F10 à chaque repère)", true, [] {
+                        Mouse_StartCalibration();
+                        CloseMenu();
+                    }});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;

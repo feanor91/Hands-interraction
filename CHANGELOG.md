@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.16] - 2026-11-10
+
+### Ajoute
+- **Menu VR : mode souris.** Page principale : « Mode souris : activer / desactiver » et « Etalonner la souris » (lance l'etalonnage ; les 5 reperes se prennent ensuite avec Ctrl+Alt+F10 et la vraie souris).
+
 ## [0.0.15] - 2026-11-10
 
 ### Ajoute (essai)
