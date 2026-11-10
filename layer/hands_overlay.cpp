@@ -214,7 +214,9 @@ bool PinchFromJoints(int hand, const XrHandJointLocationEXT* joints) {
         return false;
     }
     float d = dist(5, 10);
-    if (ok(15)) d = std::min(d, dist(5, 15));
+    // Le majeur ne compte que s'il est tendu : main qui pointe, le majeur replie touche le pouce en permanence et simulerait un pincement
+    // (apprentissage d'une zone declenche tout seul). Tendu = bout plus loin du poignet que l'articulation du milieu du doigt.
+    if (ok(15) && ok(13) && ok(1) && dist(1, 15) > dist(1, 13) * 1.05f) d = std::min(d, dist(5, 15));
     return det[hand].Update(d, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
 }
 

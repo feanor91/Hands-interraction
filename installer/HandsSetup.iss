@@ -37,6 +37,7 @@ OutputBaseFilename=HandsInteraction-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=hands.ico
 UninstallDisplayIcon={app}\HandsTray.exe
 UninstallDisplayName=Hands Interaction
 VersionInfoVersion={#AppVersion}

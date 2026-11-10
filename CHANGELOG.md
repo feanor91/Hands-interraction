@@ -2,6 +2,16 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.8] - 2026-11-10
+
+### Corrige
+- **Apprentissage d'une zone declenche tout seul** : en mode « mains seules », le pincement lu sur les articulations comptait le majeur replie contre le pouce (main qui pointe) comme un pincement.
+  Le majeur n'est plus pris en compte que s'il est tendu ; seul le pincement pouce-index compte quand on pointe.
+- **Mains perdues apres avoir repris les manettes** : si une main suivie ne l'est plus depuis 6 s (manettes reposees), son hand tracker est detruit et recree (toutes les 6 s au plus) pour retrouver le suivi.
+
+### Ajoute
+- **Nouvelle icone** : pastille sombre, cube filaire et point d'etat (vert actif, gris desactive, orange couche absente), pour la tray, le Setup et les raccourcis (`installer/hands.ico`, `scripts/gen_icon.py`).
+
 ## [0.0.7] - 2026-11-10
 
 ### Modifie

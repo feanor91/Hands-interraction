@@ -879,6 +879,27 @@ void Emu_UpdateHandPresence(XrTime displayTime) {
             loc.jointLocations = joints;
             active = XR_SUCCEEDED(g_dispatch.LocateHandJointsEXT(g_hand[h].tracker, &info, &loc)) && loc.isActive;
         }
+        // Reprise apres les manettes : quand on lache les vraies manettes, le suivi des mains du runtime peut ne jamais redevenir actif pour un
+        // hand tracker cree avant. Si une main qui etait suivie ne l'est plus depuis 6 s, on detruit et recree son hand tracker (au plus toutes les 6 s).
+        {
+            static double lastActiveMs[2] = {0, 0}, lastRecreateMs[2] = {0, 0};
+            static bool everActive[2] = {false, false};
+            if (active) {
+                lastActiveMs[h] = nowMs;
+                everActive[h] = true;
+            } else if (want && everActive[h] && nowMs - lastActiveMs[h] > 6000.0 && nowMs - lastRecreateMs[h] > 6000.0 && g_session != XR_NULL_HANDLE &&
+                       g_dispatch.CreateHandTrackerEXT && g_dispatch.DestroyHandTrackerEXT) {
+                lastRecreateMs[h] = nowMs;
+                if (g_hand[h].tracker) g_dispatch.DestroyHandTrackerEXT(g_hand[h].tracker);
+                g_hand[h].tracker = XR_NULL_HANDLE;
+                XrHandTrackerCreateInfoEXT ci{XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+                ci.hand = h == 0 ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+                ci.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+                const XrResult r = g_dispatch.CreateHandTrackerEXT(g_session, &ci, &g_hand[h].tracker);
+                if (XR_FAILED(r)) g_hand[h].tracker = XR_NULL_HANDLE;
+                Logger::Get().Log(LogLevel::Info, "mains seules : main %s non suivie depuis 6 s, hand tracker recree -> %s", h == 0 ? "gauche" : "droite", XR_SUCCEEDED(r) ? "ok" : "ECHEC");
+            }
+        }
         bool present = false;
         if (want) present = g_presence[h].Update(active, nowMs, cfg->hideControllersHoldMs);
         else g_presence[h].Reset();

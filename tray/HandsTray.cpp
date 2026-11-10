@@ -10,6 +10,8 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <cstdio>
@@ -186,9 +188,10 @@ bool WriteIniValue(const char* section, const char* key, const std::string& valu
     return true;
 }
 
-// --- Icône : disque coloré dessiné en mémoire (aucune ressource externe) ---------------------
+// --- Icone : pastille sombre, cube filaire (le pochoir) et point d'etat, dessinee en memoire (sur-echantillonnee, aucune ressource externe) ---
+// La couleur du point dit l'etat (vert actif, gris desactive, orange couche absente) ; le cube est bleu, gris quand c'est desactive.
 HICON MakeIcon(COLORREF fill, bool badge = false) {
-    const int sz = 32;
+    const int sz = 32, ss = 4;
     BITMAPV5HEADER bi{};
     bi.bV5Size = sizeof(bi);
     bi.bV5Width = sz;
@@ -210,25 +213,62 @@ HICON MakeIcon(COLORREF fill, bool badge = false) {
         if (mask) DeleteObject(mask);
         return nullptr;
     }
-    const float c0 = (sz - 1) / 2.0f, r = sz / 2.0f - 1.5f;
+    const bool gray = GetRValue(fill) == GetGValue(fill) && GetGValue(fill) == GetBValue(fill);
+    const float cube[3] = {gray ? 140.0f : 108.0f, gray ? 150.0f : 192.0f, gray ? 165.0f : 255.0f};
+    const float dot[3] = {static_cast<float>(GetRValue(fill)), static_cast<float>(GetGValue(fill)), static_cast<float>(GetBValue(fill))};
+    const float hex[6][2] = {{16.0f, 6.5f}, {24.5f, 11.0f}, {24.5f, 21.0f}, {16.0f, 25.5f}, {7.5f, 21.0f}, {7.5f, 11.0f}};
+    const float inner[3][2] = {{7.5f, 11.0f}, {16.0f, 15.5f}, {24.5f, 11.0f}};
+    auto seg = [](float px, float py, float ax, float ay, float bx, float by) {
+        const float vx = bx - ax, vy = by - ay, wx = px - ax, wy = py - ay;
+        float t = (vx * wx + vy * wy) / (vx * vx + vy * vy);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        const float dx = px - (ax + t * vx), dy = py - (ay + t * vy);
+        return std::sqrt(dx * dx + dy * dy);
+    };
+    auto inRound = [](float x, float y) {  // rectangle arrondi 1.5..30.5, rayon 7
+        const float cx = x < 8.5f ? 8.5f : (x > 23.5f ? 23.5f : x), cy = y < 8.5f ? 8.5f : (y > 23.5f ? 23.5f : y);
+        return x >= 1.5f && x <= 30.5f && y >= 1.5f && y <= 30.5f && (x - cx) * (x - cx) + (y - cy) * (y - cy) <= 7.0f * 7.0f;
+    };
     auto* px = static_cast<uint32_t*>(bits);
     for (int y = 0; y < sz; ++y)
         for (int x = 0; x < sz; ++x) {
-            const float dx = x - c0, dy = y - c0, d2 = dx * dx + dy * dy;
-            uint32_t argb = 0;
-            if (d2 <= r * r) {
-                const bool ring = d2 >= (r - 3.0f) * (r - 3.0f);
-                const COLORREF c = ring ? RGB(255, 255, 255) : fill;
-                argb = 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) |
-                       (static_cast<uint32_t>(GetGValue(c)) << 8) | GetBValue(c);
-            }
-            if (badge) {  // pastille bleue en bas à droite : « mise à jour disponible »
-                const float bx = x - 24.0f, by = y - 24.0f, bd2 = bx * bx + by * by;
-                if (bd2 <= 8.0f * 8.0f) {
-                    const COLORREF c = bd2 >= 6.0f * 6.0f ? RGB(255, 255, 255) : RGB(30, 110, 230);
-                    argb = 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) |
-                           (static_cast<uint32_t>(GetGValue(c)) << 8) | GetBValue(c);
+            float acc[4] = {0, 0, 0, 0};  // r, g, b premultiplies, alpha
+            for (int sy = 0; sy < ss; ++sy)
+                for (int sx = 0; sx < ss; ++sx) {
+                    const float fx = x + (sx + 0.5f) / ss, fy = y + (sy + 0.5f) / ss;
+                    float r = 0, g = 0, b = 0, a = 0;
+                    auto over = [&](const float* c, float alpha) {
+                        r = c[0] * alpha + r * (1.0f - alpha);
+                        g = c[1] * alpha + g * (1.0f - alpha);
+                        b = c[2] * alpha + b * (1.0f - alpha);
+                        a = alpha + a * (1.0f - alpha);
+                    };
+                    if (inRound(fx, fy)) {
+                        const float bg[3] = {23.0f, 32.0f, 46.0f};
+                        over(bg, 1.0f);
+                        float dInner = 99.0f, dHex = 99.0f;
+                        for (int i = 0; i < 2; ++i) dInner = std::min(dInner, seg(fx, fy, inner[i][0], inner[i][1], inner[i + 1][0], inner[i + 1][1]));
+                        dInner = std::min(dInner, seg(fx, fy, 16.0f, 15.5f, 16.0f, 25.5f));
+                        for (int i = 0; i < 6; ++i) dHex = std::min(dHex, seg(fx, fy, hex[i][0], hex[i][1], hex[(i + 1) % 6][0], hex[(i + 1) % 6][1]));
+                        if (dInner <= 0.9f) over(cube, 0.6f);
+                        if (dHex <= 0.9f) over(cube, 1.0f);
+                        if ((fx - 16.0f) * (fx - 16.0f) + (fy - 15.5f) * (fy - 15.5f) <= 3.2f * 3.2f) over(dot, 1.0f);
+                    }
+                    if (badge) {  // pastille bleue en bas a droite : « mise a jour disponible »
+                        const float bd2 = (fx - 24.0f) * (fx - 24.0f) + (fy - 24.0f) * (fy - 24.0f);
+                        if (bd2 <= 8.0f * 8.0f) {
+                            const float c[3] = {bd2 >= 6.0f * 6.0f ? 255.0f : 30.0f, bd2 >= 6.0f * 6.0f ? 255.0f : 110.0f, bd2 >= 6.0f * 6.0f ? 255.0f : 230.0f};
+                            r = c[0]; g = c[1]; b = c[2]; a = 1.0f;
+                        }
+                    }
+                    acc[0] += r * a; acc[1] += g * a; acc[2] += b * a; acc[3] += a;
                 }
+            const float n = static_cast<float>(ss * ss);
+            const float A = acc[3] / n;
+            uint32_t argb = 0;
+            if (acc[3] > 0.0f) {
+                const uint32_t R = static_cast<uint32_t>(acc[0] / n + 0.5f), G = static_cast<uint32_t>(acc[1] / n + 0.5f), B = static_cast<uint32_t>(acc[2] / n + 0.5f);
+                argb = (static_cast<uint32_t>(A * 255.0f + 0.5f) << 24) | (R << 16) | (G << 8) | B;  // premultiplie
             }
             px[y * sz + x] = argb;
         }
