@@ -2,6 +2,12 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.5] - 2026-11-10
+
+### Corrige
+- **Pincement en mode « mains seules »** : le geste d'ouverture du menu (pincer les deux mains) et la saisie des rotatifs ne fonctionnaient pas, car le pincement n'etait calcule que par
+  l'emulation de manette (desactivee dans ce mode). Il est maintenant lu directement sur les articulations (pouce contre index ou majeur, seuils `click_on_mm` / `click_off_mm`).
+
 ## [0.0.4] - 2026-11-10
 
 ### Corrige

@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "depth_reader.h"
+#include "emulation/Pinch.h"
 #include "emulate.h"
 #include "hand_renderer.h"
 #include "hands_overlay.h"
@@ -195,6 +196,28 @@ bool EnsureResources(XrSession session, const XrCompositionLayerProjection* game
     return true;
 }
 
+// Pincement lu directement sur les articulations, pour le mode « mains seules » : le calcul du pincement de l'emulation de manette ne tourne pas quand
+// [emulation] enabled = false, or le geste d'ouverture du menu (deux mains pincees) et la saisie des rotatifs en ont besoin. Meme regle que le clic :
+// distance du bout du pouce au bout de l'index ou du majeur (le plus proche), seuils click_on_mm / click_off_mm avec hysteresis.
+bool PinchFromJoints(int hand, const XrHandJointLocationEXT* joints) {
+    static hands::emulation::PinchDetector det[2];
+    const auto cfg = CurrentConfig();
+    auto ok = [&](int j) { return (joints[j].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0; };
+    auto dist = [&](int a, int b) {
+        const XrVector3f& pa = joints[a].pose.position;
+        const XrVector3f& pb = joints[b].pose.position;
+        const float dx = pa.x - pb.x, dy = pa.y - pb.y, dz = pa.z - pb.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    if (!ok(5) || !ok(10)) {
+        det[hand].Reset();
+        return false;
+    }
+    float d = dist(5, 10);
+    if (ok(15)) d = std::min(d, dist(5, 15));
+    return det[hand].Update(d, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
+}
+
 void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFrame* frame, bool* anyHand) {
     *anyHand = false;
     {
@@ -220,7 +243,7 @@ void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFr
             if (ok) ++validCount;
         }
         hd.valid = validCount >= 10;  // assez d'articulations pour que le dessin ait un sens
-        hd.pressed = pressed;
+        hd.pressed = CurrentConfig()->emulationEnabled ? pressed : PinchFromJoints(h, joints);
         hd.clickJoint = clickJoint;
         if (hd.valid) *anyHand = true;
     }
