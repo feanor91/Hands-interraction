@@ -9,6 +9,7 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -68,6 +69,9 @@ struct ZoneState {
     int grabHand = -1;
     int grabLevel = 1;      // molette a deux niveaux : 1 = bague exterieure, 2 = bouton central
     bool insideInner = false;
+    ULONGLONG hudUntil = 0;   // indicateur de position (slider affiche au-dessus de la molette) visible jusqu'a cet instant
+    ULONGLONG lastRead = 0;   // derniere lecture de la position dans le simulateur
+    double hudLevel = 0.5;    // curseur : position 0..1 a afficher
     bool engagedLatch[2] = {false, false};  // pointage : une seule saisie par passage du doigt
     ULONGLONG grabAt = 0;
     bool rotated = false;
@@ -112,6 +116,22 @@ bool g_teachTipValid = false;
 int g_buttonLogsLeft = 200;
 
 // Interrupteurs a N positions : derniere position envoyee et sens (aller-retour), par zone. Touches depuis le fil du pont.
+// Position (0..1) de chaque molette, niveau 1 (bague) et 2 (centre), pour l'indicateur : lue dans le simulateur quand on sait la lire, sinon estimee
+// a partir des crans envoyes. Touchee depuis le fil du pont.
+std::mutex g_lvMutex;
+std::map<std::string, std::array<double, 2>> g_levels;
+double GetLevel(const std::string& id, int lvl) {
+    std::lock_guard<std::mutex> l(g_lvMutex);
+    auto it = g_levels.find(id);
+    return it == g_levels.end() ? 0.5 : it->second[lvl == 2 ? 1 : 0];
+}
+void SetLevel(const std::string& id, int lvl, double v) {
+    std::lock_guard<std::mutex> l(g_lvMutex);
+    auto it = g_levels.find(id);
+    if (it == g_levels.end()) it = g_levels.emplace(id, std::array<double, 2>{0.5, 0.5}).first;
+    it->second[lvl == 2 ? 1 : 0] = std::max(0.0, std::min(1.0, v));
+}
+
 std::mutex g_swMutex;
 std::map<std::string, std::pair<int, int>> g_switchState;
 
@@ -316,11 +336,53 @@ em::ZoneBox InnerBoxOf(const ZoneState& z) {
     return b;
 }
 
+// Ou lire la position d'une molette ? Variable L: / Input Event de l'action « cran + » si c'est un ajout borne ; sinon `read`, `min`, `max` de zones.ini (bague seulement).
+bool LevelSource(const ZoneState& z, int lvl, std::string* req, double* lo, double* hi) {
+    const sim::ActionSeq& inc = sim::Slot(z.ctrl, lvl == 2 ? "inc2" : "inc");
+    if (!inc.empty() && inc[0].mode == "add" && inc[0].hasMin && inc[0].hasMax && inc[0].max > inc[0].min) {
+        if (inc[0].type == "var") *req = "getvar\t" + inc[0].target + "\t" + (inc[0].unit.empty() ? std::string("number") : inc[0].unit);
+        else if (inc[0].type == "input") *req = "getinput\t" + inc[0].target;
+        else return false;
+        *lo = inc[0].min;
+        *hi = inc[0].max;
+        return true;
+    }
+    if (lvl == 1 && !z.ctrl.read.empty() && z.ctrl.max > z.ctrl.min) {
+        std::vector<std::string> f;
+        std::stringstream rs(z.ctrl.read);
+        for (std::string t; std::getline(rs, t, '|');) f.push_back(t);
+        if (f.size() >= 2 && f[0] == "var") *req = "getvar\t" + f[1] + "\t" + (f.size() >= 3 ? f[2] : std::string("number"));
+        else if (f.size() >= 2 && f[0] == "input") *req = "getinput\t" + f[1];
+        else return false;
+        *lo = z.ctrl.min;
+        *hi = z.ctrl.max;
+        return true;
+    }
+    return false;
+}
+
+void RefreshLevel(ZoneState& z, int lvl, ULONGLONG now) {
+    std::string req;
+    double lo = 0, hi = 1;
+    if (!LevelSource(z, lvl, &req, &lo, &hi) || now - z.lastRead < 150) return;
+    z.lastRead = now;
+    const std::string id = z.id;
+    Bridge_Post([req, lo, hi, id, lvl] {
+        double v = 0;
+        if (Bridge_ReadNumber(req, &v)) SetLevel(id, lvl, (v - lo) / (hi - lo));
+    });
+}
+
 void SendSteps(ZoneState& z, int steps, ULONGLONG now) {
     z.rotated = true;
     const std::string slot = LevelSlot(z, steps > 0 ? "inc" : "dec");
     for (int i = 0; i < std::min(6, std::abs(steps)); ++i) Bridge_RunSeq(sim::Slot(z.ctrl, slot), z.id + (z.grabLevel == 2 ? " centre" : "") + (steps > 0 ? " +" : " -"));
     z.lastFire = now;
+    z.hudUntil = now + 1800;
+    std::string req;
+    double lo, hi;
+    if (LevelSource(z, z.grabLevel, &req, &lo, &hi)) RefreshLevel(z, z.grabLevel, now);
+    else SetLevel(z.id, z.grabLevel, GetLevel(z.id, z.grabLevel) + static_cast<double>(steps) / std::max(2, z.ctrl.notches));  // position estimee
     Play(Snd::Tick);
 }
 
@@ -346,6 +408,9 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
             z.engagedLatch[h] = true;
             z.grabHand = h;
             z.grabLevel = inInner ? 2 : 1;
+            z.hudUntil = now + 1800;
+            z.lastRead = 0;
+            RefreshLevel(z, z.grabLevel, now);
             z.grabAt = now;
             z.rotated = false;
             z.dial = sim::DialAccumulator{};
@@ -394,6 +459,10 @@ void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
         const bool engage = isNear && now - z.nearSince[h] >= kEngageMs && !z.engagedLatch[h];
         if (!isNear) z.engagedLatch[h] = false;
         (void)pinch;
+        if (z.grabHand == h) {
+            z.hudLevel = level;
+            z.hudUntil = now + 1200;
+        }
         if (z.grabHand < 0 && engage) {
             z.engagedLatch[h] = true;
             z.grabHand = h;
@@ -657,6 +726,30 @@ void Zones_FillMarkers(HandsFrame* frame) {
         else if (z.grabHand >= 0) { bx.r = 0.10f; bx.g = 0.95f; bx.b = 1.0f; bx.edge = 0.0035f; }                           // saisie : cyan
         else if (z.lastFire != 0 && now - z.lastFire < 800) { bx.r = 0.15f; bx.g = 1.0f; bx.b = 0.25f; bx.edge = 0.0045f; } // declenchee : vert vif
         else if (z.inside && !z.insideInner) { bx.r = 1.0f; bx.g = 1.0f; bx.b = 0.35f; bx.edge = 0.0035f; }                // doigt dedans : jaune clair
+        // Indicateur de position (comme Archan XR) : un petit slider horizontal au-dessus de la molette, avec sa poignee, tant qu'on l'actionne.
+        if (k == "dial" && (z.grabHand >= 0 || now < z.hudUntil) && frame->boxCount + 8 <= kMaxBoxes) {
+            const float W = std::max(0.08f, box.size.x * 1.6f);
+            const float level = static_cast<float>(GetLevel(z.id, z.grabLevel));
+            auto wire = [&](float ox, float oy, float sx, float sy, float sz, float r, float g, float b, float edge) {
+                BoxData& w = frame->box[frame->boxCount++];
+                w.pose = {box.q, box.center + em::Rotate(box.q, em::Vec3{ox, oy, box.size.z * 0.5f})};
+                w.size = {sx, sy, sz};
+                w.r = r; w.g = g; w.b = b;
+                w.edge = edge;
+                w.faceOnly = false;
+            };
+            const float oy = box.size.y * 0.5f + 0.016f;
+            wire(0, oy, W, 0.007f, 0.004f, 0.95f, 0.95f, 0.95f, 0.0012f);                                        // gouttiere
+            for (int i = 0; i <= 4; ++i) wire(-W * 0.5f + W * 0.25f * static_cast<float>(i), oy, 0.0012f, 0.016f, 0.004f, 0.8f, 0.8f, 0.8f, 0.0010f);  // graduations
+            wire(-W * 0.5f + W * level, oy, 0.007f, 0.020f, 0.010f, 0.10f, 0.95f, 1.0f, 0.0030f);                // poignee : position
+        }
+        if (k == "slider" && z.defined2 && (z.grabHand >= 0 || now < z.hudUntil) && frame->boxCount < kMaxBoxes) {
+            BoxData& h = frame->box[frame->boxCount++];
+            const em::Vec3 a = g_anchor.ToWorld(z.pos), b2 = g_anchor.ToWorld(z.pos2);
+            h.pose = {box.q, a + (b2 - a) * static_cast<float>(z.hudLevel)};
+            h.size = {static_cast<float>(z.geom.sx / 1000.0) * 1.1f, static_cast<float>(z.geom.sy / 1000.0) * 1.1f, 0.012f};
+            h.r = 0.10f; h.g = 0.95f; h.b = 1.0f; h.edge = 0.0030f; h.faceOnly = false;
+        }
         if (k == "dial" && z.ctrl.dual && frame->boxCount < kMaxBoxes) {  // molette a deux niveaux : boite du bouton central, imbriquee
             const em::ZoneBox in = InnerBoxOf(z);
             BoxData& ib = frame->box[frame->boxCount++];

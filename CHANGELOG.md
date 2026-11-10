@@ -22,6 +22,7 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante
   pose a la tete au moment du recentrage.
 - **Rotatif au glisse et curseur sans pincement** : un simple pointage dans la boite (200 ms) suffit.
 - Nouvelles commandes AzurPoly dans la bibliotheque : pilote automatique ALT / ALT SEL / FPL / HOM / ILS, molette multifonction a deux niveaux (bague + centre), cran des commandes moteur AEC.
+- **Indicateur de position des molettes** (comme Archan XR) : tant qu'on actionne un rotatif, un petit slider horizontal gradue apparait au-dessus avec une poignee qui montre la position en pourcentage (et 1,8 s apres). La position est lue dans le simulateur quand l'action « cran + » est un ajout borne sur une variable L: ou un Input Event (eclairages, luminosites, commandes moteur) ou par `read` / `min` / `max` dans `zones.ini` ; sinon elle est estimee a partir des crans envoyes (`notches` crans sur la course). Un curseur affiche aussi sa poignee le long de la course.
 - **Touche ou bouton pour afficher / cacher le menu en VR** : `[menu] toggle_key`, `toggle_button`, `toggle_joystick`, choisis dans la tray (*Menu en VR (touche / bouton)*). Le pincement des deux mains reste possible.
 - Menu en VR reorganise en sous-pages (Zones, Affichage, Rayon et clic) : toutes les pages tiennent dans le panneau.
 - `zones.ini` : `size_mm = L, H, P` et `rot_deg = lacet, tangage, roulis` ; l'ancien `radius_mm` devient un cube equivalent.

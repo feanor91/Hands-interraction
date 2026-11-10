@@ -183,6 +183,9 @@ inline std::string SerializeControl(const ZoneControl& c) {
     } else if (c.kind == "dial") {
         if (c.dual) s += "levels = 2\ninner_ratio = " + Num(c.innerRatio) + "\n";
         s += "gesture = " + c.gesture + "\nstep_deg = " + Num(c.stepDeg) + "\ninvert = " + (c.invert ? "true" : "false") + "\n";
+        // Indicateur de position (slider affiche au-dessus de la molette) : variable lue (read, min, max) ou crans sur la course (notches).
+        s += "notches = " + std::to_string(c.notches) + "\n";
+        if (!c.read.empty()) s += "read = " + c.read + "\nmin = " + Num(c.min) + "\nmax = " + Num(c.max) + "\n";
     } else if (c.kind == "slider") {
         s += "slider_mode = " + c.sliderMode + "\nnotches = " + std::to_string(c.notches) + "\nmin = " + Num(c.min) + "\nmax = " + Num(c.max) + "\n";
     }
