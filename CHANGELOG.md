@@ -2,6 +2,14 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.15] - 2026-11-10
+
+### Ajoute (essai)
+- **Mode souris** : les mains pilotent la souris de Windows, donc le pointeur de MSFS, qui sait tout manipuler dans le cockpit. Le pointeur suit le bout de l'index (projete dans la vue ecran de MSFS) ; pincer = bouton gauche enfonce, relacher = relache (glisser possible : verriere, curseurs). Aucune zone apprise necessaire.
+  - **Ctrl+Alt+F10** : etalonnage (une fois). 5 reperes blancs apparaissent, fixes devant les yeux ; avec la vraie souris, posez le pointeur de MSFS sur le repere puis Ctrl+Alt+F10 ; apres le 5e, le resultat va dans `mouse.ini` (a cote de `zones.ini`).
+  - **Ctrl+Alt+F11** : active / desactive le mode souris.
+  Mode « mains seules » conseille (la fenetre MSFS doit avoir le focus).
+
 ## [0.0.14] - 2026-11-10
 
 ### Corrige
