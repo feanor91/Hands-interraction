@@ -292,22 +292,30 @@ XrSpace g_gameSpace = XR_NULL_HANDLE;  // espace du jeu de la derniere image (le
 
 // Clic virtuel : une manette fantome vise la zone (rayon qui part de 10 cm devant, dans le sens du doigt de l'apprentissage, et traverse son centre)
 // puis presse la gachette ; c'est le simulateur lui-meme qui traite le clic, comme avec une vraie manette.
-void FireClick(const ZoneState& z) {
+void FireClick(const ZoneState& z, const HandPoseData* hd) {
     if (g_gameSpace == XR_NULL_HANDLE) return;
     const em::ZoneBox box = BoxOf(z);
-    const em::Vec3 dir = em::Normalized(em::Rotate(box.q, em::Vec3{0.0f, 0.0f, -1.0f}));  // de l'avant vers le fond de la boite = sens du doigt
-    const em::Vec3 origin = box.center - dir * 0.10f;
+    em::Vec3 dir = em::Normalized(em::Rotate(box.q, em::Vec3{0.0f, 0.0f, -1.0f}));  // repli : sens appris de la boite
+    em::Vec3 target = box.center;
+    if (hd && hd->valid && hd->jointValid[kIndexTip] && hd->jointValid[8]) {  // sens reel du doigt (articulation du milieu -> bout), passant par le bout
+        const em::Vec3 d = hd->joint[kIndexTip].p - hd->joint[8].p;
+        if (em::Length(d) > 0.005f) {
+            dir = em::Normalized(d);
+            target = hd->joint[kIndexTip].p;
+        }
+    }
+    const em::Vec3 origin = target - dir * 0.10f;
     const em::Quat q = em::LookAlong(dir, em::Vec3{0.0f, 1.0f, 0.0f});
     XrPosef p;
     p.orientation = {q.x, q.y, q.z, q.w};
     p.position = {origin.x, origin.y, origin.z};
     Emu_SyntheticClick(p, g_gameSpace, 180);
-    Logger::Get().Log(LogLevel::Info, "zones : '%s' clic virtuel : rayon de (%.3f %.3f %.3f) vers (%.3f %.3f %.3f)", z.id.c_str(), origin.x, origin.y, origin.z, box.center.x,
-                      box.center.y, box.center.z);
+    Logger::Get().Log(LogLevel::Info, "zones : '%s' clic virtuel : rayon de (%.3f %.3f %.3f) vers (%.3f %.3f %.3f)", z.id.c_str(), origin.x, origin.y, origin.z, target.x,
+                      target.y, target.z);
 }
 
-void FirePress(const ZoneState& z) {
-    if (z.ctrl.click) FireClick(z);
+void FirePress(const ZoneState& z, const HandPoseData* hd = nullptr) {
+    if (z.ctrl.click) FireClick(z, hd);
     else Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id);
 }
 
@@ -798,7 +806,7 @@ void Zones_Frame(const HandsFrame& frame) {
                 Logger::Get().Log(LogLevel::Info, "zones : '%s' touchee par la main %s", z.id.c_str(), h == 1 ? "droite" : "gauche");
                 Play(Snd::Trigger);
                 if (z.ctrl.kind == "switch") FireSwitch(z);
-                else FirePress(z);
+                else FirePress(z, &hd);
             }
         }
     }

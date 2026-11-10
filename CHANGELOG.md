@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.13] - 2026-11-10
+
+### Corrige
+- **Clic virtuel : le rayon suit maintenant votre doigt.** Il partait dans le sens appris de la boite (vers le bas pour le frein de parc) ; il part desormais de 10 cm derriere le bout de l'index, dans la direction reelle du doigt au moment du contact.
+
 ## [0.0.12] - 2026-11-10
 
 ### Ajoute (essai)
