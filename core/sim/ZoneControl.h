@@ -4,8 +4,8 @@
 //   toggle  bascule  : idem, mais l'action est en mode « toggle » (etat reel lu dans le simulateur) ; presentation distincte dans l'editeur.
 //   switch  interrupteur a N positions : chaque contact passe a la position suivante (en boucle ou aller-retour) et envoie `pos1`..`posN`.
 //   dial    rotatif  : pincer la commande puis, selon `gesture`, tourner le poignet (twist : un cran tous les `step_deg` degres) ou glisser le long
-//                      de la boite (slide : un cran tous les `step_deg` millimetres) envoie `inc` / `dec` ; pincer-relacher sans bouger envoie `press`.
-//   slider  curseur  : deux points appris (debut et fin de course) ; pincer et glisser. Mode `value` : envoie `set` avec la valeur
+//                      de la boite (slide : un cran tous les `step_deg` millimetres) envoie `inc` / `dec` ; pincer-relacher sans bouger envoie `press`. Le geste `slide` ne demande pas de pincement : le doigt reste 200 ms dans la boite.
+//   slider  curseur  : deux points appris (debut et fin de course) ; pointer et glisser dans la boite (sans pincement). Mode `value` : envoie `set` avec la valeur
 //                      min..max correspondant a la position ; mode `steps` : envoie `inc` / `dec` par cran (`notches` crans sur la course).
 //
 // Chaque emplacement (press, pos1.., inc, dec, set) est une SEQUENCE d'actions ecrite sur une ligne de zones.ini :

@@ -180,6 +180,8 @@ struct Config {
     int menuHoldMs = 1200;
 
     // --- [hands] (étape 3a) : squelette des mains dessiné en surimpression (Direct3D 12) ---
+    std::string handsStyle = "skeleton";  // skeleton (cubes), glove (gant), bare (main nue), ghost (main translucide)
+    double handsGhostAlpha = 0.35;        // opacité du mode ghost (0,05 à 1)
     bool handsEnabled = true;
     double handsRenderScale = 0.75;  // résolution de la surimpression par rapport à celle du jeu
     double handsJointScale = 0.5;    // taille des articulations

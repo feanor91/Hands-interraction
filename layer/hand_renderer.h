@@ -68,9 +68,14 @@ struct RenderTarget {
     EyeView view;
 };
 
+// Aspect des mains : squelette (cubes), gant (volume opaque sombre), main nue (volume opaque couleur peau), main translucide.
+enum HandMode { kHandSkeleton = 0, kHandGlove = 1, kHandBare = 2, kHandGhost = 3 };
+
 struct RenderStyle {
     float jointScale = 1.0f;      // multiplicateur de la taille des articulations
-    float boneThickness = 0.006f; // épaisseur des os (mètres)
+    float boneThickness = 0.006f; // épaisseur des os (mètres), squelette seulement
+    int mode = kHandSkeleton;
+    float alpha = 0.35f;          // opacite des mains translucides
 };
 
 class HandRenderer {

@@ -34,6 +34,14 @@ Seul le suivi des mains de VDXR est testé (Quest 3, MSFS 2024 Store). La couche
 VDXR fabrique de lui-même des manettes virtuelles à partir de vos mains (rayon, clics, manettes fantomes sur le bureau). Réglage par défaut : la couche les **masque**
 tant que les mains sont suivies (`[hands] hide_controllers`), et le jeu ne voit plus que des mains. Le rayon aux mains (`[emulation] enabled = true`) reste disponible, mais peu précis.
 
+### Aspect des mains
+`[hands] style` (ou menu VR › *Affichage*) : **squelette** (cubes, défaut), **gants** (volume opaque sombre), **mains nues** (opaque, couleur peau) ou **mains translucides** (`ghost_alpha`) pour voir les commandes à travers.
+
+### Recentrage du cockpit
+Quand vous recentrez la vue dans MSFS, le cockpit se replace autour de votre tête : les zones doivent suivre. Réglez **la même touche** que celle de MSFS dans `[zones] recenter_key`
+(`LSHIFT` par défaut, ou tray › *Zones* › *Touche de recentrage…*). Procédure : s'asseoir en position neutre, recentrer la vue dans MSFS, puis apprendre ou utiliser les zones.
+Les positions sont enregistrées relativement au repère posé à la tête lors du dernier recentrage.
+
 ### Créer une zone
 Deux façons, qui écrivent le même fichier (`C:\ProgramData\HandsLayer\data\zones.ini`, rechargé à chaud) :
 
@@ -59,8 +67,8 @@ Repris de StreamSim (voir [core/sim/ZoneControl.h](core/sim/ZoneControl.h)) :
 | Poussoir | toucher la zone (index maintenu `dwell_ms`) | la séquence « appui » |
 | Bascule | idem | l'action en mode *toggle* : l'état réel est lu dans le simulateur |
 | Interrupteur à N positions | chaque contact passe à la position suivante (en boucle ou aller-retour) | la séquence de la position ; la position réelle peut être lue (`read`) |
-| Rotatif | **pincer** dans la zone puis **tourner le poignet** (`gesture = twist`, un cran tous les `step_deg` °) ou **glisser** le long de la boîte (`slide`, un cran tous les `step_deg` mm) ; pincer-relâcher sans bouger = appui. Option **deux niveaux** (`levels = 2`) pour les molettes concentriques : bague extérieure + bouton central (boîtes imbriquées, le centre est prioritaire) | cran + / cran − / appui, et `inc2` / `dec2` / `press2` pour le centre |
-| Curseur | deux points appris (début et fin de course) ; **pincer et glisser** | une valeur min..max, ou des crans + / − |
+| Rotatif | **pincer** dans la zone puis **tourner le poignet** (`gesture = twist`, un cran tous les `step_deg` °) ou, sans pincer, **pointer et glisser** le long de la boîte (`slide`, un cran tous les `step_deg` mm) ; pincer-relâcher sans bouger = appui. Option **deux niveaux** (`levels = 2`) pour les molettes concentriques : bague extérieure + bouton central (boîtes imbriquées, le centre est prioritaire) | cran + / cran − / appui, et `inc2` / `dec2` / `press2` pour le centre |
+| Curseur | deux points appris (début et fin de course) ; **pointer et glisser** le doigt dans la boîte (sans pincer) | une valeur min..max, ou des crans + / − |
 
 Chaque emplacement est une **séquence d'actions** : événement SimConnect (`PARKING_BRAKES`), variable (`L:...` ou SimVar), Input Event de MSFS 2024, code avionique
 (`(>H:...)`, exécuté par le module MobiFlight WASM fourni avec l'avion) ou pause. Opérations sur variables et Input Events : `set`, `toggle` (bascule entre 0 et la valeur d'après l'état réel),
@@ -75,6 +83,8 @@ Outil d'essai en ligne de commande : `simbridge_cli.exe status | event | get-var
 `C:\ProgramData\HandsLayer\hands.ini`, relu à chaud (sauf `[general]` et `[emulation] enabled`, lus au lancement du jeu). Les réglages courants se font depuis la tray. Sections :
 `[general]` (activation, programmes), `[hands]` (squelette, masquage des manettes virtuelles), `[emulation]` (rayon aux mains), `[touch]`, `[menu]` (menu VR), `[zones]` (rayon, délais, boutons du HOTAS).
 Les journaux de la couche sont dans `C:\ProgramData\HandsLayer\logs\layer_<programme>.log`.
+
+La suite prévue est dans [ROADMAP.md](ROADMAP.md).
 
 ## Compiler et publier (développeur)
 

@@ -42,7 +42,7 @@ constexpr float kPanelWidthTouch = 0.44f, kPanelDistTouch = 0.50f;
 constexpr ULONGLONG kPokeDwellMs = 450;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
-enum class Page { Main, Zones, Commands, Zone };
+enum class Page { Main, Zones, Commands, Zone, Display, Pointer };
 Page g_page = Page::Main;
 std::string g_zoneId;  // zone ouverte dans la page de detail
 int g_cmdPage = 0;
@@ -193,12 +193,10 @@ std::vector<Row> BuildCommandRows() {
     return rows;
 }
 
-std::vector<Row> BuildRows() {
-    if (g_page == Page::Zones) return BuildZonesRows();
-    if (g_page == Page::Commands) return BuildCommandRows();
-    if (g_page == Page::Zone) return BuildZoneRows();
+std::vector<Row> BuildPointerRows() {
     const auto cfg = CurrentConfig();
     std::vector<Row> rows;
+    rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
 
     // Rayon
     static const char* const rayModes[] = {"shoulder", "contact", "palm", "hand", "finger"};
@@ -264,25 +262,7 @@ std::vector<Row> BuildRows() {
     rows.push_back({std::wstring(L"Deux mains actives : ") + (cfg->sharedPointer ? L"OUI" : L"NON"), true, [on = cfg->sharedPointer] {
                         Set("emulation", "shared_pointer", on ? "false" : "true", on ? L"Deux mains actives : NON" : L"Deux mains actives : OUI");
                     }});
-    rows.push_back({std::wstring(L"Squelette des mains : ") + (cfg->handsEnabled ? L"OUI" : L"NON"), true, [on = cfg->handsEnabled] {
-                        Set("hands", "enabled", on ? "false" : "true", on ? L"Squelette : NON" : L"Squelette : OUI");
-                    }});
     if (!g_fine) {
-        {
-            const std::string m = cfg->zoneShowBoxes;
-            const wchar_t* name = m == "near" ? L"près des doigts" : (m == "hidden" ? L"cachées" : L"toutes");
-            rows.push_back({std::wstring(L"Boîtes des zones : ") + name, true, [m] {
-                                const char* n = m == "all" ? "near" : (m == "near" ? "hidden" : "all");
-                                Set("zones", "show_boxes", n, L"Boîtes des zones modifiées");
-                            }});
-        }
-        {
-            const bool face = cfg->zoneBoxFaces == "face";
-            rows.push_back({std::wstring(L"Forme des boîtes : ") + (face ? L"face avant seule (carré)" : L"boîte complète"), true, [face] {
-                                Set("zones", "box_faces", face ? "full" : "face", face ? L"Boîtes complètes" : L"Faces avant seules");
-                            }});
-        }
-        rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
         rows.push_back({L"Réglages fins du rayon  ▸", true, [] { g_fine = true; }});
     } else {
         rows.clear();
@@ -323,6 +303,64 @@ std::vector<Row> BuildRows() {
                         Logger::Get().Log(LogLevel::Info, "menu : ferme");
                     }});
     return rows;
+}
+
+// Page d'accueil : trois sous-menus.
+std::vector<Row> BuildMainRows() {
+    std::vector<Row> rows;
+    rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
+    rows.push_back({L"Affichage : mains et boîtes des zones  ▸", true, [] { g_page = Page::Display; }});
+    rows.push_back({L"Rayon et clic (mode rayon aux mains)  ▸", true, [] { g_page = Page::Pointer; }});
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
+// Affichage : aspect des mains (squelette, gant, mains nues, translucides) et boites des zones.
+std::vector<Row> BuildDisplayRows() {
+    const auto cfg = CurrentConfig();
+    std::vector<Row> rows;
+    rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
+    {
+        const std::string m = cfg->handsStyle;
+        const wchar_t* name = m == "glove" ? L"gants" : (m == "bare" ? L"mains nues" : (m == "ghost" ? L"mains translucides" : L"squelette"));
+        rows.push_back({std::wstring(L"Mains : ") + name, true, [m] {
+                            const char* n = m == "skeleton" ? "glove" : (m == "glove" ? "bare" : (m == "bare" ? "ghost" : "skeleton"));
+                            const wchar_t* t = std::string(n) == "glove" ? L"Mains : gants" : (std::string(n) == "bare" ? L"Mains : mains nues" : (std::string(n) == "ghost" ? L"Mains : translucides" : L"Mains : squelette"));
+                            Set("hands", "style", n, t);
+                        }});
+    }
+    rows.push_back({std::wstring(L"Mains affichées : ") + (cfg->handsEnabled ? L"OUI" : L"NON"), true, [on = cfg->handsEnabled] {
+                        Set("hands", "enabled", on ? "false" : "true", on ? L"Mains cachées" : L"Mains affichées");
+                    }});
+    {
+        const std::string m = cfg->zoneShowBoxes;
+        const wchar_t* name = m == "near" ? L"près des doigts" : (m == "hidden" ? L"cachées" : L"toutes");
+        rows.push_back({std::wstring(L"Boîtes des zones : ") + name, true, [m] {
+                            const char* n = m == "all" ? "near" : (m == "near" ? "hidden" : "all");
+                            Set("zones", "show_boxes", n, L"Boîtes des zones modifiées");
+                        }});
+    }
+    {
+        const bool face = cfg->zoneBoxFaces == "face";
+        rows.push_back({std::wstring(L"Forme des boîtes : ") + (face ? L"face avant seule (carré)" : L"boîte complète"), true, [face] {
+                            Set("zones", "box_faces", face ? "full" : "face", face ? L"Boîtes complètes" : L"Faces avant seules");
+                        }});
+    }
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
+std::vector<Row> BuildRows() {
+    switch (g_page) {
+        case Page::Zones: return BuildZonesRows();
+        case Page::Commands: return BuildCommandRows();
+        case Page::Zone: return BuildZoneRows();
+        case Page::Display: return BuildDisplayRows();
+        case Page::Pointer: return BuildPointerRows();
+        default: return BuildMainRows();
+    }
 }
 
 bool EnsureSwapchain(XrSession session, ID3D12Device* device, ID3D12CommandQueue* queue, size_t rowCount) {

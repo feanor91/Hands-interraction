@@ -139,6 +139,9 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.colorState != "render_target" && c.colorState != "common" && c.colorState != "shader" && c.colorState != "copy_source")
         c.colorState = "render_target";
     c.handsEnabled = ini.GetBool("hands", "enabled", c.handsEnabled);
+    c.handsStyle = ini.GetString("hands", "style", c.handsStyle);
+    if (c.handsStyle != "glove" && c.handsStyle != "bare" && c.handsStyle != "ghost") c.handsStyle = "skeleton";
+    c.handsGhostAlpha = std::max(0.05, std::min(1.0, ini.GetDouble("hands", "ghost_alpha", c.handsGhostAlpha)));
     c.handsRenderScale = ini.GetDouble("hands", "render_scale", c.handsRenderScale);
     c.handsJointScale = ini.GetDouble("hands", "joint_scale", c.handsJointScale);
     c.handsBoneMm = ini.GetDouble("hands", "bone_mm", c.handsBoneMm);

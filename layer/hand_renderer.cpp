@@ -84,17 +84,25 @@ em::Quat RotationFromZ(em::Vec3 d) {
 
 // ---------------------------------------------------------------------------------------------
 // Primitives à dessiner (cubes)
+// Primitive : cube (36 sommets), sphere (576) ou tronc de cone (72), tous generes dans le vertex shader a partir de SV_VertexID.
+enum PrimKind { kCube = 0, kSphere = 1, kFrustum = 2 };
+constexpr uint32_t kVertexCount[3] = {36, 576, 72};
+
 struct Prim {
     Mat4 model;
     float color[4];
+    PrimKind kind = kCube;
+    float r0 = 0, r1 = 0;  // sphere : rayon (r0) ; tronc de cone : rayons aux deux bouts (le long de +Z local, de -0,5 a +0,5)
+    float alpha = 1.0f;    // < 1 : dessine dans la passe translucide
 };
 
 struct RootConstants {
     float mvp[16];
     float model[16];
     float color[4];
+    float params[4];  // x = type de primitive, y = rayon 0, z = rayon 1, w = opacite
 };
-static_assert(sizeof(RootConstants) == 36 * 4, "36 DWORD de constantes racine");
+static_assert(sizeof(RootConstants) == 40 * 4, "40 DWORD de constantes racine");
 
 // Os du squelette (indices de articulations OpenXR : 0 paume, 1 poignet, 2-5 pouce, 6-10 index,
 // 11-15 majeur, 16-20 annulaire, 21-25 auriculaire).
@@ -138,6 +146,54 @@ void AddWireBox(std::vector<Prim>& out, const BoxData& bx) {
         }
 }
 
+void AddSphere(std::vector<Prim>& out, const em::Vec3& c, float radius, float r, float g, float b, float alpha) {
+    Prim p;
+    p.model = FromPose(em::Pose{em::Quat{0, 0, 0, 1}, c});
+    p.color[0] = r; p.color[1] = g; p.color[2] = b; p.color[3] = 1.0f;
+    p.kind = kSphere;
+    p.r0 = radius;
+    p.alpha = alpha;
+    out.push_back(p);
+}
+
+void AddFrustum(std::vector<Prim>& out, const em::Vec3& a, const em::Vec3& b, float ra, float rb, float r, float g, float bl, float alpha) {
+    const em::Vec3 d = b - a;
+    const float len = em::Length(d);
+    if (len < 1e-4f) return;
+    Prim p;
+    p.model = Mul(FromPose(em::Pose{RotationFromZ(d * (1.0f / len)), a + d * 0.5f}), Scale(1.0f, 1.0f, len));
+    p.color[0] = r; p.color[1] = g; p.color[2] = bl; p.color[3] = 1.0f;
+    p.kind = kFrustum;
+    p.r0 = ra;
+    p.r1 = rb;
+    p.alpha = alpha;
+    out.push_back(p);
+}
+
+// Main pleine (gant, main nue, main translucide) : une sphere par articulation, un tronc de cone par os, et la paume comblee.
+void AddSolidHand(std::vector<Prim>& out, const HandPoseData& hd, const RenderStyle& style, int hand) {
+    float cr = 0.12f, cg = 0.15f, cb = 0.10f, alpha = 1.0f, grow = 1.15f;  // gant : vert-noir mat, un peu plus epais que la peau
+    if (style.mode == kHandBare) { cr = 0.90f; cg = 0.70f; cb = 0.58f; grow = 1.0f; }
+    if (style.mode == kHandGhost) { cr = 0.55f; cg = 0.80f; cb = 1.0f; alpha = std::max(0.05f, std::min(1.0f, style.alpha)); grow = 1.0f; }
+    (void)hand;
+    auto rad = [&](int j) { return std::max(hd.radius[j], 0.004f) * grow; };
+    auto ok = [&](int j) { return hd.jointValid[j]; };
+    // Os du squelette (doigts, pouce, metacarpiens) : tronc de cone entre deux articulations.
+    for (const auto& bone : kBones) {
+        const int a = bone[0], b = bone[1];
+        if (!ok(a) || !ok(b)) continue;
+        AddFrustum(out, hd.joint[a].p, hd.joint[b].p, rad(a), rad(b), cr, cg, cb, alpha);
+    }
+    // Paume : metacarpiens relies entre eux, et gros volumes au poignet et au centre de la paume.
+    static const int kPalmLinks[][2] = {{6, 11}, {11, 16}, {16, 21}, {7, 12}, {12, 17}, {17, 22}};
+    for (const auto& l : kPalmLinks)
+        if (ok(l[0]) && ok(l[1])) AddFrustum(out, hd.joint[l[0]].p, hd.joint[l[1]].p, std::max(rad(l[0]), 0.009f * grow), std::max(rad(l[1]), 0.009f * grow), cr, cg, cb, alpha);
+    if (ok(0)) AddSphere(out, hd.joint[0].p, 0.030f * grow, cr, cg, cb, alpha);
+    if (ok(1)) AddSphere(out, hd.joint[1].p, 0.026f * grow, cr, cg, cb, alpha);
+    for (int j = 0; j < kHandJointCount; ++j)
+        if (ok(j) && j != 0 && j != 1) AddSphere(out, hd.joint[j].p, rad(j), cr, cg, cb, alpha);
+}
+
 void BuildPrims(const HandsFrame& frame, const RenderStyle& style, std::vector<Prim>& out) {
     for (int i = 0; i < frame.boxCount && i < kMaxBoxes; ++i) AddWireBox(out, frame.box[i]);
     for (int m = 0; m < frame.markerCount && m < kMaxMarkers; ++m) {
@@ -147,6 +203,10 @@ void BuildPrims(const HandsFrame& frame, const RenderStyle& style, std::vector<P
     for (int h = 0; h < 2; ++h) {
         const HandPoseData& hd = frame.hand[h];
         if (!hd.valid) continue;
+        if (style.mode != kHandSkeleton) {
+            AddSolidHand(out, hd, style, h);
+            continue;
+        }
         const float br = h == 0 ? 0.20f : 1.00f, bg = h == 0 ? 0.50f : 0.45f, bb = h == 0 ? 1.00f : 0.15f;  // os
         for (const auto& bone : kBones) {
             const int a = bone[0], b = bone[1];
@@ -174,6 +234,7 @@ cbuffer Root : register(b0) {
     row_major float4x4 mvp;
     row_major float4x4 model;
     float4 color;
+    float4 params;   // x = type (0 cube, 1 sphere, 2 tronc de cone), y = rayon 0, z = rayon 1, w = opacite
 };
 struct VSOut { float4 pos : SV_POSITION; float3 nrm : NORMAL; };
 static const float3 C[8] = {
@@ -184,16 +245,44 @@ static const uint IDX[36] = {
     3,6,2, 3,7,6,   0,4,7, 0,7,3,   1,2,6, 1,6,5 };
 static const float3 NRM[6] = {
     float3(0,0,-1), float3(0,0,1), float3(0,-1,0), float3(0,1,0), float3(-1,0,0), float3(1,0,0) };
+static const float PI2 = 6.2831853;
+float3 SpherePoint(uint i, uint j) {   // 12 meridiens x 8 paralleles
+    float th = PI2 * (float)(i % 12) / 12.0;
+    float ph = 3.1415927 * (float)j / 8.0;
+    return float3(sin(ph) * cos(th), cos(ph), sin(ph) * sin(th));
+}
 VSOut VS(uint vid : SV_VertexID) {
     VSOut o;
-    o.pos = mul(mvp, float4(C[IDX[vid]], 1.0));
-    o.nrm = mul((float3x3)model, NRM[vid / 6]);
+    float3 p; float3 n;
+    if (params.x < 0.5) {
+        p = C[IDX[vid]];
+        n = mul((float3x3)model, NRM[vid / 6]);
+    } else if (params.x < 1.5) {
+        uint tri = vid / 3, c = vid % 3, q = tri / 2, second = tri % 2;
+        uint i = q % 12, j = q / 12;
+        uint k = second == 0 ? (c == 0 ? 0 : (c == 1 ? 1 : 2)) : (c == 0 ? 0 : (c == 1 ? 2 : 3));
+        uint di = (k == 1 || k == 2) ? 1 : 0, dj = (k == 2 || k == 3) ? 1 : 0;
+        float3 u = SpherePoint(i + di, j + dj);
+        p = u * params.y;
+        n = mul((float3x3)model, u);
+    } else {
+        uint tri = vid / 3, c = vid % 3, q = tri / 2, second = tri % 2;
+        uint k = second == 0 ? (c == 0 ? 0 : (c == 1 ? 1 : 2)) : (c == 0 ? 0 : (c == 1 ? 2 : 3));
+        uint di = (k == 1 || k == 2) ? 1 : 0, dt = (k == 2 || k == 3) ? 1 : 0;
+        float th = PI2 * (float)((q + di) % 12) / 12.0;
+        float rr = lerp(params.y, params.z, (float)dt);
+        p = float3(cos(th) * rr, sin(th) * rr, (float)dt - 0.5);
+        n = mul((float3x3)model, float3(cos(th), sin(th), 0.0));
+    }
+    o.pos = mul(mvp, float4(p, 1.0));
+    o.nrm = n;
     return o;
 }
 float4 PS(VSOut i) : SV_Target {
     float3 n = normalize(i.nrm);
     float l = 0.55 + 0.45 * saturate(dot(n, normalize(float3(0.3, 0.8, 0.5))));
-    return float4(color.rgb * l, 1.0);
+    float a = params.w;
+    return float4(color.rgb * l * a, a);   // alpha premultiplie (couche de composition sans bit UNPREMULTIPLIED)
 }
 )HLSL";
 
@@ -211,7 +300,9 @@ struct HandRenderer::Impl {
     DXGI_FORMAT rtFormat = DXGI_FORMAT_UNKNOWN;
 
     ComPtr<ID3D12RootSignature> rootSig;
-    ComPtr<ID3D12PipelineState> pso;
+    ComPtr<ID3D12PipelineState> pso;        // opaque
+    ComPtr<ID3D12PipelineState> psoDepth;   // profondeur seule (passe 1 des mains translucides)
+    ComPtr<ID3D12PipelineState> psoBlend;   // melange alpha premultiplie, sans ecriture de profondeur (passe 2)
     ComPtr<ID3D12CommandAllocator> alloc[kSlots];
     ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12Fence> fence;
@@ -279,12 +370,12 @@ struct HandRenderer::Impl {
         ComPtr<ID3DBlob> vs, ps;
         if (!CompileShaders(vs, ps)) return false;
 
-        // Signature racine : 36 constantes de 32 bits (mvp, modèle, couleur)
+        // Signature racine : 40 constantes de 32 bits (mvp, modele, couleur, parametres de primitive)
         D3D12_ROOT_PARAMETER param{};
         param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         param.Constants.ShaderRegister = 0;
         param.Constants.RegisterSpace = 0;
-        param.Constants.Num32BitValues = 36;
+        param.Constants.Num32BitValues = 40;
         param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         D3D12_ROOT_SIGNATURE_DESC rs{};
         rs.NumParameters = 1;
@@ -315,6 +406,26 @@ struct HandRenderer::Impl {
         pd.SampleDesc.Count = 1;
         hr = device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
         if (FAILED(hr)) return Fail("CreateGraphicsPipelineState", hr);
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC dd = pd;  // passe 1 : pas de couleur, profondeur ecrite
+            dd.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+            hr = device->CreateGraphicsPipelineState(&dd, IID_PPV_ARGS(&psoDepth));
+            if (FAILED(hr)) return Fail("CreateGraphicsPipelineState(profondeur)", hr);
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC bd = pd;  // passe 2 : melange, la couche la plus proche seulement
+            D3D12_RENDER_TARGET_BLEND_DESC& rt = bd.BlendState.RenderTarget[0];
+            rt.BlendEnable = TRUE;
+            rt.SrcBlend = D3D12_BLEND_ONE;
+            rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+            rt.BlendOp = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            bd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+            bd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            hr = device->CreateGraphicsPipelineState(&bd, IID_PPV_ARGS(&psoBlend));
+            if (FAILED(hr)) return Fail("CreateGraphicsPipelineState(melange)", hr);
+        }
 
         for (int i = 0; i < kSlots; ++i) {
             hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc[i]));
@@ -387,7 +498,7 @@ struct HandRenderer::Impl {
         if (!EnsureDepth(mw, mh)) return false;
 
         std::vector<Prim> prims;
-        prims.reserve(1400);
+        prims.reserve(2600);
         BuildPrims(frame, style, prims);
 
         const int slot = static_cast<int>(frame_++ % kSlots);
@@ -423,14 +534,31 @@ struct HandRenderer::Impl {
             list->RSSetScissorRects(1, &sc);
 
             const Mat4 viewProj = Mul(Projection(t.view, 0.02f, 20.0f), FromPose(em::Inverse(t.view.pose)));
-            for (const Prim& p : prims) {
+            auto draw = [&](const Prim& p) {
                 RootConstants rc;
                 const Mat4 mvp = Mul(viewProj, p.model);
                 std::memcpy(rc.mvp, mvp.m, sizeof(rc.mvp));
                 std::memcpy(rc.model, p.model.m, sizeof(rc.model));
                 std::memcpy(rc.color, p.color, sizeof(rc.color));
-                list->SetGraphicsRoot32BitConstants(0, 36, &rc, 0);
-                list->DrawInstanced(36, 1, 0, 0);
+                rc.params[0] = static_cast<float>(p.kind);
+                rc.params[1] = p.r0;
+                rc.params[2] = p.r1;
+                rc.params[3] = p.alpha;
+                list->SetGraphicsRoot32BitConstants(0, 40, &rc, 0);
+                list->DrawInstanced(kVertexCount[p.kind], 1, 0, 0);
+            };
+            for (const Prim& p : prims)
+                if (p.alpha >= 1.0f) draw(p);
+            bool anyGhost = false;
+            for (const Prim& p : prims) anyGhost = anyGhost || p.alpha < 1.0f;
+            if (anyGhost) {  // mains translucides : profondeur d'abord (une seule couche visible), puis melange
+                list->SetPipelineState(psoDepth.Get());
+                for (const Prim& p : prims)
+                    if (p.alpha < 1.0f) draw(p);
+                list->SetPipelineState(psoBlend.Get());
+                for (const Prim& p : prims)
+                    if (p.alpha < 1.0f) draw(p);
+                list->SetPipelineState(pso.Get());
             }
         }
         hr = list->Close();

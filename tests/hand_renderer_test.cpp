@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "hand_renderer.h"
@@ -170,6 +171,7 @@ int main(int argc, char** argv) {
     RenderStyle style;
     style.jointScale = 0.5f;       // valeurs par defaut de hands.ini
     style.boneThickness = 0.008f;
+    if (argc > 2) style.mode = std::atoi(argv[2]);  // 0 squelette, 1 gant, 2 main nue, 3 translucide
     // Deux rendus consécutifs : vérifie la rotation des allocateurs et de la profondeur.
     for (int pass = 0; pass < 5; ++pass) {
         const bool r = renderer.Render(targets, 2, frame, style);
@@ -249,9 +251,11 @@ int main(int argc, char** argv) {
         std::printf("oeil %d : %u pixels couverts, %u verts, %u bleus, %u oranges\n", eye, covered, green, blue, orange);
         EXPECT(covered > 1500, "la main doit couvrir des pixels");
         EXPECT(covered < W * H * 3 / 4, "la main ne doit pas remplir l'image");
-        EXPECT(green > 20, "les bouts de doigts du pincement doivent etre verts");
-        EXPECT(blue > 100, "main gauche (bleue) visible");
-        EXPECT(orange > 100, "main droite (orange) visible");
+        if (style.mode == 0) {  // les couleurs gauche/droite et le vert du pincement ne concernent que le squelette
+            EXPECT(green > 20, "les bouts de doigts du pincement doivent etre verts");
+            EXPECT(blue > 100, "main gauche (bleue) visible");
+            EXPECT(orange > 100, "main droite (orange) visible");
+        }
 
         char path[512];
         std::snprintf(path, sizeof(path), "%s", outPath);

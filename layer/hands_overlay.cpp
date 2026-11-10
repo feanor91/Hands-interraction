@@ -811,6 +811,8 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
             RenderStyle style;
             style.jointScale = static_cast<float>(cfg->handsJointScale);
             style.boneThickness = static_cast<float>(cfg->handsBoneMm / 1000.0);
+            style.mode = cfg->handsStyle == "glove" ? kHandGlove : (cfg->handsStyle == "bare" ? kHandBare : (cfg->handsStyle == "ghost" ? kHandGhost : kHandSkeleton));
+            style.alpha = static_cast<float>(cfg->handsGhostAlpha);
             if (!g_ov.renderer->Render(targets, 2, frame, style)) {
                 Logger::Get().Log(LogLevel::Error, "surimpression : echec du rendu : %s", g_ov.renderer->LastError());
                 ok = false;

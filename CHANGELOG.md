@@ -15,6 +15,14 @@ Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante
 - **Faces seules** (`[zones] box_faces = face`, menu VR) : chaque boite est dessinee par sa face avant seulement, un carre ou un rectangle (option « FACE ONLY » d'Archan XR).
 - **Rotatif au glisse** (`gesture = slide`) : pincer puis glisser le long de la boite, un cran tous les `step_deg` mm, en plus du geste « tourner le poignet » (`twist`).
 - **Molettes a deux niveaux** (`levels = 2`, `inner_ratio`) : bague exterieure et bouton central, deux boites imbriquees ; le centre est prioritaire ; emplacements `inc2` / `dec2` / `press2` (commandes COM, NAV, RANGE du Garmin).
+- **Mains pleines** (`[hands] style = glove | bare | ghost`, menu VR › Affichage) : gants (volume opaque sombre), mains nues (couleur peau), mains translucides (`ghost_alpha`) ;
+  le squelette reste le defaut. Volumes generes par le shader (spheres aux articulations, troncs de cone pour les os, paume comblee) ; les translucides sont rendues en deux passes
+  (profondeur puis melange) pour qu'une seule couche soit visible.
+- **Le cockpit suit le recentrage de MSFS** : touche `[zones] recenter_key` (LSHIFT par defaut, la meme que MSFS ; choix dans la tray). Les positions des zones sont relatives a un repere
+  pose a la tete au moment du recentrage.
+- **Rotatif au glisse et curseur sans pincement** : un simple pointage dans la boite (200 ms) suffit.
+- Nouvelles commandes AzurPoly dans la bibliotheque : pilote automatique ALT / ALT SEL / FPL / HOM / ILS, molette multifonction a deux niveaux (bague + centre), cran des commandes moteur AEC.
+- Menu en VR reorganise en sous-pages (Zones, Affichage, Rayon et clic) : toutes les pages tiennent dans le panneau.
 - `zones.ini` : `size_mm = L, H, P` et `rot_deg = lacet, tangage, roulis` ; l'ancien `radius_mm` devient un cube equivalent.
 
 ## [0.0.2] - 2026-11-09
