@@ -896,6 +896,8 @@ bool InLibrary(const std::string& name) {
             if (s[0] && std::strstr(s, name.c_str())) return true;
     return false;
 }
+// Boutons de manche / manette des gaz (HOTAS) : jamais proposes, aucun n'a de sens sur un cockpit tactile.
+bool IsHotasInput(const std::string& n) { return n.rfind("AZP_RAF_CONTROLS_MG", 0) == 0 || n.rfind("AZP_RAF_CONTROLS_PM", 0) == 0; }
 bool IsAdvancedInput(const std::string& n) { return n.rfind("UNKNOWN_", 0) == 0 || n.rfind("AZP_RAF_CONTROLS_", 0) == 0; }
 
 // Input Events proposes dans le menu : ceux de la bibliotheque sont deja la, les « avances » ne se montrent qu'a la demande (verrou `g_liveMutex` pris).
@@ -903,7 +905,7 @@ std::vector<size_t> VisibleLive() {
     std::vector<size_t> v;
     for (size_t i = 0; i < g_liveInputs.size(); ++i) {
         const std::string& n = g_liveInputs[i];
-        if (InLibrary(n)) continue;
+        if (IsHotasInput(n) || InLibrary(n)) continue;
         if (IsAdvancedInput(n) && !g_showAdvanced) continue;
         v.push_back(i);
     }
@@ -966,7 +968,7 @@ size_t Zones_AdvancedCount() {
     std::lock_guard<std::mutex> l(g_liveMutex);
     size_t n = 0;
     for (const std::string& s : g_liveInputs)
-        if (IsAdvancedInput(s) && !InLibrary(s)) ++n;
+        if (IsAdvancedInput(s) && !IsHotasInput(s) && !InLibrary(s)) ++n;
     return n;
 }
 

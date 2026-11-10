@@ -2,6 +2,14 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.11] - 2026-11-10
+
+### Modifie
+- **Boutons HOTAS retires de la liste des commandes** : `AZP_RAF_CONTROLS_MG*`, `MGP*`, `PM*` (manche et manette des gaz) ne sont plus proposes, meme en « avances ».
+
+### Ajoute
+- **Releve par etapes** (`simbridge_cli record [secondes] [fichier]`) : mesure 8 s de bruit de fond, puis note, pour chaque bouton actionne, les Input Events, variables L: et SimVars qui changent. CTRL DROIT du clavier ouvre une nouvelle etape (bip). Sert a cataloguer toutes les commandes du cockpit.
+
 ## [0.0.10] - 2026-11-10
 
 ### Modifie
