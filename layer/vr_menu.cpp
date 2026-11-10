@@ -40,8 +40,8 @@ namespace {
 
 // Panneau au bout du rayon (manettes ou rayon des mains) : grand et loin. Sans rayon (mode « mains seules »), on le touche du doigt : plus petit et à portée de bras.
 constexpr float kPanelWidthRay = 0.60f, kPanelDistRay = 0.85f;
-constexpr float kPanelWidthTouch = 0.44f, kPanelDistTouch = 0.50f;
-constexpr ULONGLONG kPokeDwellMs = 450;  // temps de contact du doigt avant le choix
+constexpr float kPanelWidthTouch = 0.40f, kPanelDistTouch = 0.45f;
+constexpr ULONGLONG kPokeDwellMs = 300;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
 enum class Page { Main, Zones, Commands, Zone, Display, Pointer };
@@ -109,6 +109,25 @@ std::wstring Wide(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
     return w;
 }
+
+// Lignes de remplissage (vides, non selectionnables) : le panneau n'affiche que les lignes utiles, la texture garde la hauteur fixe.
+std::vector<Row> Compact(std::vector<Row> v) {
+    v.erase(std::remove_if(v.begin(), v.end(), [](const Row& r) { return r.text.empty() && !r.selectable; }), v.end());
+    return v;
+}
+std::vector<Row> Pad(std::vector<Row> v) {
+    while (v.size() < kMenuRows) v.push_back({L"", false, nullptr});
+    return v;
+}
+
+// Curseur du bout du doigt sur le panneau (retour visuel du toucher) : point du plan le plus proche du doigt, dessine par la surimpression des mains.
+struct PokeCursor {
+    bool valid = false;
+    bool touching = false;  // assez pres pour choisir
+    em::Vec3 pos;
+    float depth = 0.0f;     // distance au plan (m, > 0 devant)
+};
+PokeCursor g_cursor[2];
 
 void CloseMenu() {
     g.open = false;
@@ -532,12 +551,14 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
         g_lastCmdCount = Zones_CommandCount();
         g.dirty = true;
     }
-    std::vector<Row> rows = BuildRows();
-    if (!EnsureSwapchain(session, device, queue, rows.size())) {
+    g_cursor[0].valid = g_cursor[1].valid = false;
+    std::vector<Row> rows = Compact(BuildRows());
+    if (!EnsureSwapchain(session, device, queue, kMenuRows)) {
         Disable("creation du panneau impossible");
         return false;
     }
-    const float panelH = g.panelW * static_cast<float>(g.h) / static_cast<float>(g.w);
+    // Seules les lignes utiles sont affichees : le panneau est plus court (et plus facile a atteindre).
+    const float panelH = g.panelW * static_cast<float>(MenuHeight(rows.size())) / static_cast<float>(g.w);
 
     // --- Pointage : le rayon que le jeu recevrait, coupé avec le plan du panneau --------------------------------------
     int hoverRow = -1, hoverHand = -1;
@@ -550,7 +571,7 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
         float lx = 0, ly = 0, t = 0;
         if (!em::RayQuadHit(o, dir, g.quad, &lx, &ly, &t)) continue;
         const int x = static_cast<int>((lx / g.panelW + 0.5f) * static_cast<float>(g.w));
-        const int y = static_cast<int>((0.5f - ly / panelH) * static_cast<float>(g.h));
+        const int y = static_cast<int>((0.5f - ly / panelH) * static_cast<float>(MenuHeight(rows.size())));
         rowOfHand[h] = MenuRowAtPixel(x, y, rows.size());
     }
     for (int h : {1, 0}) {  // la main qui pince a priorité, sinon la droite
@@ -561,47 +582,75 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     }
     if (hoverRow >= 0 && !rows[static_cast<size_t>(hoverRow)].selectable) hoverRow = -1;
 
-    // --- Toucher du doigt : le bout de l'index sur le panneau (ou presque), maintenu un instant, choisit la ligne --------------------
+    // --- Toucher du doigt : le bout de l'index (ou du majeur) sur le panneau, maintenu un instant, choisit la ligne ----------------
+    // Survol : a moins de 15 cm devant le panneau, la ligne visee est surlignee et un curseur montre le point vise ; choix : a moins de 5 cm, 0,3 s.
     {
         static ULONGLONG pokeSince[2] = {0, 0};
         static int pokeRow[2] = {-1, -1};
         static bool pokeLock[2] = {false, false};
+        static ULONGLONG lastDiag = 0;
+        static int diagLeft = 120;
         bool activated = false;
+        const uint32_t usedH = MenuHeight(rows.size());
         for (int h = 0; h < 2; ++h) {
             const HandPoseData& hd = frame.hand[h];
             if (!(hd.valid && hd.jointValid[10])) {
                 pokeRow[h] = -1;
+                pokeSince[h] = 0;
                 pokeLock[h] = false;
                 continue;
             }
-            const em::Vec3 loc = em::Rotate(em::Conjugate(g.quad.q), hd.joint[10].p - g.quad.p);  // z > 0 : devant le panneau
-            if (loc.z > 0.07f) pokeLock[h] = false;      // le doigt s'est retire : nouveau choix possible
+            // Pointeur : le bout de l'index ou du majeur, le plus proche du panneau (devant).
+            em::Vec3 loc = em::Rotate(em::Conjugate(g.quad.q), hd.joint[10].p - g.quad.p);  // z > 0 : devant le panneau
+            if (hd.jointValid[15]) {
+                const em::Vec3 lm = em::Rotate(em::Conjugate(g.quad.q), hd.joint[15].p - g.quad.p);
+                if (lm.z < loc.z) loc = lm;
+            }
+            if (loc.z > 0.06f) pokeLock[h] = false;  // le doigt s'est retire : nouveau choix possible
+            const bool nearPlane = loc.z < 0.15f && loc.z > -0.10f;
+            const bool inFrame = std::fabs(loc.x) <= g.panelW * 0.5f && std::fabs(loc.y) <= panelH * 0.5f;
             int row = -1;
-            if (!pokeLock[h] && loc.z < 0.03f && loc.z > -0.06f) {
+            if (nearPlane && inFrame) {
                 const int x = static_cast<int>((loc.x / g.panelW + 0.5f) * static_cast<float>(g.w));
-                const int y = static_cast<int>((0.5f - loc.y / panelH) * static_cast<float>(g.h));
+                const int y = static_cast<int>((0.5f - loc.y / panelH) * static_cast<float>(usedH));
                 row = MenuRowAtPixel(x, y, rows.size());
                 if (row >= 0 && !rows[static_cast<size_t>(row)].selectable) row = -1;
+                g_cursor[h].valid = true;
+                g_cursor[h].pos = g.quad.p + em::Rotate(g.quad.q, em::Vec3{loc.x, loc.y, 0.004f});
+                g_cursor[h].depth = loc.z;
             }
+            if (diagLeft > 0 && now - lastDiag > 1000 && loc.z < 0.40f) {
+                lastDiag = now;
+                --diagLeft;
+                Logger::Get().Log(LogLevel::Info, "menu : doigt %s a (x %.0f, y %.0f, z %.0f) mm du centre du panneau %.0fx%.0f mm ; ligne %d", h == 1 ? "droit" : "gauche",
+                                  loc.x * 1000.0f, loc.y * 1000.0f, loc.z * 1000.0f, g.panelW * 1000.0f, panelH * 1000.0f, row);
+            }
+            const bool touching = row >= 0 && loc.z < 0.05f && !pokeLock[h];
+            g_cursor[h].touching = touching;
             if (row != pokeRow[h]) {
                 pokeRow[h] = row;
-                pokeSince[h] = now;
-            } else if (row >= 0 && !activated && now - pokeSince[h] >= kPokeDwellMs) {
-                activated = true;
-                pokeLock[h] = true;
-                pokeRow[h] = -1;
-                Row& r = rows[static_cast<size_t>(row)];
-                if (r.action) {
-                    r.action();
-                    g.dirty = true;
+                pokeSince[h] = touching ? now : 0;
+            } else if (touching) {
+                if (pokeSince[h] == 0) pokeSince[h] = now;
+                else if (!activated && now - pokeSince[h] >= kPokeDwellMs) {
+                    activated = true;
+                    pokeLock[h] = true;
+                    pokeSince[h] = 0;
+                    Row& r = rows[static_cast<size_t>(row)];
+                    if (r.action) {
+                        r.action();
+                        g.dirty = true;
+                    }
                 }
+            } else {
+                pokeSince[h] = 0;
             }
             if (pokeRow[h] >= 0 && hoverRow < 0) hoverRow = pokeRow[h];
         }
         if (activated && !g.open) return false;
         if (activated) {
             g.hover = -1;
-            rows = BuildRows();
+            rows = Compact(BuildRows());
         }
     }
     if (hoverRow != g.hover) {
@@ -625,8 +674,8 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     if (!g.open) return false;
 
     if (g.dirty) {
-        rows = BuildRows();  // valeurs à jour après un choix
-        if (!Redraw(rows)) {
+        rows = Compact(BuildRows());  // valeurs à jour après un choix
+        if (!Redraw(Pad(rows))) {
             if (++g.failures >= 3) Disable("echecs repetes du dessin du menu");
             return false;
         }
@@ -640,12 +689,29 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     quad->space = game->space;
     quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     quad->subImage.swapchain = g.swapchain;
-    quad->subImage.imageRect = {{0, 0}, {static_cast<int32_t>(g.w), static_cast<int32_t>(g.h)}};
+    const uint32_t shownH = MenuHeight(rows.size());
+    quad->subImage.imageRect = {{0, 0}, {static_cast<int32_t>(g.w), static_cast<int32_t>(shownH)}};
     quad->subImage.imageArrayIndex = 0;
     quad->pose.orientation = {g.quad.q.x, g.quad.q.y, g.quad.q.z, g.quad.q.w};
     quad->pose.position = {g.quad.p.x, g.quad.p.y, g.quad.p.z};
-    quad->size = {g.panelW, panelH};
+    quad->size = {g.panelW, g.panelW * static_cast<float>(shownH) / static_cast<float>(g.w)};
     return true;
+}
+
+void VrMenu_FillBoxes(HandsFrame* frame) {
+    if (!frame || !g.open) return;
+    for (int h = 0; h < 2; ++h) {
+        const PokeCursor& c = g_cursor[h];
+        if (!c.valid || frame->boxCount >= kMaxBoxes) continue;
+        BoxData& b = frame->box[frame->boxCount++];
+        const float s = 0.012f + 0.030f * std::max(0.0f, std::min(1.0f, c.depth / 0.15f));  // se resserre en approchant
+        b.pose = {g.quad.q, c.pos};
+        b.size = {s, s, 0.002f};
+        b.faceOnly = true;
+        b.edge = 0.0025f;
+        if (c.touching) { b.r = 0.15f; b.g = 1.0f; b.b = 0.25f; }
+        else { b.r = 0.10f; b.g = 0.95f; b.b = 1.0f; }
+    }
 }
 
 void VrMenu_NoteEndFrameFailure() {

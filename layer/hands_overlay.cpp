@@ -772,6 +772,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
         bool any = false;
         ToHandsFrame(game, info->displayTime, &frame, &any);
         Zones_FillMarkers(&frame);
+        VrMenu_FillBoxes(&frame);
         if (!any && frame.markerCount == 0 && frame.boxCount == 0) { ++g_ov.framesSkipped; return; }  // aucune main visible : pas de couche, pas de coût GPU
 
         uint32_t w[2], h[2];

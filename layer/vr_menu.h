@@ -21,6 +21,9 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
 // xrEndFrame a refusé la couche du menu : au bout de quelques refus le menu est désactivé pour la session.
 void VrMenu_NoteEndFrameFailure();
 
+// Ajoute a la surimpression le curseur du bout du doigt sur le panneau (retour visuel du toucher). Sans effet si le menu est ferme.
+void VrMenu_FillBoxes(HandsFrame* frame);
+
 // Détruit la swapchain et remet tout à zéro (avant la destruction de la session).
 void VrMenu_Stop();
 
