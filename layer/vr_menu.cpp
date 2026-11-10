@@ -24,6 +24,8 @@
 
 #include "JoyPoll.h"
 #include "emulate.h"
+#include "emulation/ZoneBox.h"
+#include "emulation/ZoneTracker.h"
 #include "util/KeyNames.h"
 #include "zones.h"
 #include "menu_render.h"
@@ -128,6 +130,13 @@ struct PokeCursor {
     float depth = 0.0f;     // distance au plan (m, > 0 devant)
 };
 PokeCursor g_cursor[2];
+
+// Chaque ligne du menu est une zone en 3D (une dalle devant le panneau), touchee comme une zone du cockpit : le bout d'un doigt reste `dwell` dedans -> choix.
+em::ZoneTracker g_rowTracker[16][2];
+void DisarmRows() {
+    for (auto& r : g_rowTracker)
+        for (auto& t : r) t.Disarm();
+}
 
 void CloseMenu() {
     g.open = false;
@@ -493,6 +502,7 @@ static void ToggleMenu(const XrCompositionLayerProjection* game, XrTime displayT
     g.hover = -1;
     g.status.clear();
     Emu_SetMenuOpen(true);
+    DisarmRows();  // les doigts sont peut-etre deja devant le panneau : ils doivent d'abord en sortir
     Logger::Get().Log(LogLevel::Info, "menu : ouvert (%s)", via);
 }
 
@@ -582,70 +592,71 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
     }
     if (hoverRow >= 0 && !rows[static_cast<size_t>(hoverRow)].selectable) hoverRow = -1;
 
-    // --- Toucher du doigt : le bout de l'index (ou du majeur) sur le panneau, maintenu un instant, choisit la ligne ----------------
-    // Survol : a moins de 15 cm devant le panneau, la ligne visee est surlignee et un curseur montre le point vise ; choix : a moins de 5 cm, 0,3 s.
+    // --- Toucher du doigt : comme une zone du cockpit ------------------------------------------------------------------------------
+    // Pointeur = le bout de doigt le plus en avant (pouce, index, majeur, annulaire, auriculaire) : une main a plat ou pointee fonctionne, et le bout
+    // de l'index, cache par la main quand on pointe vers l'avant, n'est plus indispensable. Chaque ligne est une dalle 3D devant le panneau (de 9 cm
+    // derriere a 7 cm devant) ; le doigt qui y reste `kPokeDwellMs` choisit la ligne, puis doit sortir de la dalle elargie pour pouvoir recommencer.
     {
-        static ULONGLONG pokeSince[2] = {0, 0};
-        static int pokeRow[2] = {-1, -1};
-        static bool pokeLock[2] = {false, false};
         static ULONGLONG lastDiag = 0;
         static int diagLeft = 120;
         bool activated = false;
         const uint32_t usedH = MenuHeight(rows.size());
+        const float mPerPx = g.panelW / static_cast<float>(g.w);
+        const float margin = static_cast<float>(cfg->zoneFingerMm / 2000.0);
+        static const int kTips[] = {5, 10, 15, 20, 25};
         for (int h = 0; h < 2; ++h) {
             const HandPoseData& hd = frame.hand[h];
-            if (!(hd.valid && hd.jointValid[10])) {
-                pokeRow[h] = -1;
-                pokeSince[h] = 0;
-                pokeLock[h] = false;
-                continue;
+            int tipJoint = -1;
+            em::Vec3 loc{};
+            if (hd.valid) {
+                for (int j : kTips) {
+                    if (!hd.jointValid[j]) continue;
+                    const em::Vec3 l = em::Rotate(em::Conjugate(g.quad.q), hd.joint[j].p - g.quad.p);  // z > 0 : devant le panneau
+                    if (tipJoint < 0 || l.z < loc.z) { tipJoint = j; loc = l; }
+                }
             }
-            // Pointeur : le bout de l'index ou du majeur, le plus proche du panneau (devant).
-            em::Vec3 loc = em::Rotate(em::Conjugate(g.quad.q), hd.joint[10].p - g.quad.p);  // z > 0 : devant le panneau
-            if (hd.jointValid[15]) {
-                const em::Vec3 lm = em::Rotate(em::Conjugate(g.quad.q), hd.joint[15].p - g.quad.p);
-                if (lm.z < loc.z) loc = lm;
+            const bool have = tipJoint >= 0;
+            const em::Vec3 tipW = have ? hd.joint[tipJoint].p : em::Vec3{};
+            int hoverOfHand = -1;
+            bool inAny = false;
+            for (size_t i = 0; i < rows.size() && i < 16; ++i) {
+                bool in = false, wide = false;
+                if (have && rows[i].selectable) {
+                    const float yc = (static_cast<float>(usedH) * 0.5f - (static_cast<float>(kMenuHeaderH) + (static_cast<float>(i) + 0.5f) * static_cast<float>(kMenuRowH))) * mPerPx;
+                    em::ZoneBox box;
+                    box.q = g.quad.q;
+                    box.center = g.quad.p + em::Rotate(g.quad.q, em::Vec3{0.0f, yc, -0.01f});
+                    box.size = {g.panelW, static_cast<float>(kMenuRowH) * mPerPx, 0.16f};
+                    in = em::BoxContains(box, tipW, margin);
+                    wide = em::BoxContains(box, tipW, margin, 1.4f);
+                }
+                const bool fired = g_rowTracker[i][h].UpdateInside(have && rows[i].selectable, in, wide, static_cast<double>(now), static_cast<double>(kPokeDwellMs), 500.0);
+                if (in) { hoverOfHand = static_cast<int>(i); inAny = true; }
+                if (fired && !activated && rows[i].action) {
+                    activated = true;
+                    rows[i].action();
+                    g.dirty = true;
+                }
             }
-            if (loc.z > 0.06f) pokeLock[h] = false;  // le doigt s'est retire : nouveau choix possible
-            const bool nearPlane = loc.z < 0.15f && loc.z > -0.10f;
-            const bool inFrame = std::fabs(loc.x) <= g.panelW * 0.5f && std::fabs(loc.y) <= panelH * 0.5f;
-            int row = -1;
-            if (nearPlane && inFrame) {
-                const int x = static_cast<int>((loc.x / g.panelW + 0.5f) * static_cast<float>(g.w));
-                const int y = static_cast<int>((0.5f - loc.y / panelH) * static_cast<float>(usedH));
-                row = MenuRowAtPixel(x, y, rows.size());
-                if (row >= 0 && !rows[static_cast<size_t>(row)].selectable) row = -1;
+            if (have && loc.z < 0.15f && loc.z > -0.10f && std::fabs(loc.x) <= g.panelW * 0.5f && std::fabs(loc.y) <= static_cast<float>(usedH) * mPerPx * 0.5f) {
                 g_cursor[h].valid = true;
                 g_cursor[h].pos = g.quad.p + em::Rotate(g.quad.q, em::Vec3{loc.x, loc.y, 0.004f});
                 g_cursor[h].depth = loc.z;
+                g_cursor[h].touching = inAny;
+                if (hoverOfHand < 0) {  // survol a distance : la ligne en face du doigt
+                    const int y = static_cast<int>((0.5f - loc.y / (static_cast<float>(usedH) * mPerPx)) * static_cast<float>(usedH));
+                    const int x = static_cast<int>((loc.x / g.panelW + 0.5f) * static_cast<float>(g.w));
+                    const int r = MenuRowAtPixel(x, y, rows.size());
+                    if (r >= 0 && rows[static_cast<size_t>(r)].selectable) hoverOfHand = r;
+                }
             }
-            if (diagLeft > 0 && now - lastDiag > 1000 && loc.z < 0.40f) {
+            if (hoverOfHand >= 0 && hoverRow < 0) hoverRow = hoverOfHand;
+            if (diagLeft > 0 && now - lastDiag > 1000 && have && loc.z < 0.40f) {
                 lastDiag = now;
                 --diagLeft;
-                Logger::Get().Log(LogLevel::Info, "menu : doigt %s a (x %.0f, y %.0f, z %.0f) mm du centre du panneau %.0fx%.0f mm ; ligne %d", h == 1 ? "droit" : "gauche",
-                                  loc.x * 1000.0f, loc.y * 1000.0f, loc.z * 1000.0f, g.panelW * 1000.0f, panelH * 1000.0f, row);
+                Logger::Get().Log(LogLevel::Info, "menu : main %s, bout %d a (x %.0f, y %.0f, z %.0f) mm du centre du panneau %.0f mm de large ; ligne survolee %d", h == 1 ? "droite" : "gauche",
+                                  tipJoint, loc.x * 1000.0f, loc.y * 1000.0f, loc.z * 1000.0f, g.panelW * 1000.0f, hoverOfHand);
             }
-            const bool touching = row >= 0 && loc.z < 0.05f && !pokeLock[h];
-            g_cursor[h].touching = touching;
-            if (row != pokeRow[h]) {
-                pokeRow[h] = row;
-                pokeSince[h] = touching ? now : 0;
-            } else if (touching) {
-                if (pokeSince[h] == 0) pokeSince[h] = now;
-                else if (!activated && now - pokeSince[h] >= kPokeDwellMs) {
-                    activated = true;
-                    pokeLock[h] = true;
-                    pokeSince[h] = 0;
-                    Row& r = rows[static_cast<size_t>(row)];
-                    if (r.action) {
-                        r.action();
-                        g.dirty = true;
-                    }
-                }
-            } else {
-                pokeSince[h] = 0;
-            }
-            if (pokeRow[h] >= 0 && hoverRow < 0) hoverRow = pokeRow[h];
         }
         if (activated && !g.open) return false;
         if (activated) {

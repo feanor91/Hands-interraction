@@ -764,13 +764,17 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
     });
     Safe("xrEndFrame(preparation)", [&] {
         const auto cfg = CurrentConfig();
-        if (!cfg->handsEnabled || g_ov.disabled || !info || info->layerCount == 0 || !info->layers) return;
+        if (g_ov.disabled || !info || info->layerCount == 0 || !info->layers) return;
         const XrCompositionLayerProjection* game = FindGameProjection(info);
         if (!game) return;
 
         HandsFrame frame;
         bool any = false;
         ToHandsFrame(game, info->displayTime, &frame, &any);
+        if (!cfg->handsEnabled) {  // mains cachees : on ne dessine plus que les boites des zones et le curseur du menu
+            frame.hand[0].valid = frame.hand[1].valid = false;
+            any = false;
+        }
         Zones_FillMarkers(&frame);
         VrMenu_FillBoxes(&frame);
         if (!any && frame.markerCount == 0 && frame.boxCount == 0) { ++g_ov.framesSkipped; return; }  // aucune main visible : pas de couche, pas de coût GPU

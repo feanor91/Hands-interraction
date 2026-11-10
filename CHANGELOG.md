@@ -2,9 +2,13 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
-## [Non publie]
+## [0.0.4] - 2026-11-10
 
 ### Corrige
+- **Menu en VR : interaction aux mains refaite comme celle des zones du cockpit** (plus rien ne depend d'une manette emulee). Chaque ligne est une dalle 3D devant le panneau
+  (de 9 cm derriere a 7 cm devant) ; le doigt qui y reste 0,3 s choisit la ligne, puis doit en sortir pour recommencer (meme moteur que les zones). Le pointeur est **le bout de doigt le plus
+  en avant** (pouce, index, majeur, annulaire, auriculaire) : une main a plat ou pointee fonctionne, le bout de l'index n'est plus indispensable.
+- « Mains affichees : NON » ne cache plus que les mains : les boites des zones et le curseur du menu restent dessines.
 - Menu en VR au doigt : le panneau n'affiche plus que les lignes utiles (il etait trois fois trop haut, avec des lignes vides), plus petit et plus pres ; un **curseur** (carre cyan qui se resserre, vert quand on peut choisir)
   montre le point du panneau vise par le doigt ; survol a moins de 15 cm, choix a moins de 5 cm pendant 0,3 s (au lieu de 3 cm / 0,45 s) ; le bout du majeur compte aussi.
 - Le journal `layer_<programme>.log` note la position du doigt par rapport au panneau (une ligne par seconde, 120 lignes) pour diagnostiquer les decalages.
