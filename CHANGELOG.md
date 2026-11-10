@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.17] - 2026-11-10
+
+### Modifie
+- **Etalonnage de la souris, plus simple** : chaque repere blanc est valide par un **clic gauche** de la souris (Ctrl+Alt+F10 marche toujours). Le repere est maintenant **fixe dans le monde** (il ne suit plus le regard : on peut bouger la tete pour viser) et place a 60 cm, la distance d'un tableau de bord, pour que le pointeur de MSFS et le repere soient en contact (a 1 m ils flottaient l'un devant l'autre en relief).
+
 ## [0.0.16] - 2026-11-10
 
 ### Ajoute

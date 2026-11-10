@@ -36,7 +36,10 @@ std::vector<Sample> g_samples;
 ULONGLONG g_calStart = 0;
 bool g_headValid = false;
 em::Pose g_head;
-bool g_calKeyWas = false, g_modeKeyWas = false;
+bool g_calKeyWas = false, g_modeKeyWas = false, g_lbWas = false;
+em::Vec3 g_markerWorld;      // repere de l'etalonnage en cours : FIXE dans le monde (on peut bouger la tete pour viser)
+bool g_markerPending = true;  // a placer des que la tete est connue
+constexpr float kMarkerDist = 0.6f;  // distance du repere : celle d'un tableau de bord, pour que le pointeur de MSFS et le repere soient en contact
 bool g_mode = false;
 
 // Reperes : (azimut, elevation) en degres, a 1 m devant la tete.
@@ -199,6 +202,7 @@ void Mouse_ToggleMode() {
 void Mouse_StartCalibration() {
     Load();
     if (g_calibrating) return;
+    g_markerPending = true;
     ReleaseButton();
     g_mode = false;
     g_calibrating = true;
@@ -214,6 +218,15 @@ void Mouse_Frame(const HandsFrame& frame) {
     if (frame.headValid) g_head = frame.head;
     const ULONGLONG now = GetTickCount64();
 
+    if (g_calibrating && g_markerPending && frame.headValid && g_calStep < 5) {  // repere fixe dans le monde, a l'endroit ou la tete le voit maintenant
+        const em::Vec3 d = em::Normalized(em::Vec3{static_cast<float>(std::tan(kPts[g_calStep][0] * kDeg)), static_cast<float>(std::tan(kPts[g_calStep][1] * kDeg)), -1.0f});
+        g_markerWorld = frame.head.p + em::Rotate(frame.head.q, d * kMarkerDist);
+        g_markerPending = false;
+    }
+    const bool lb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool lbEdge = lb && !g_lbWas;
+    g_lbWas = lb;
+
     const bool ctrlAlt = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000);
     const bool calKey = ctrlAlt && (GetAsyncKeyState(VK_F10) & 0x8000);
     const bool modeKey = ctrlAlt && (GetAsyncKeyState(VK_F11) & 0x8000);
@@ -228,15 +241,19 @@ void Mouse_Frame(const HandsFrame& frame) {
     }
     if (g_mode && !g_calibrating) UpdatePointer(frame);
 
-    if (!calEdge) return;
+    if (!calEdge && !(lbEdge && g_calibrating && !g_markerPending)) return;
     if (!g_calibrating) {
         Mouse_StartCalibration();
         return;
     }
+    if (g_markerPending || !frame.headValid) return;
     POINT p;
     GetCursorPos(&p);
-    g_samples.push_back({std::tan(kPts[g_calStep][0] * kDeg), std::tan(kPts[g_calStep][1] * kDeg), static_cast<double>(p.x), static_cast<double>(p.y)});
+    const em::Vec3 loc = em::Rotate(em::Conjugate(frame.head.q), g_markerWorld - frame.head.p);
+    if (loc.z > -0.05f) return;  // repere derriere la tete : on ne retient rien
+    g_samples.push_back({loc.x / -loc.z, loc.y / -loc.z, static_cast<double>(p.x), static_cast<double>(p.y)});
     hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : repere %d/5 pris : pointeur en (%ld, %ld)", g_calStep + 1, p.x, p.y);
+    g_markerPending = true;
     if (++g_calStep < 5) return;
     g_calibrating = false;
     std::vector<double> tx, ty, px, py;
@@ -258,11 +275,10 @@ void Mouse_Frame(const HandsFrame& frame) {
 }
 
 void Mouse_FillMarkers(HandsFrame* frame) {
-    if (!frame || !g_calibrating || !frame->headValid || g_calStep >= 5) return;
+    if (!frame || !g_calibrating || g_markerPending || g_calStep >= 5) return;
     if (frame->markerCount >= kMaxMarkers) return;
-    const em::Vec3 d = em::Normalized(em::Vec3{static_cast<float>(std::tan(kPts[g_calStep][0] * kDeg)), static_cast<float>(std::tan(kPts[g_calStep][1] * kDeg)), -1.0f});
     MarkerData& m = frame->marker[frame->markerCount++];
-    m.pos = frame->head.p + em::Rotate(frame->head.q, d * 1.0f);
+    m.pos = g_markerWorld;
     m.size = 0.02f;
     m.r = m.g = m.b = 1.0f;
 }
