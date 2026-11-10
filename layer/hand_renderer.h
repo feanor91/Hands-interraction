@@ -52,6 +52,8 @@ struct HandsFrame {
     int markerCount = 0;
     BoxData box[kMaxBoxes];
     int boxCount = 0;
+    bool headValid = false;            // pose de la tete (espace du jeu)
+    hands::emulation::Pose head;
 };
 
 // Point de vue d'un œil : pose dans l'espace de référence + champ de vision (angles en radians, comme OpenXR).

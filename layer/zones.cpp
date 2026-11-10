@@ -27,10 +27,12 @@
 #include "JoyPoll.h"
 #include "bridge_client.h"
 #include "config/IniFile.h"
+#include "emulation/CockpitAnchor.h"
 #include "emulation/ZoneBox.h"
 #include "emulation/ZoneTracker.h"
 #include "log/Logger.h"
 #include "sim/ZoneFile.h"
+#include "util/KeyNames.h"
 #include "state.h"
 #include "zones.h"
 
@@ -43,6 +45,7 @@ using hands::log::LogLevel;
 using hands::log::Logger;
 
 constexpr int kIndexTip = 10;  // XR_HAND_JOINT_INDEX_TIP_EXT
+constexpr ULONGLONG kEngageMs = 200;  // pointage : maintien du doigt dans la boite avant de saisir (evite les effleurements)
 constexpr int kPalm = 0, kWrist = 1, kMiddleProximal = 12;
 
 // Une zone : type de commande + actions (zones.ini), position(s) apprise(s), et l'etat des gestes en cours.
@@ -61,9 +64,11 @@ struct ZoneState {
     ULONGLONG lastCapture = 0;  // derniere memorisation
     // Gestes (rotatif, curseur) : une main saisit la commande en pincant dedans.
     bool prevPinch[2] = {false, false};
+    ULONGLONG nearSince[2] = {0, 0};  // geste « pointage » (glisse sans pincement) : depuis quand le doigt est dans la boite
     int grabHand = -1;
     int grabLevel = 1;      // molette a deux niveaux : 1 = bague exterieure, 2 = bouton central
     bool insideInner = false;
+    bool engagedLatch[2] = {false, false};  // pointage : une seule saisie par passage du doigt
     ULONGLONG grabAt = 0;
     bool rotated = false;
     em::Vec3 axis0, n0;
@@ -74,12 +79,17 @@ struct ZoneState {
 };
 std::vector<ZoneState> g_zone;
 
+// Repere du cockpit : les positions des zones sont relatives a ce repere (recale par la touche de recentrage de MSFS).
+em::CockpitAnchor g_anchor;
+ULONGLONG g_recenterAt = 0;  // recentrage demande : instant ou relever la pose de la tete (0 = aucun)
+bool g_prevRecenterKey = false;
+
 // Boite de la zone (espace du jeu). Curseur : le long de la course apprise ; sinon centree sur le point appris.
 em::ZoneBox BoxOf(const ZoneState& z) {
-    if (z.ctrl.kind == "slider" && z.defined2) return em::SegmentBox(z.pos, z.pos2, static_cast<float>(z.geom.sx / 1000.0), static_cast<float>(z.geom.sy / 1000.0));
+    if (z.ctrl.kind == "slider" && z.defined2) return em::SegmentBox(g_anchor.ToWorld(z.pos), g_anchor.ToWorld(z.pos2), static_cast<float>(z.geom.sx / 1000.0), static_cast<float>(z.geom.sy / 1000.0));
     em::ZoneBox b;
-    b.center = z.pos;
-    b.q = em::QuatFromEulerDeg(z.geom.yaw, z.geom.pitch, z.geom.roll);
+    b.center = g_anchor.ToWorld(z.pos);
+    b.q = g_anchor.ToWorldRot(em::QuatFromEulerDeg(z.geom.yaw, z.geom.pitch, z.geom.roll));
     b.size = {static_cast<float>(z.geom.sx / 1000.0), static_cast<float>(z.geom.sy / 1000.0), static_cast<float>(z.geom.sz / 1000.0)};
     return b;
 }
@@ -327,7 +337,13 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
         if (isNear) z.inside = true;
         if (inInner) z.insideInner = true;
         const bool pinch = ok && hd.pressed;
-        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {  // saisie : pincement qui commence dans la zone ; le centre a la priorite
+        const bool slide = z.ctrl.gesture == "slide";  // glisse : simple pointage, sans pincement ; le doigt doit rester `kEngageMs` dans la boite
+        if (!isNear) z.nearSince[h] = 0;
+        else if (z.nearSince[h] == 0) z.nearSince[h] = now;
+        const bool engage = slide ? (isNear && now - z.nearSince[h] >= kEngageMs && !z.engagedLatch[h]) : (isNear && pinch && !z.prevPinch[h]);
+        if (!isNear) z.engagedLatch[h] = false;
+        if (z.grabHand < 0 && engage) {  // saisie ; le centre a la priorite
+            z.engagedLatch[h] = true;
             z.grabHand = h;
             z.grabLevel = inInner ? 2 : 1;
             z.grabAt = now;
@@ -338,9 +354,9 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
             z.lastAngle = 0.0;
             if (z.ctrl.gesture == "slide") z.lastAngle = em::ToLocal(box, hd.joint[kIndexTip].p).x * 1000.0;  // glisse : position (mm) le long de la boite
         } else if (z.grabHand == h) {
-            if (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f)) {
+            if (slide ? !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.3f) : (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f))) {
                 EndGrab(z, now);
-            } else if (z.ctrl.gesture == "slide") {
+            } else if (slide) {
                 const double x = em::ToLocal(box, hd.joint[kIndexTip].p).x * 1000.0;
                 const double d = x - z.lastAngle;
                 z.lastAngle = x;
@@ -367,19 +383,25 @@ void UpdateSlider(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
         const HandPoseData& hd = frame.hand[h];
         const bool ok = hd.valid && hd.jointValid[kIndexTip];
         double level = 0.0;
-        if (ok) DistToSegment(hd.joint[kIndexTip].p, z.pos, z.pos2, &level);
+        if (ok) DistToSegment(hd.joint[kIndexTip].p, g_anchor.ToWorld(z.pos), g_anchor.ToWorld(z.pos2), &level);
         const em::ZoneBox box = BoxOf(z);
         const float margin = static_cast<float>(CurrentConfig()->zoneFingerMm / 2000.0);
         const bool isNear = ok && em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.2f);
         if (isNear) z.inside = true;
-        const bool pinch = ok && hd.pressed;
-        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {
+        const bool pinch = ok && hd.pressed;  // le curseur se commande en pointant : le pincement n'est pas utilise
+        if (!isNear) z.nearSince[h] = 0;
+        else if (z.nearSince[h] == 0) z.nearSince[h] = now;
+        const bool engage = isNear && now - z.nearSince[h] >= kEngageMs && !z.engagedLatch[h];
+        if (!isNear) z.engagedLatch[h] = false;
+        (void)pinch;
+        if (z.grabHand < 0 && engage) {
+            z.engagedLatch[h] = true;
             z.grabHand = h;
             z.grabAt = now;
             z.prevLevel = level;
             z.lastSentLevel = -1.0;
         } else if (z.grabHand == h) {
-            if (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f)) {
+            if (!em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.3f)) {
                 EndGrab(z, now);
             } else if (z.ctrl.sliderMode == "value") {
                 if (std::fabs(level - z.lastSentLevel) >= 0.02 && now - z.lastSend >= 120) {
@@ -426,6 +448,30 @@ void Zones_Frame(const HandsFrame& frame) {
                 Logger::Get().Log(LogLevel::Info, "zones : activees (fichier : %s) ; Ctrl+Alt+F9 = apprendre la prochaine zone incomplete au bout de l'index, Ctrl+Alt+F10 = effacer les positions",
                                   ZonesPath().c_str());
             g_loaded = true;
+        }
+    }
+
+    // Recentrage de la vue dans MSFS (meme touche) : le cockpit se replace autour de la tete, les zones suivent.
+    {
+        const int vk = hands::util::ParseVirtualKey(cfg->zoneRecenterKey);
+        const bool down = vk != 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+        if (down && !g_prevRecenterKey) g_recenterAt = now + static_cast<ULONGLONG>(cfg->zoneRecenterDelayMs);
+        g_prevRecenterKey = down;
+        if (g_recenterAt != 0 && now >= g_recenterAt) {
+            if (frame.headValid) {
+                g_anchor = em::CockpitAnchor::FromHead(frame.head);
+                g_recenterAt = 0;
+                for (ZoneState& z : g_zone) {
+                    for (auto& t : z.tracker) t.Disarm();
+                    z.grabHand = -1;
+                }
+                Logger::Get().Log(LogLevel::Info, "zones : cockpit recentre (touche %s) : repere a la tete en (%.2f, %.2f, %.2f)", cfg->zoneRecenterKey.c_str(),
+                                  g_anchor.pos.x, g_anchor.pos.y, g_anchor.pos.z);
+                Play(Snd::Clear);
+            } else if (now >= g_recenterAt + 3000) {
+                g_recenterAt = 0;
+                Logger::Get().Log(LogLevel::Warn, "zones : recentrage ignore, pose de la tete indisponible");
+            }
         }
     }
 
@@ -498,10 +544,10 @@ void Zones_Frame(const HandsFrame& frame) {
                     const bool second = z.ctrl.kind == "slider" && (g_teachStage == 2 || (z.defined && !z.defined2 && g_teachId.empty()));
                     const em::Vec3 p = frame.hand[h].joint[kIndexTip].p;
                     if (second) {
-                        z.pos2 = p;
+                        z.pos2 = g_anchor.ToRel(p);
                         z.defined2 = true;
                     } else {
-                        z.pos = p;
+                        z.pos = g_anchor.ToRel(p);
                         z.defined = true;
                         z.defined2 = z.ctrl.kind == "slider" ? false : z.defined2;
                         if (z.geom.sx <= 0) DefaultGeom(z);
@@ -634,6 +680,9 @@ struct LibEntry {
     const char* press;
     const char* inc;
     const char* dec;
+    const char* press2;  // molette a deux niveaux : bouton central
+    const char* inc2;
+    const char* dec2;
 };
 const LibEntry kLibrary[] = {
 #include "sim/CommandLibrary.inc"
@@ -732,6 +781,10 @@ void Zones_AddCommand(size_t index) {
         if (e.press[0]) z.ctrl.slots["press"] = sim::ParseSeq(e.press);
         if (e.inc[0]) z.ctrl.slots["inc"] = sim::ParseSeq(e.inc);
         if (e.dec[0]) z.ctrl.slots["dec"] = sim::ParseSeq(e.dec);
+        if (e.press2[0]) z.ctrl.slots["press2"] = sim::ParseSeq(e.press2);
+        if (e.inc2[0]) z.ctrl.slots["inc2"] = sim::ParseSeq(e.inc2);
+        if (e.dec2[0]) z.ctrl.slots["dec2"] = sim::ParseSeq(e.dec2);
+        z.ctrl.dual = e.inc2[0] != 0;
         for (const char* s : {"press", "inc", "dec"})
             if (z.ctrl.slots.count(s) && !z.ctrl.slots[s].empty()) { base = z.ctrl.slots[s][0].target; break; }
     } else {

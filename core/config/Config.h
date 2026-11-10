@@ -161,6 +161,8 @@ struct Config {
     bool hideControllersProfile = true;
     bool zonesEnabled = true;
     double zoneRadiusMm = 20.0;   // rayon par défaut d'une zone (ancien format ; les zones ont maintenant une boîte)
+    std::string zoneRecenterKey = "LSHIFT";  // touche de recentrage de MSFS : les zones suivent le cockpit (vide = aucune)
+    double zoneRecenterDelayMs = 600.0;      // attente apres l'appui avant de relever la pose de la tete
     std::string zoneBoxFaces = "full";  // boîtes : full (12 arêtes) ou face (seulement la face avant : un carré / rectangle)
     std::string zoneShowBoxes = "all";  // boîtes en fil de fer : all (toutes), near (près des doigts), hidden (cachées)
     double zoneFingerMm = 6.0;    // taille du bout du doigt : la boîte est agrandie d'autant

@@ -103,6 +103,8 @@ Config Config::FromIni(const IniFile& ini) {
     c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
     c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);
     c.zoneBoxFaces = ini.GetString("zones", "box_faces", c.zoneBoxFaces) == "face" ? "face" : "full";
+    c.zoneRecenterKey = ini.GetString("zones", "recenter_key", c.zoneRecenterKey);
+    c.zoneRecenterDelayMs = std::max(100.0, std::min(3000.0, ini.GetDouble("zones", "recenter_delay_ms", c.zoneRecenterDelayMs)));
     c.zoneShowBoxes = ini.GetString("zones", "show_boxes", c.zoneShowBoxes);
     if (c.zoneShowBoxes != "near" && c.zoneShowBoxes != "hidden") c.zoneShowBoxes = "all";
     c.zoneFingerMm = std::max(0.0, std::min(30.0, ini.GetDouble("zones", "finger_mm", c.zoneFingerMm)));

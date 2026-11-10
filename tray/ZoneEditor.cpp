@@ -49,6 +49,9 @@ const struct {
     const char* press;
     const char* inc;
     const char* dec;
+    const char* press2;
+    const char* inc2;
+    const char* dec2;
 } kLibrary[] = {
 #include "sim/CommandLibrary.inc"
 };
@@ -315,6 +318,10 @@ void RebuildItems() {
         if (l.press[0]) it.ctl.slots["press"] = sim::ParseSeq(l.press);
         if (l.inc[0]) it.ctl.slots["inc"] = sim::ParseSeq(l.inc);
         if (l.dec[0]) it.ctl.slots["dec"] = sim::ParseSeq(l.dec);
+        if (l.press2[0]) it.ctl.slots["press2"] = sim::ParseSeq(l.press2);
+        if (l.inc2[0]) it.ctl.slots["inc2"] = sim::ParseSeq(l.inc2);
+        if (l.dec2[0]) it.ctl.slots["dec2"] = sim::ParseSeq(l.dec2);
+        it.ctl.dual = l.inc2[0] != 0;
         g_items.push_back(std::move(it));
     }
     for (const std::string& n : g_liveInputs) {

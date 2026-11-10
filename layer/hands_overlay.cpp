@@ -197,6 +197,11 @@ bool EnsureResources(XrSession session, const XrCompositionLayerProjection* game
 
 void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFrame* frame, bool* anyHand) {
     *anyHand = false;
+    {
+        XrPosef hp;
+        frame->headValid = Emu_HeadPose(game->space, time, &hp);
+        if (frame->headValid) frame->head = {{hp.orientation.x, hp.orientation.y, hp.orientation.z, hp.orientation.w}, {hp.position.x, hp.position.y, hp.position.z}};
+    }
     XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT];
     for (int h = 0; h < 2; ++h) {
         std::memset(joints, 0, sizeof(joints));

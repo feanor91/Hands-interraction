@@ -88,3 +88,32 @@ TEST(ZoneTracker_boite_declenche_apres_maintien) {
     CHECK(!t.UpdateInside(true, true, true, 1300, 250, 400));       // rearme : maintien a recommencer
     CHECK(t.UpdateInside(true, true, true, 1600, 250, 400));
 }
+
+#include "emulation/CockpitAnchor.h"
+#include "util/KeyNames.h"
+
+TEST(CockpitAnchor_les_zones_suivent_le_recentrage) {
+    using namespace hands::emulation;
+    const Pose head0{QuatFromEulerDeg(0, 0, 0), {0.1f, 1.2f, 0.3f}};
+    const CockpitAnchor a0 = CockpitAnchor::FromHead(head0);
+    const Vec3 world = {0.1f, 1.1f, -0.2f};
+    const Vec3 rel = a0.ToRel(world);
+    CHECK(Length(a0.ToWorld(rel) - world) < 1e-5f);
+    // Nouveau recentrage : tete deplacee de 40 cm et tournee de 90 degres -> le bouton suit.
+    const Pose head1{QuatFromEulerDeg(90, 10, 5), {0.5f, 1.25f, -0.4f}};
+    const CockpitAnchor a1 = CockpitAnchor::FromHead(head1);
+    const Vec3 w1 = a1.ToWorld(rel);
+    const Vec3 d0 = world - head0.p, d1 = w1 - head1.p;
+    CHECK(std::fabs(std::sqrt(d0.x * d0.x + d0.z * d0.z) - std::sqrt(d1.x * d1.x + d1.z * d1.z)) < 1e-4f);
+    CHECK(std::fabs(d0.y - d1.y) < 1e-5f);
+    CHECK(Length(a1.ToRel(w1) - rel) < 1e-5f);
+}
+
+TEST(KeyNames_touches) {
+    using hands::util::ParseVirtualKey;
+    CHECK(ParseVirtualKey("LSHIFT") == 0xA0 && ParseVirtualKey(" lshift ") == 0xA0 && ParseVirtualKey("RCTRL") == 0xA3);
+    CHECK(ParseVirtualKey("F9") == 0x78 && ParseVirtualKey("F24") == 0x87 && ParseVirtualKey("F25") == 0);
+    CHECK(ParseVirtualKey("a") == 'A' && ParseVirtualKey("7") == '7');
+    CHECK(ParseVirtualKey("0xA0") == 0xA0 && ParseVirtualKey("160") == 160);
+    CHECK(ParseVirtualKey("") == 0 && ParseVirtualKey("none") == 0 && ParseVirtualKey("n importe quoi") == 0);
+}

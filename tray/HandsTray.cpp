@@ -46,7 +46,7 @@ enum Cmd : UINT {
     ID_SENS_FAST, ID_SENS_NORMAL, ID_SENS_TOLERANT,
     ID_FINGER_INDEX, ID_FINGER_MIDDLE,
     ID_SHARED,
-    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF, ID_ZONES_EDIT
+    ID_ZONES_ENABLE, ID_ZONES_TEACH_BTN, ID_ZONES_CLEAR_BTN, ID_ZONES_TEACH_OFF, ID_ZONES_CLEAR_OFF, ID_ZONES_EDIT, ID_ZONES_RECENTER_KEY
 };
 
 HWND g_hwnd = nullptr;
@@ -83,6 +83,7 @@ struct State {
     bool hideHandCtrl = true;                     // mains seules : manettes virtuelles issues des mains masquees
     bool zonesOn = false;                         // pochoir : zones apprises, contact -> touche StreamSim
     std::string zoneJoystick;                     // nom (ou morceau de nom) du joystick / HOTAS des boutons de zones
+    std::string zoneRecenterKey = "LSHIFT";        // touche de recentrage de MSFS
     int zoneTeachButton = 0, zoneClearButton = 0;  // boutons de memorisation / d'effacement (0 = aucun)
 };
 
@@ -153,6 +154,7 @@ State ReadState() {
         s.zoneJoystick = ini.GetString("zones", "joystick", "");
         s.zoneTeachButton = ini.GetInt("zones", "teach_button", 0);
         s.zoneClearButton = ini.GetInt("zones", "clear_button", 0);
+        s.zoneRecenterKey = ini.GetString("zones", "recenter_key", "LSHIFT");
     }
     return s;
 }
@@ -450,6 +452,10 @@ void StartDetect(int what) {
     g_detectUntil = GetTickCount64() + 30000;
     g_joyPoll.PollAllPressed("");  // memorise l'etat actuel : seul un NOUVEL appui compte
     SetTimer(g_hwnd, kDetectTimerId, 50, nullptr);
+    if (what == 3) {
+        Balloon(L"Appuyez maintenant sur la touche de RECENTRAGE de MSFS (la meme : 30 s).");
+        return;
+    }
     Balloon(what == 1 ? L"Appuyez maintenant sur le bouton de la manette / HOTAS qui MÉMORISERA la zone (30 s)."
                       : L"Appuyez maintenant sur le bouton de la manette / HOTAS qui EFFACERA les zones (30 s).");
 }
@@ -460,6 +466,35 @@ void PollDetect() {
         g_detectWhat = 0;
         KillTimer(g_hwnd, kDetectTimerId);
         Balloon(L"Aucun bouton détecté : choix annulé (le joystick est-il branché ?).");
+        return;
+    }
+    if (g_detectWhat == 3) {  // touche du clavier : on cherche la premiere touche enfoncee (hors souris), les touches precises avant les generiques
+        int found = 0;
+        static const int order[] = {0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5};
+        for (int vk : order)
+            if (GetAsyncKeyState(vk) & 0x8000) { found = vk; break; }
+        for (int vk = 8; vk < 255 && !found; ++vk)
+            if (vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU && (GetAsyncKeyState(vk) & 0x8000)) found = vk;
+        if (!found) return;
+        g_detectWhat = 0;
+        KillTimer(g_hwnd, kDetectTimerId);
+        static const struct { int vk; const char* name; } names[] = {{0xA0, "LSHIFT"}, {0xA1, "RSHIFT"}, {0xA2, "LCTRL"}, {0xA3, "RCTRL"}, {0xA4, "LALT"},
+                                                                    {0xA5, "RALT"}, {0x20, "SPACE"}, {0x0D, "ENTER"}, {0x09, "TAB"}, {0x1B, "ESC"}};
+        std::string name;
+        for (const auto& n : names)
+            if (n.vk == found) name = n.name;
+        char b[16];
+        if (name.empty()) {
+            if (found >= 0x70 && found <= 0x87) { std::snprintf(b, sizeof(b), "F%d", found - 0x6F); name = b; }
+            else if ((found >= 'A' && found <= 'Z') || (found >= '0' && found <= '9')) name = std::string(1, static_cast<char>(found));
+            else { std::snprintf(b, sizeof(b), "0x%02X", found); name = b; }
+        }
+        std::wstring err;
+        if (!WriteIniValue("zones", "recenter_key", name, &err)) {
+            MessageBoxW(g_hwnd, err.c_str(), kTitle, MB_ICONERROR);
+            return;
+        }
+        Balloon(L"Touche de recentrage : " + std::wstring(name.begin(), name.end()) + L". Elle doit etre la meme que celle de MSFS.");
         return;
     }
     hands::win::JoyEvent ev;
@@ -604,6 +639,11 @@ void ShowMenu() {
         AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_CLEAR_BTN, (label(L"Choisir le bouton qui efface les zones", s.zoneClearButton) + L"…").c_str());
         if (s.zoneClearButton > 0) AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_CLEAR_OFF, L"   Ne plus utiliser ce bouton");
     }
+    {
+        std::wstring k(s.zoneRecenterKey.begin(), s.zoneRecenterKey.end());
+        AppendMenuW(zones, MF_STRING | cfgGray, ID_ZONES_RECENTER_KEY,
+                    (L"Touche de recentrage de MSFS (les zones suivent le cockpit) : " + (k.empty() ? std::wstring(L"(aucune)") : k) + L"…").c_str());
+    }
     AppendMenuW(zones, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(zones, MF_STRING | MF_DISABLED, 0, L"En vol : pointez la commande du bout de l'index, puis appuyez sur le bouton.");
     AppendMenuW(m, MF_POPUP | cfgGray, reinterpret_cast<UINT_PTR>(zones), L"Zones (pochoir)");
@@ -663,6 +703,7 @@ void ShowMenu() {
         case ID_ZONES_TEACH_BTN: StartDetect(1); break;
         case ID_ZONES_CLEAR_BTN: StartDetect(2); break;
         case ID_ZONES_TEACH_OFF: ApplySetting("zones", "teach_button", "0", L"Plus de bouton de mémorisation (touche Ctrl+Alt+F9 seulement)."); break;
+        case ID_ZONES_RECENTER_KEY: StartDetect(3); break;
         case ID_ZONES_EDIT: ZoneEditor_Show(g_hwnd, GetModuleHandleW(nullptr)); break;
         case ID_ZONES_CLEAR_OFF: ApplySetting("zones", "clear_button", "0", L"Plus de bouton d'effacement (touche Ctrl+Alt+F10 seulement)."); break;
         case ID_HANDS_DRAW:
