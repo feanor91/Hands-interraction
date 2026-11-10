@@ -276,6 +276,12 @@ std::vector<Row> BuildRows() {
                                 Set("zones", "show_boxes", n, L"Boîtes des zones modifiées");
                             }});
         }
+        {
+            const bool face = cfg->zoneBoxFaces == "face";
+            rows.push_back({std::wstring(L"Forme des boîtes : ") + (face ? L"face avant seule (carré)" : L"boîte complète"), true, [face] {
+                                Set("zones", "box_faces", face ? "full" : "face", face ? L"Boîtes complètes" : L"Faces avant seules");
+                            }});
+        }
         rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
         rows.push_back({L"Réglages fins du rayon  ▸", true, [] { g_fine = true; }});
     } else {

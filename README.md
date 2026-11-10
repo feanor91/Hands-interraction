@@ -48,7 +48,7 @@ Chaque zone est une **boîte orientée en fil de fer** (comme dans Archan XR) : 
 dessinées, pour ne pas cacher la commande. Couleurs : bleu = poussoir / bascule, jaune = interrupteur, orange = rotatif, vert = curseur ; arête épaissie et claire = doigt dedans, cyan = saisie en cours,
 vert vif = déclenchée, blanc = mémorisée. Le contact se teste dans la boîte, agrandie de la taille du bout du doigt (`[zones] finger_mm`).
 Dimensions et rotation se règlent dans la fenêtre de configuration (L/H/P en mm, lacet / tangage / roulis) ou dans le menu VR (*zone › boîte plus grande / plus petite / forme suivante*) ;
-l'affichage (`[zones] show_boxes` : toutes, près des doigts, cachées) se change dans le menu VR.
+l'affichage se change dans le menu VR : `[zones] show_boxes` (toutes, près des doigts, cachées) et `box_faces` (boîte complète ou face avant seule, un carré).
 Les positions sont dans l'espace du jeu : **si le cockpit est recalé, réapprendre les zones.**
 
 ### Types de commande
@@ -59,7 +59,7 @@ Repris de StreamSim (voir [core/sim/ZoneControl.h](core/sim/ZoneControl.h)) :
 | Poussoir | toucher la zone (index maintenu `dwell_ms`) | la séquence « appui » |
 | Bascule | idem | l'action en mode *toggle* : l'état réel est lu dans le simulateur |
 | Interrupteur à N positions | chaque contact passe à la position suivante (en boucle ou aller-retour) | la séquence de la position ; la position réelle peut être lue (`read`) |
-| Rotatif | **pincer** dans la zone puis **tourner le poignet** : un cran tous les `step_deg` ° ; pincer-relâcher sans tourner = appui | cran + / cran − / appui |
+| Rotatif | **pincer** dans la zone puis **tourner le poignet** (`gesture = twist`, un cran tous les `step_deg` °) ou **glisser** le long de la boîte (`slide`, un cran tous les `step_deg` mm) ; pincer-relâcher sans bouger = appui. Option **deux niveaux** (`levels = 2`) pour les molettes concentriques : bague extérieure + bouton central (boîtes imbriquées, le centre est prioritaire) | cran + / cran − / appui, et `inc2` / `dec2` / `press2` pour le centre |
 | Curseur | deux points appris (début et fin de course) ; **pincer et glisser** | une valeur min..max, ou des crans + / − |
 
 Chaque emplacement est une **séquence d'actions** : événement SimConnect (`PARKING_BRAKES`), variable (`L:...` ou SimVar), Input Event de MSFS 2024, code avionique

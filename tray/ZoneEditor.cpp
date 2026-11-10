@@ -56,12 +56,13 @@ const struct {
 enum Ctl {
     IDC_LIST = 100, IDC_NEW, IDC_DELETE, IDC_CLEARPOS, IDC_NAME, IDC_FILTER, IDC_CMD, IDC_KIND, IDC_COUNT, IDC_SWMODE, IDC_STEPDEG, IDC_INVERT,
     IDC_SLMODE, IDC_NOTCHES, IDC_MIN, IDC_MAX, IDC_SLOT, IDC_STEPS, IDC_TYPE, IDC_MODE, IDC_VALUE, IDC_UNIT, IDC_TARGET, IDC_AMIN, IDC_AMAX, IDC_WRAP,
-    IDC_SX, IDC_SY, IDC_SZ, IDC_YAW, IDC_PITCH, IDC_ROLL, IDC_ADDSTEP, IDC_SETSTEP, IDC_DELSTEP, IDC_ADDPAUSE, IDC_APPLY, IDC_TEST, IDC_REFRESH, IDC_CLOSE, IDC_STATUS
+    IDC_GESTURE, IDC_DUAL, IDC_RATIO, IDC_SX, IDC_SY, IDC_SZ, IDC_YAW, IDC_PITCH, IDC_ROLL, IDC_ADDSTEP, IDC_SETSTEP, IDC_DELSTEP, IDC_ADDPAUSE, IDC_APPLY, IDC_TEST, IDC_REFRESH, IDC_CLOSE, IDC_STATUS
 };
 
 HWND g_wnd = nullptr;
 HWND g_list, g_name, g_filter, g_cmd, g_kind, g_count, g_swmode, g_stepdeg, g_invert, g_slmode, g_notches, g_min, g_max, g_slot, g_steps;
 HWND g_sx, g_sy, g_sz, g_yaw, g_pitch, g_roll;
+HWND g_gesture, g_dual, g_ratio;
 HWND g_type, g_mode, g_value, g_unit, g_target, g_amin, g_amax, g_wrap, g_status;
 std::vector<ZoneRecord> g_view;  // zones affichees (derniere lecture du fichier)
 ZoneControl g_ctl;               // commande en cours d'edition
@@ -144,6 +145,9 @@ int KindIndex(const std::string& k) {
 }
 
 std::wstring SlotLabel(const std::string& s) {
+    if (s == "inc2") return L"Centre : cran +";
+    if (s == "dec2") return L"Centre : cran -";
+    if (s == "press2") return L"Centre : appui";
     if (s == "press") return L"Contact / appui";
     if (s == "inc") return L"Cran + (vers la droite)";
     if (s == "dec") return L"Cran - (vers la gauche)";
@@ -189,6 +193,9 @@ void EnableParams() {
     EnableWindow(g_swmode, k == "switch");
     EnableWindow(g_stepdeg, k == "dial");
     EnableWindow(g_invert, k == "dial");
+    EnableWindow(g_gesture, k == "dial");
+    EnableWindow(g_dual, k == "dial");
+    EnableWindow(g_ratio, k == "dial");
     EnableWindow(g_slmode, k == "slider");
     EnableWindow(g_notches, k == "slider");
     EnableWindow(g_min, k == "slider");
@@ -198,8 +205,11 @@ void EnableParams() {
 void ReadParams() {
     g_ctl.count = std::max(2, std::min(12, static_cast<int>(Number(g_count, 3))));
     g_ctl.switchMode = Text(g_swmode) == "cycle" ? "cycle" : "bounce";
-    g_ctl.stepDeg = std::max(5.0, std::min(90.0, Number(g_stepdeg, 25)));
+    g_ctl.stepDeg = std::max(2.0, std::min(90.0, Number(g_stepdeg, 25)));
     g_ctl.invert = SendMessageW(g_invert, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_ctl.gesture = Text(g_gesture) == "slide" ? "slide" : "twist";
+    g_ctl.dual = SendMessageW(g_dual, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_ctl.innerRatio = std::max(20.0, std::min(90.0, Number(g_ratio, 50))) / 100.0;
     g_ctl.sliderMode = Text(g_slmode) == "value" ? "value" : "steps";
     g_ctl.notches = std::max(1, std::min(100, static_cast<int>(Number(g_notches, 10))));
     g_ctl.min = Number(g_min, 0);
@@ -229,6 +239,9 @@ void ShowControl(const ZoneControl& c) {
     SetText(g_count, std::to_string(g_ctl.count));
     SelectCombo(g_swmode, g_ctl.switchMode.c_str());
     SetText(g_stepdeg, sim::Num(g_ctl.stepDeg));
+    SelectCombo(g_gesture, g_ctl.gesture.c_str());
+    SendMessageW(g_dual, BM_SETCHECK, g_ctl.dual ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetText(g_ratio, sim::Num(g_ctl.innerRatio * 100.0));
     SendMessageW(g_invert, BM_SETCHECK, g_ctl.invert ? BST_CHECKED : BST_UNCHECKED, 0);
     SelectCombo(g_slmode, g_ctl.sliderMode.c_str());
     SetText(g_notches, std::to_string(g_ctl.notches));
@@ -484,9 +497,13 @@ void Build() {
     g_count = Edit(rx + 85, 178, 40, IDC_COUNT);
     Label(L"Parcours", rx + 140, 178, 60);
     g_swmode = Combo(rx + 205, 178, 100, IDC_SWMODE);
-    Label(L"Degres/cran", rx + 10, 206, 75);
+    Label(L"Pas (deg ou mm)", rx + 10, 206, 75);
     g_stepdeg = Edit(rx + 85, 206, 40, IDC_STEPDEG);
-    g_invert = Make(L"BUTTON", L"Inverser le sens", BS_AUTOCHECKBOX, rx + 140, 206, 130, 22, IDC_INVERT);
+    Label(L"Geste", rx + 228, 206, 40);
+    g_gesture = Combo(rx + 268, 206, 78, IDC_GESTURE);
+    g_dual = Make(L"BUTTON", L"2 niveaux, centre %", BS_AUTOCHECKBOX, rx + 352, 206, 125, 22, IDC_DUAL);
+    g_ratio = Edit(rx + 478, 206, 28, IDC_RATIO);
+    g_invert = Make(L"BUTTON", L"Inverser", BS_AUTOCHECKBOX, rx + 140, 206, 80, 22, IDC_INVERT);
     Label(L"Curseur", rx + 10, 232, 70);
     g_slmode = Combo(rx + 85, 232, 80, IDC_SLMODE);
     Label(L"Crans", rx + 175, 232, 40);
@@ -528,6 +545,7 @@ void Build() {
 
     for (int i = 0; i < 5; ++i) SendMessageW(g_kind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kKindNames[i]));
     for (const wchar_t* t : {L"bounce", L"cycle"}) SendMessageW(g_swmode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
+    for (const wchar_t* t : {L"twist", L"slide"}) SendMessageW(g_gesture, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     for (const wchar_t* t : {L"steps", L"value"}) SendMessageW(g_slmode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     for (const wchar_t* t : {L"event", L"var", L"input", L"code", L"delay"}) SendMessageW(g_type, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     for (const wchar_t* t : {L"press", L"set", L"toggle", L"add"}) SendMessageW(g_mode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
@@ -632,6 +650,12 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         EnableParams();
                         FillSlots("");
+                    }
+                    break;
+                case IDC_DUAL:
+                    if (code == BN_CLICKED) {
+                        ReadParams();
+                        FillSlots(CurSlot());
                     }
                     break;
                 case IDC_COUNT:

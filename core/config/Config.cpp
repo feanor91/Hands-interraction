@@ -102,6 +102,7 @@ Config Config::FromIni(const IniFile& ini) {
     c.zonesEnabled = ini.GetBool("zones", "enabled", c.zonesEnabled);
     c.zoneRadiusMm = ini.GetDouble("zones", "radius_mm", c.zoneRadiusMm);
     c.zoneDwellMs = ini.GetDouble("zones", "dwell_ms", c.zoneDwellMs);
+    c.zoneBoxFaces = ini.GetString("zones", "box_faces", c.zoneBoxFaces) == "face" ? "face" : "full";
     c.zoneShowBoxes = ini.GetString("zones", "show_boxes", c.zoneShowBoxes);
     if (c.zoneShowBoxes != "near" && c.zoneShowBoxes != "hidden") c.zoneShowBoxes = "all";
     c.zoneFingerMm = std::max(0.0, std::min(30.0, ini.GetDouble("zones", "finger_mm", c.zoneFingerMm)));

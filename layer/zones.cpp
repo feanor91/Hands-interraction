@@ -62,6 +62,8 @@ struct ZoneState {
     // Gestes (rotatif, curseur) : une main saisit la commande en pincant dedans.
     bool prevPinch[2] = {false, false};
     int grabHand = -1;
+    int grabLevel = 1;      // molette a deux niveaux : 1 = bague exterieure, 2 = bouton central
+    bool insideInner = false;
     ULONGLONG grabAt = 0;
     bool rotated = false;
     em::Vec3 axis0, n0;
@@ -282,38 +284,68 @@ double DistToSegment(em::Vec3 p, em::Vec3 a, em::Vec3 b, double* level) {
     return em::Length(p - (a + ab * static_cast<float>(t)));
 }
 
+std::string LevelSlot(const ZoneState& z, const char* base) { return z.grabLevel == 2 ? std::string(base) + "2" : std::string(base); }
+
 void EndGrab(ZoneState& z, ULONGLONG now) {
     if (z.grabHand < 0) return;
-    // Rotatif : pincer et relacher sans tourner = appui sur le bouton.
-    if (z.ctrl.kind == "dial" && !z.rotated && now - z.grabAt < 800 && !sim::Slot(z.ctrl, "press").empty()) {
-        Bridge_RunSeq(sim::Slot(z.ctrl, "press"), z.id + " appui");
+    // Rotatif : pincer et relacher sans bouger = appui sur le bouton (de la bague ou du centre, selon le niveau saisi).
+    const sim::ActionSeq& press = sim::Slot(z.ctrl, LevelSlot(z, "press"));
+    if (z.ctrl.kind == "dial" && !z.rotated && now - z.grabAt < 800 && !press.empty()) {
+        Bridge_RunSeq(press, z.id + " appui");
         z.lastFire = now;
         Play(Snd::Trigger);
     }
     z.grabHand = -1;
 }
 
+// Bouton central d'une molette a deux niveaux : meme centre et meme orientation, section reduite.
+em::ZoneBox InnerBoxOf(const ZoneState& z) {
+    em::ZoneBox b = BoxOf(z);
+    b.size.x *= static_cast<float>(z.ctrl.innerRatio);
+    b.size.y *= static_cast<float>(z.ctrl.innerRatio);
+    return b;
+}
+
+void SendSteps(ZoneState& z, int steps, ULONGLONG now) {
+    z.rotated = true;
+    const std::string slot = LevelSlot(z, steps > 0 ? "inc" : "dec");
+    for (int i = 0; i < std::min(6, std::abs(steps)); ++i) Bridge_RunSeq(sim::Slot(z.ctrl, slot), z.id + (z.grabLevel == 2 ? " centre" : "") + (steps > 0 ? " +" : " -"));
+    z.lastFire = now;
+    Play(Snd::Tick);
+}
+
 void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
     z.inside = false;
+    z.insideInner = false;
     for (int h = 0; h < 2; ++h) {
         const HandPoseData& hd = frame.hand[h];
         const bool ok = hd.valid && hd.jointValid[kIndexTip] && hd.jointValid[kPalm] && hd.jointValid[kWrist] && hd.jointValid[kMiddleProximal];
         const em::ZoneBox box = BoxOf(z);
         const float margin = static_cast<float>(CurrentConfig()->zoneFingerMm / 2000.0);
         const bool isNear = ok && em::BoxContains(box, hd.joint[kIndexTip].p, margin, 1.2f);
+        const bool inInner = isNear && z.ctrl.dual && em::BoxContains(InnerBoxOf(z), hd.joint[kIndexTip].p, margin);
         if (isNear) z.inside = true;
+        if (inInner) z.insideInner = true;
         const bool pinch = ok && hd.pressed;
-        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {  // saisie : pincement qui commence dans la zone
+        if (z.grabHand < 0 && isNear && pinch && !z.prevPinch[h]) {  // saisie : pincement qui commence dans la zone ; le centre a la priorite
             z.grabHand = h;
+            z.grabLevel = inInner ? 2 : 1;
             z.grabAt = now;
             z.rotated = false;
             z.dial = sim::DialAccumulator{};
             z.axis0 = em::Normalized(hd.joint[kMiddleProximal].p - hd.joint[kWrist].p);
             z.n0 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
             z.lastAngle = 0.0;
+            if (z.ctrl.gesture == "slide") z.lastAngle = em::ToLocal(box, hd.joint[kIndexTip].p).x * 1000.0;  // glisse : position (mm) le long de la boite
         } else if (z.grabHand == h) {
             if (!pinch || !em::BoxContains(box, hd.joint[kIndexTip].p, margin, 2.0f)) {
                 EndGrab(z, now);
+            } else if (z.ctrl.gesture == "slide") {
+                const double x = em::ToLocal(box, hd.joint[kIndexTip].p).x * 1000.0;
+                const double d = x - z.lastAngle;
+                z.lastAngle = x;
+                const int steps = z.dial.Feed(z.ctrl.invert ? -d : d, z.ctrl.stepDeg);
+                if (steps != 0) SendSteps(z, steps, now);
             } else {
                 const em::Vec3 n1 = PerpTo(em::Rotate(hd.joint[kPalm].q, em::Vec3{0, 1, 0}), z.axis0);
                 const double ang = std::atan2(static_cast<double>(em::Dot(z.axis0, em::Cross(z.n0, n1))), static_cast<double>(em::Dot(z.n0, n1))) * 57.29577951;
@@ -322,13 +354,7 @@ void UpdateDial(ZoneState& z, const HandsFrame& frame, ULONGLONG now) {
                 while (d < -180.0) d += 360.0;
                 z.lastAngle = ang;
                 const int steps = z.dial.Feed(z.ctrl.invert ? -d : d, z.ctrl.stepDeg);
-                if (steps != 0) {
-                    z.rotated = true;
-                    const char* slot = steps > 0 ? "inc" : "dec";
-                    for (int i = 0; i < std::min(6, std::abs(steps)); ++i) Bridge_RunSeq(sim::Slot(z.ctrl, slot), z.id + (steps > 0 ? " +" : " -"));
-                    z.lastFire = now;
-                    Play(Snd::Tick);
-                }
+                if (steps != 0) SendSteps(z, steps, now);
             }
         }
         z.prevPinch[h] = pinch;
@@ -580,10 +606,22 @@ void Zones_FillMarkers(HandsFrame* frame) {
         else if (k == "slider") { bx.r = 0.30f; bx.g = 0.95f; bx.b = 0.35f; }   // vert : curseur
         else { bx.r = 0.30f; bx.g = 0.60f; bx.b = 1.0f; }                        // bleu : poussoir, bascule
         bx.edge = 0.0016f;
+        bx.faceOnly = cfg->zoneBoxFaces == "face";
         if (z.lastCapture != 0 && now - z.lastCapture < 800) { bx.r = bx.g = bx.b = 1.0f; bx.edge = 0.004f; }              // memorisee : blanc
         else if (z.grabHand >= 0) { bx.r = 0.10f; bx.g = 0.95f; bx.b = 1.0f; bx.edge = 0.0035f; }                           // saisie : cyan
         else if (z.lastFire != 0 && now - z.lastFire < 800) { bx.r = 0.15f; bx.g = 1.0f; bx.b = 0.25f; bx.edge = 0.0045f; } // declenchee : vert vif
-        else if (z.inside) { bx.r = 1.0f; bx.g = 1.0f; bx.b = 0.35f; bx.edge = 0.0035f; }                                    // doigt dedans : jaune clair
+        else if (z.inside && !z.insideInner) { bx.r = 1.0f; bx.g = 1.0f; bx.b = 0.35f; bx.edge = 0.0035f; }                // doigt dedans : jaune clair
+        if (k == "dial" && z.ctrl.dual && frame->boxCount < kMaxBoxes) {  // molette a deux niveaux : boite du bouton central, imbriquee
+            const em::ZoneBox in = InnerBoxOf(z);
+            BoxData& ib = frame->box[frame->boxCount++];
+            ib = bx;
+            ib.pose = {in.q, in.center};
+            ib.size = in.size;
+            if (z.grabHand >= 0 && z.grabLevel == 2) { ib.r = 0.10f; ib.g = 0.95f; ib.b = 1.0f; ib.edge = 0.0035f; }
+            else if (z.insideInner) { ib.r = 1.0f; ib.g = 1.0f; ib.b = 0.35f; ib.edge = 0.0035f; }
+            else if (!(z.lastFire != 0 && now - z.lastFire < 800) && !(z.lastCapture != 0 && now - z.lastCapture < 800)) { ib.r = 1.0f; ib.g = 0.85f; ib.b = 0.2f; ib.edge = 0.0016f; }
+            if (z.grabHand >= 0 && z.grabLevel == 1) { bx.r = 0.10f; bx.g = 0.95f; bx.b = 1.0f; }
+        }
     }
 }
 

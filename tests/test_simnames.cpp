@@ -148,3 +148,22 @@ TEST(ZoneFile_ancien_rayon_devient_cube) {
     DefaultSizeMm("dial", &sx, &sy, &sz);
     CHECK(sx == 50);
 }
+
+TEST(ZoneControl_molette_deux_niveaux) {
+    ZoneControl c;
+    c.kind = "dial";
+    c.dual = true;
+    c.gesture = "slide";
+    c.stepDeg = 8;
+    for (const char* k : {"inc", "dec", "inc2", "dec2", "press2"}) c.slots[k] = ParseSeq("code|press|1|number|||0|(>H:X)");
+    CHECK(SlotNames(c).size() == 6 && Validate(c).empty());
+    c.slots.erase("dec2");
+    CHECK(!Validate(c).empty());
+    c.slots["dec2"] = ParseSeq("code|press|1|number|||0|(>H:Y)");
+    ZoneRecord r;
+    r.id = "com";
+    r.control = c;
+    const auto back = ParseZones(SerializeZones({r}));
+    CHECK(back.size() == 1 && back[0].control.dual && back[0].control.gesture == "slide" && back[0].control.stepDeg == 8);
+    CHECK(Slot(back[0].control, "dec2")[0].target == "(>H:Y)");
+}

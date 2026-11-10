@@ -42,6 +42,7 @@ struct BoxData {
     hands::emulation::Vec3 size;      // dimensions totales selon les axes locaux (metres)
     float r = 1.0f, g = 1.0f, b = 1.0f;
     float edge = 0.0016f;             // epaisseur des aretes (metres)
+    bool faceOnly = false;            // seulement la face avant (+Z local, tournee vers le pilote) : un carre ou un rectangle
 };
 constexpr int kMaxBoxes = 96;
 

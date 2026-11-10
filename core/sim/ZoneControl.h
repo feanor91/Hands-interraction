@@ -3,8 +3,8 @@
 //   push    poussoir : un contact du doigt envoie la sequence `press`.
 //   toggle  bascule  : idem, mais l'action est en mode « toggle » (etat reel lu dans le simulateur) ; presentation distincte dans l'editeur.
 //   switch  interrupteur a N positions : chaque contact passe a la position suivante (en boucle ou aller-retour) et envoie `pos1`..`posN`.
-//   dial    rotatif  : pincer la commande puis tourner le poignet envoie `inc` / `dec` tous les `step_deg` degres ; pincer-relacher sans
-//                      tourner envoie `press`.
+//   dial    rotatif  : pincer la commande puis, selon `gesture`, tourner le poignet (twist : un cran tous les `step_deg` degres) ou glisser le long
+//                      de la boite (slide : un cran tous les `step_deg` millimetres) envoie `inc` / `dec` ; pincer-relacher sans bouger envoie `press`.
 //   slider  curseur  : deux points appris (debut et fin de course) ; pincer et glisser. Mode `value` : envoie `set` avec la valeur
 //                      min..max correspondant a la position ; mode `steps` : envoie `inc` / `dec` par cran (`notches` crans sur la course).
 //
@@ -87,8 +87,11 @@ struct ZoneControl {
     std::string read;                   // « var|NOM|unite » ou « input|NOM » : variable qui donne la position reelle (facultatif)
     std::string readValues;             // valeurs de la variable pour chaque position, separees par des virgules (facultatif)
     // rotatif
-    double stepDeg = 25.0;
+    double stepDeg = 25.0;                // pas : degres (geste twist) ou millimetres (geste slide)
     bool invert = false;
+    bool dual = false;                    // deux niveaux (molette concentrique : bague exterieure + bouton central) : emplacements inc2 / dec2 / press2
+    double innerRatio = 0.5;              // taille de la boite du bouton central par rapport a la boite exterieure (X et Y)
+    std::string gesture = "twist";        // twist : pincer et tourner le poignet ; slide : pincer et glisser le long de la boite (axe X local)
     // curseur
     std::string sliderMode = "steps";  // value | steps
     int notches = 10;
@@ -104,7 +107,7 @@ inline std::vector<std::string> SlotNames(const ZoneControl& c) {
         for (int i = 1; i <= std::max(2, std::min(12, c.count)); ++i) v.push_back("pos" + std::to_string(i));
         return v;
     }
-    if (c.kind == "dial") return {"inc", "dec", "press"};
+    if (c.kind == "dial") return c.dual ? std::vector<std::string>{"inc", "dec", "press", "inc2", "dec2", "press2"} : std::vector<std::string>{"inc", "dec", "press"};
     if (c.kind == "slider") return c.sliderMode == "value" ? std::vector<std::string>{"set"} : std::vector<std::string>{"inc", "dec"};
     return {"press"};
 }
@@ -141,13 +144,16 @@ inline ZoneControl ParseControl(const hands::config::IniFile& ini, const std::st
     c.switchMode = ini.GetString(sec, "switch_mode", "bounce") == "cycle" ? "cycle" : "bounce";
     c.read = ini.GetString(sec, "read", "");
     c.readValues = ini.GetString(sec, "read_values", "");
-    c.stepDeg = std::max(5.0, std::min(90.0, ini.GetDouble(sec, "step_deg", 25.0)));
+    c.stepDeg = std::max(2.0, std::min(90.0, ini.GetDouble(sec, "step_deg", 25.0)));
     c.invert = ini.GetBool(sec, "invert", false);
+    c.gesture = ini.GetString(sec, "gesture", "twist") == "slide" ? "slide" : "twist";
+    c.dual = ini.GetInt(sec, "levels", 1) >= 2;
+    c.innerRatio = std::max(0.2, std::min(0.9, ini.GetDouble(sec, "inner_ratio", 0.5)));
     c.sliderMode = ini.GetString(sec, "slider_mode", "steps") == "value" ? "value" : "steps";
     c.notches = std::max(1, std::min(100, ini.GetInt(sec, "notches", 10)));
     c.min = ini.GetDouble(sec, "min", 0.0);
     c.max = ini.GetDouble(sec, "max", 16383.0);
-    for (const char* base : {"press", "inc", "dec", "set"}) {
+    for (const char* base : {"press", "inc", "dec", "set", "press2", "inc2", "dec2"}) {
         const ActionSeq q = ParseSeq(ini.GetString(sec, base, ""));
         if (!q.empty()) c.slots[base] = q;
     }
@@ -175,7 +181,8 @@ inline std::string SerializeControl(const ZoneControl& c) {
         if (!c.read.empty()) s += "read = " + c.read + "\n";
         if (!c.readValues.empty()) s += "read_values = " + c.readValues + "\n";
     } else if (c.kind == "dial") {
-        s += "step_deg = " + Num(c.stepDeg) + "\ninvert = " + (c.invert ? "true" : "false") + "\n";
+        if (c.dual) s += "levels = 2\ninner_ratio = " + Num(c.innerRatio) + "\n";
+        s += "gesture = " + c.gesture + "\nstep_deg = " + Num(c.stepDeg) + "\ninvert = " + (c.invert ? "true" : "false") + "\n";
     } else if (c.kind == "slider") {
         s += "slider_mode = " + c.sliderMode + "\nnotches = " + std::to_string(c.notches) + "\nmin = " + Num(c.min) + "\nmax = " + Num(c.max) + "\n";
     }
@@ -198,6 +205,7 @@ inline std::string Validate(const ZoneControl& c) {
         }
     }
     if (c.kind == "dial" && (Slot(c, "inc").empty() || Slot(c, "dec").empty())) return "un rotatif a besoin des actions inc et dec";
+    if (c.kind == "dial" && c.dual && (Slot(c, "inc2").empty() || Slot(c, "dec2").empty())) return "le bouton central a besoin des actions inc2 et dec2";
     if (c.kind == "slider" && c.sliderMode == "value" && Slot(c, "set").empty()) return "un curseur en mode valeur a besoin de l'action set";
     if (c.kind == "slider" && c.sliderMode == "steps" && (Slot(c, "inc").empty() || Slot(c, "dec").empty())) return "un curseur par crans a besoin de inc et dec";
     if (c.kind == "switch")

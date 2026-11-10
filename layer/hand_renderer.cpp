@@ -123,6 +123,13 @@ void AddWireBox(std::vector<Prim>& out, const BoxData& bx) {
         const em::Pose p{bx.pose.q, bx.pose.p + em::Rotate(bx.pose.q, em::Vec3{ox, oy, oz})};
         AddCube(out, p, sx, sy, sz, bx.r, bx.g, bx.b);
     };
+    if (bx.faceOnly) {  // face avant : 4 aretes a z = +hz
+        edge(0, hy, hz, bx.size.x + t, t, t);
+        edge(0, -hy, hz, bx.size.x + t, t, t);
+        edge(hx, 0, hz, t, bx.size.y + t, t);
+        edge(-hx, 0, hz, t, bx.size.y + t, t);
+        return;
+    }
     for (float a : {-1.0f, 1.0f})
         for (float b : {-1.0f, 1.0f}) {
             edge(0, a * hy, b * hz, bx.size.x + t, t, t);  // aretes le long de X
