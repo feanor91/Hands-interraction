@@ -41,6 +41,8 @@ em::Vec3 g_markerWorld;      // repere de l'etalonnage en cours : FIXE dans le m
 bool g_markerPending = true;  // a placer des que la tete est connue
 constexpr float kMarkerDist = 0.6f;  // distance du repere : celle d'un tableau de bord, pour que le pointeur de MSFS et le repere soient en contact
 bool g_mode = false;
+bool g_tune = false, g_tuneKeyWas = false;  // reglage a vue : un cube vert montre ou le calcul place le pointeur
+ULONGLONG g_tuneStep = 0;
 
 // Reperes : (azimut, elevation) en degres, a 1 m devant la tete.
 constexpr double kPts[5][2] = {{0, 0}, {-18, 0}, {18, 0}, {0, -12}, {0, 12}};
@@ -235,6 +237,44 @@ void Mouse_Frame(const HandsFrame& frame) {
     g_modeKeyWas = modeKey;
     if (modeEdge) Mouse_ToggleMode();
 
+    // Reglage a vue (Ctrl+Alt+F12) : un cube vert est dessine la ou le calcul place le pointeur ; fleches = decaler, Page haut / bas = ecarter / resserrer,
+    // et on compare avec le vrai pointeur de MSFS. Ctrl+Alt+F12 de nouveau : enregistre.
+    const bool tuneKey = ctrlAlt && (GetAsyncKeyState(VK_F12) & 0x8000);
+    if (tuneKey && !g_tuneKeyWas) {
+        g_tune = !g_tune;
+        if (g_tune) {
+            g_mode = false;
+            if (!g_cal.ok) {  // point de depart : centre de l'ecran principal
+                g_cal.cx = GetSystemMetrics(SM_CXSCREEN) / 2.0;
+                g_cal.cy = GetSystemMetrics(SM_CYSCREEN) / 2.0;
+                g_cal.sx = 1200;
+                g_cal.sy = -1200;
+            }
+            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage a vue ; fleches, Page haut/bas, puis Ctrl+Alt+F12");
+        } else {
+            g_cal.ok = true;
+            Save();
+            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage enregistre (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+        }
+    }
+    g_tuneKeyWas = tuneKey;
+    if (g_tune && ctrlAlt && now - g_tuneStep > 60) {
+        g_tuneStep = now;
+        const auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+        if (down(VK_RIGHT)) g_cal.cx -= 6;
+        if (down(VK_LEFT)) g_cal.cx += 6;
+        if (down(VK_UP)) g_cal.cy += 6;
+        if (down(VK_DOWN)) g_cal.cy -= 6;
+        if (down(VK_PRIOR)) {
+            g_cal.sx *= 0.985;
+            g_cal.sy *= 0.985;
+        }
+        if (down(VK_NEXT)) {
+            g_cal.sx *= 1.015;
+            g_cal.sy *= 1.015;
+        }
+    }
+
     if (g_calibrating && now - g_calStart > 180000) {
         g_calibrating = false;
         hands::log::Logger::Get().Log(hands::log::LogLevel::Warn, "souris : etalonnage abandonne (3 min)");
@@ -297,6 +337,17 @@ void Mouse_Frame(const HandsFrame& frame) {
 }
 
 void Mouse_FillMarkers(HandsFrame* frame) {
+    if (frame && g_tune && frame->headValid && frame->markerCount < kMaxMarkers && g_cal.sx != 0 && g_cal.sy != 0) {
+        POINT p;
+        GetCursorPos(&p);
+        const em::Vec3 d = em::Normalized(em::Vec3{static_cast<float>((p.x - g_cal.cx) / g_cal.sx), static_cast<float>((p.y - g_cal.cy) / g_cal.sy), -1.0f});
+        MarkerData& m = frame->marker[frame->markerCount++];
+        m.pos = frame->head.p + em::Rotate(frame->head.q, d * kMarkerDist);
+        m.size = 0.012f;
+        m.r = 0.1f;
+        m.g = 1.0f;
+        m.b = 0.2f;
+    }
     if (!frame || !g_calibrating || g_markerPending || g_calStep >= 5) return;
     if (frame->markerCount >= kMaxMarkers) return;
     MarkerData& m = frame->marker[frame->markerCount++];

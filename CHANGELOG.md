@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.19] - 2026-11-11
+
+### Ajoute
+- **Reglage a vue de la souris (Ctrl+Alt+F12)** : un cube vert est dessine la ou le calcul place le pointeur de la souris. Bougez la vraie souris, comparez le cube au pointeur de MSFS, et corrigez avec Ctrl+Alt + fleches (decaler) et Ctrl+Alt + Page haut / bas (ecarter / resserrer). Ctrl+Alt+F12 de nouveau enregistre dans `mouse.ini`. Remplace la visee d'un carre avec un pointeur minuscule.
+
 ## [0.0.18] - 2026-11-11
 
 ### Modifie
