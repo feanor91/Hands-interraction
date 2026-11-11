@@ -365,8 +365,8 @@ std::vector<Row> BuildMouseRows() {
         rows.push_back({L"   Cube plus à droite  ▸", true, [] { Mouse_Nudge(8, 0, 0); }});
         rows.push_back({L"   Cube plus haut  ▴", true, [] { Mouse_Nudge(0, 8, 0); }});
         rows.push_back({L"   Cube plus bas  ▾", true, [] { Mouse_Nudge(0, -8, 0); }});
-        rows.push_back({L"   Cube plus loin du centre  (écarter)", true, [] { Mouse_Nudge(0, 0, 2.0); }});
-        rows.push_back({L"   Cube plus près du centre  (resserrer)", true, [] { Mouse_Nudge(0, 0, -2.0); }});
+        rows.push_back({L"   Cube plus près de moi (profondeur)", true, [] { Mouse_CubeDepth(0.8); }});
+        rows.push_back({L"   Cube plus loin de moi (profondeur)", true, [] { Mouse_CubeDepth(1.25); }});
     }
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});

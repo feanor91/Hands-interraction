@@ -41,6 +41,7 @@ em::Vec3 g_markerWorld;      // repere de l'etalonnage en cours : FIXE dans le m
 bool g_markerPending = true;  // a placer des que la tete est connue
 constexpr float kMarkerDist = 6.0f;  // reperes LOINTAINS : MSFS dessine le pointeur a l'identique dans chaque oeil (profondeur infinie) ; un repere proche (60 cm) est vu a ~3 degres de plus par l'oeil dominant (demi-ecart pupillaire 3 cm), soit 60 px d'erreur
 bool g_mode = false;
+float g_cubeDist = 0.6f;  // profondeur du cube vert : celle de la surface visee, pour que le pointeur de MSFS (dessine sur la surface) et le cube se superposent en relief
 bool g_tune = false, g_tuneKeyWas = false;  // reglage a vue : un cube vert montre ou le calcul place le pointeur
 ULONGLONG g_tuneStep = 0;
 
@@ -146,6 +147,8 @@ int g_hand = -1;          // main qui pilote le pointeur (verrouillee pendant l'
 bool g_down = false;      // bouton gauche enfonce par nous
 double g_sx = 0, g_sy = 0;  // position lissee
 bool g_haveSmooth = false;
+double g_lastX = 0, g_lastY = 0;  // derniere position envoyee
+bool g_sent = false;
 
 void ReleaseButton() {
     if (!g_down) return;
@@ -181,10 +184,16 @@ void UpdatePointer(const HandsFrame& frame) {
         g_sy = py;
         g_haveSmooth = true;
     } else {  // lissage leger contre le tremblement du suivi
-        g_sx += 0.6 * (px - g_sx);
-        g_sy += 0.6 * (py - g_sy);
+        g_sx += 0.35 * (px - g_sx);
+        g_sy += 0.35 * (py - g_sy);
     }
-    SendMouse(g_sx, g_sy, MOUSEEVENTF_MOVE);
+    // Zone morte de 3 px : MSFS aimante le pointeur aux elements cliquables, un envoi a chaque image le ferait sauter de l'un a l'autre.
+    if (!g_sent || std::hypot(g_sx - g_lastX, g_sy - g_lastY) >= 3.0) {
+        SendMouse(g_sx, g_sy, MOUSEEVENTF_MOVE);
+        g_lastX = g_sx;
+        g_lastY = g_sy;
+        g_sent = true;
+    }
     const bool pinch = frame.hand[h].pressed;
     if (pinch && !g_down) {
         SendMouse(g_sx, g_sy, MOUSEEVENTF_LEFTDOWN);
@@ -251,6 +260,8 @@ void Mouse_Nudge(int dx, int dy, double pct) {
     g_cal.sx *= f;
     g_cal.sy *= f;
 }
+
+void Mouse_CubeDepth(double factor) { g_cubeDist = static_cast<float>(std::fmax(0.25, std::fmin(8.0, g_cubeDist * factor))); }
 
 void Mouse_StartCalibration() {
     Load();
@@ -377,8 +388,8 @@ void Mouse_FillMarkers(HandsFrame* frame) {
         GetCursorPos(&p);
         const em::Vec3 d = DirFromAngles((p.x - g_cal.cx) / g_cal.sx, (p.y - g_cal.cy) / g_cal.sy);
         MarkerData& m = frame->marker[frame->markerCount++];
-        m.pos = frame->head.p + d * kMarkerDist;  // fixe dans le monde : ne suit PAS la tete, seulement la souris
-        m.size = 0.07f;
+        m.pos = frame->head.p + d * g_cubeDist;  // fixe dans le monde : ne suit PAS la tete, seulement la souris
+        m.size = 0.012f * (g_cubeDist / 0.6f) + 0.004f;
         m.r = 0.1f;
         m.g = 1.0f;
         m.b = 0.2f;

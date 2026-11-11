@@ -24,5 +24,6 @@ void Mouse_StartCalibration();
 bool Mouse_TuneOn();
 void Mouse_SetTune(bool on);
 void Mouse_Nudge(int dx, int dy, double pct);
+void Mouse_CubeDepth(double factor);  // profondeur du cube vert x factor
 
 }  // namespace layer

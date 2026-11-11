@@ -2,6 +2,12 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.24] - 2026-11-11
+
+### Modifie
+- **Souris : cube vert a la profondeur de la surface visee** (60 cm par defaut) au lieu de 6 m : le pointeur de MSFS est dessine sur la surface, un cube a 6 m ne se superpose pas avec lui (parallaxe). Lignes « Cube plus pres / plus loin de moi » dans le menu pour l'ajuster jusqu'a ce que les deux se confondent. (L'etalonnage du 11 nov. 11:43 est bon : ecarts de 1 a 7 px, centre = centre de la fenetre MSFS.)
+- **Mode souris plus stable** : lissage plus fort et zone morte de 3 px, pour que le pointeur ne saute plus d'un element aimante a l'autre.
+
 ## [0.0.23] - 2026-11-11
 
 ### Corrige
