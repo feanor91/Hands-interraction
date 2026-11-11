@@ -201,6 +201,38 @@ void Mouse_ToggleMode() {
     hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : mode souris %s", g_mode ? "ACTIVE" : "desactive");
 }
 
+bool Mouse_TuneOn() { return g_tune; }
+
+void Mouse_SetTune(bool on) {
+    Load();
+    if (on == g_tune) return;
+    g_tune = on;
+    if (on) {
+        g_mode = false;
+        if (!g_cal.ok) {  // point de depart : centre de l'ecran principal
+            g_cal.cx = GetSystemMetrics(SM_CXSCREEN) / 2.0;
+            g_cal.cy = GetSystemMetrics(SM_CYSCREEN) / 2.0;
+            g_cal.sx = 1200;
+            g_cal.sy = -1200;
+        }
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage a vue active");
+    } else {
+        g_cal.ok = true;
+        Save();
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage enregistre (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+    }
+}
+
+// Decale le calcul de dx, dy pixels (le cube vert se deplace dans le meme sens) ; pct > 0 : ecarte, < 0 : resserre (en %).
+void Mouse_Nudge(int dx, int dy, double pct) {
+    if (!g_tune) return;
+    g_cal.cx -= dx;  // le cube va a droite quand le centre calcule va a gauche
+    g_cal.cy += dy;
+    const double f = 1.0 - pct / 100.0;
+    g_cal.sx *= f;
+    g_cal.sy *= f;
+}
+
 void Mouse_StartCalibration() {
     Load();
     if (g_calibrating) return;
@@ -240,23 +272,7 @@ void Mouse_Frame(const HandsFrame& frame) {
     // Reglage a vue (Ctrl+Alt+F12) : un cube vert est dessine la ou le calcul place le pointeur ; fleches = decaler, Page haut / bas = ecarter / resserrer,
     // et on compare avec le vrai pointeur de MSFS. Ctrl+Alt+F12 de nouveau : enregistre.
     const bool tuneKey = ctrlAlt && (GetAsyncKeyState(VK_F12) & 0x8000);
-    if (tuneKey && !g_tuneKeyWas) {
-        g_tune = !g_tune;
-        if (g_tune) {
-            g_mode = false;
-            if (!g_cal.ok) {  // point de depart : centre de l'ecran principal
-                g_cal.cx = GetSystemMetrics(SM_CXSCREEN) / 2.0;
-                g_cal.cy = GetSystemMetrics(SM_CYSCREEN) / 2.0;
-                g_cal.sx = 1200;
-                g_cal.sy = -1200;
-            }
-            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage a vue ; fleches, Page haut/bas, puis Ctrl+Alt+F12");
-        } else {
-            g_cal.ok = true;
-            Save();
-            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage enregistre (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
-        }
-    }
+    if (tuneKey && !g_tuneKeyWas) Mouse_SetTune(!g_tune);
     g_tuneKeyWas = tuneKey;
     if (g_tune && ctrlAlt && now - g_tuneStep > 60) {
         g_tuneStep = now;

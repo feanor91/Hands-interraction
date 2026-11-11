@@ -47,7 +47,7 @@ constexpr float kPanelWidthTouch = 0.40f, kPanelDistTouch = 0.45f;
 constexpr ULONGLONG kPokeDwellMs = 300;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
-enum class Page { Main, Zones, Commands, Zone, Display, Pointer };
+enum class Page { Main, Zones, Commands, Zone, Display, Pointer, Mouse };
 Page g_page = Page::Main;
 std::string g_zoneId;  // zone ouverte dans la page de detail
 bool g_reopenAfterTeach = false;  // l'apprentissage en cours vient du menu : le rouvrir une fois la zone apprise
@@ -348,19 +348,37 @@ std::vector<Row> BuildPointerRows() {
 }
 
 // Page d'accueil : trois sous-menus.
+// Souris : tout se fait au doigt ou a la souris, jamais au clavier (le casque cache le clavier).
+std::vector<Row> BuildMouseRows() {
+    std::vector<Row> rows;
+    rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
+    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_IsCalibrated() ? L"Mode souris : désactivé  →  activer (le doigt pilote la souris)" : L"Mode souris : étalonnez d'abord"),
+                    Mouse_ModeOn() || Mouse_IsCalibrated(), [] { Mouse_ToggleMode(); }});
+    rows.push_back({L"Étalonner : cliquer (souris) sur 5 repères blancs", true, [] {
+                        Mouse_StartCalibration();
+                        CloseMenu();
+                    }});
+    rows.push_back({Mouse_TuneOn() ? L"Réglage à vue : EN COURS (cube vert)  →  terminer et enregistrer" : L"Réglage à vue : afficher le cube vert (suit la souris)", true,
+                    [] { Mouse_SetTune(!Mouse_TuneOn()); }});
+    if (Mouse_TuneOn()) {
+        rows.push_back({L"   Cube plus à gauche  ◂", true, [] { Mouse_Nudge(-8, 0, 0); }});
+        rows.push_back({L"   Cube plus à droite  ▸", true, [] { Mouse_Nudge(8, 0, 0); }});
+        rows.push_back({L"   Cube plus haut  ▴", true, [] { Mouse_Nudge(0, 8, 0); }});
+        rows.push_back({L"   Cube plus bas  ▾", true, [] { Mouse_Nudge(0, -8, 0); }});
+        rows.push_back({L"   Cube plus loin du centre  (écarter)", true, [] { Mouse_Nudge(0, 0, 2.0); }});
+        rows.push_back({L"   Cube plus près du centre  (resserrer)", true, [] { Mouse_Nudge(0, 0, -2.0); }});
+    }
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
 std::vector<Row> BuildMainRows() {
     std::vector<Row> rows;
     rows.push_back({L"Zones du pochoir et leurs commandes  ▸", true, [] { g_page = Page::Zones; }});
     rows.push_back({L"Affichage : mains et boîtes des zones  ▸", true, [] { g_page = Page::Display; }});
     rows.push_back({L"Rayon et clic (mode rayon aux mains)  ▸", true, [] { g_page = Page::Pointer; }});
-    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_IsCalibrated() ? L"Mode souris : désactivé  →  activer (le doigt pilote la souris)" : L"Mode souris : étalonnez d'abord"), Mouse_ModeOn() || Mouse_IsCalibrated(), [] {
-                        Mouse_ToggleMode();
-                        CloseMenu();
-                    }});
-    rows.push_back({L"Étalonner la souris  (puis Ctrl+Alt+F10 à chaque repère)", true, [] {
-                        Mouse_StartCalibration();
-                        CloseMenu();
-                    }});
+    rows.push_back({L"Souris : mains = souris de MSFS  ▸", true, [] { g_page = Page::Mouse; }});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;
@@ -409,6 +427,7 @@ std::vector<Row> BuildRows() {
         case Page::Zone: return BuildZoneRows();
         case Page::Display: return BuildDisplayRows();
         case Page::Pointer: return BuildPointerRows();
+        case Page::Mouse: return BuildMouseRows();
         default: return BuildMainRows();
     }
 }

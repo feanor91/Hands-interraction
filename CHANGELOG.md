@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.20] - 2026-11-11
+
+### Modifie
+- **Souris : tout se fait dans le menu VR, plus aucune touche du clavier** (le casque cache le clavier). Page « Souris » : activer le mode souris, lancer l'etalonnage (5 clics de souris sur les reperes), et **reglage a vue** : un cube vert montre ou le calcul place le pointeur ; on le recale au doigt avec les lignes « Cube plus a gauche / droite / haut / bas / ecarter / resserrer », puis « terminer et enregistrer ». Les anciens raccourcis clavier restent actifs mais ne sont plus necessaires.
+
 ## [0.0.19] - 2026-11-11
 
 ### Ajoute

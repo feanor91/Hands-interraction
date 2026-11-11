@@ -20,5 +20,9 @@ bool Mouse_ModeOn();
 void Mouse_ToggleMode();
 // Lance l'etalonnage (comme Ctrl+Alt+F10) ; les reperes suivants se prennent avec Ctrl+Alt+F10.
 void Mouse_StartCalibration();
+// Reglage a vue : cube vert la ou le calcul place le pointeur ; Mouse_Nudge decale (pixels) / ecarte (%) ; quitter enregistre.
+bool Mouse_TuneOn();
+void Mouse_SetTune(bool on);
+void Mouse_Nudge(int dx, int dy, double pct);
 
 }  // namespace layer
