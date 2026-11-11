@@ -2,6 +2,29 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.28] - 2026-11-11
+
+### Modifie
+- **Mode souris « colle au doigt » : asservissement VISUEL.** Les versions precedentes calculaient ou placer le pointeur d'apres un modele de la souris de MSFS ; les mesures
+  (captures natives de la couche : pointeur a 140 a 320 px du doigt) ont montre que ce modele ne tient pas. La couche **regarde maintenant ou MSFS dessine son pointeur** : elle lit un
+  morceau de l'image que le jeu rend pour l'oeil gauche (celui d'ou MSFS tire son rayon), y detecte la fleche blanche, la compare au bout de l'index vu du meme oeil et envoie de petits
+  deplacements relatifs de souris jusqu'a ce que la fleche soit sous le doigt. Main droite ou gauche : celle dont l'index est tendu ou qui pince en premier. Pincer = clic gauche (apres 90 ms,
+  pour ne pas cliquer pendant le geste d'ouverture du menu), garder le pincement = glisser.
+  - **Au demarrage** : recherche de la fleche par dalles, puis quatre petites salves de comptes connus qui **mesurent le gain** (pixels par compte) et la **latence** de la souris de MSFS ;
+    le pointeur « tremble » donc une seconde ; main immobile. Remesure possible dans le menu.
+  - **Boucle sans oscillation** : une boucle simple a gain 1 diverge des que la mesure a 2 images de retard (c'etait l'orbite observee) ; la boucle est maintenant un observateur
+    (modele des comptes envoyes + correction lente par la mesure), valide en simulation de bout en bout (retard 1-3 images, gain reel de 0.4 a 3 fois l'a priori).
+  - **Curseur masque** : MSFS masque le curseur apres quelques secondes sans mouvement et ignore les clics tant qu'il est masque ; la couche envoie un compte de garde toutes les 0.7 s.
+  - **Injection** dans un fil dedie, par evenements de 8 comptes au plus (jamais de SendInput absolu : MSFS lit des deplacements bruts).
+  - Menu VR > Souris : activer, type (colle au doigt / souris de bureau), etat, oeil de reference, remesure. Le doigt hors du champ de l'oeil est borne au bord de l'image (pas de fuite du
+    curseur de Windows vers l'autre ecran).
+  - **Diagnostic** : une ligne par seconde (`servo : suivi, ... ecart estime, pointeur (x,y), doigt (x,y), L=, gain ...`) et des recadrages annotes `servo_NN_*.bmp` dans `logs\captures`
+    (croix rouge = pointeur detecte, jaune = bout du doigt, verte = position attendue).
+- Le calibrage par la souris reelle, le reglage a vue et le cube vert sont retires (inutiles) ; la « souris de bureau » (deplacements relatifs de la main) reste disponible.
+
+### Ajoute
+- Tests : detecteur de pointeur sur de vrais recadrages natifs, boucle de controle, mesure du gain, simulation de bout en bout (117 tests au total).
+
 ## [0.0.27] - 2026-11-11
 
 ### Modifie

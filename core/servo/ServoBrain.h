@@ -1,0 +1,127 @@
+// ServoBrain.h — la logique de l'asservissement visuel du pointeur de MSFS, sans Windows / OpenXR / D3D12 (testable en simulation de bout en bout).
+//
+// Le « cerveau » recoit a chaque image : la vue de l'oeil de reference (pose, champ de vision, zone rendue), l'etat des deux mains, l'heure ; et, quand une
+// lecture de l'image du jeu est terminee, les pixels de la ROI. Il rend : des comptes de souris, un evenement de bouton, et la ROI a lire pour l'image courante.
+//   Recherche  : balayage de l'image par dalles jusqu'a voir la fleche de MSFS pendant 4 images de suite ;
+//   Mesure     : quatre salves de comptes connus (GainProbe) -> gain (rad / compte) et latence ;
+//   Suivi      : ServoController (observateur + correction lente) vers la direction du bout de l'index vu du meme oeil.
+// L'adaptateur de la couche (layer/servo.cpp) ne fait que : lire les pixels (D3D12), traduire les mains OpenXR, injecter les comptes.
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "emulation/PoseMath.h"
+#include "servo/GainProbe.h"
+#include "servo/PointerDetect.h"
+#include "servo/ServoController.h"
+#include "servo/ServoMath.h"
+
+namespace hands::servo {
+
+struct BrainHand {
+    bool usable = false;                 // articulations valides
+    bool pinch = false;                  // pincement (deja avec hysteresis)
+    bool extended = false;               // index tendu (aide au choix de la main)
+    emulation::Vec3 tip;                 // bout reel du doigt (articulation du bout + rayon)
+    emulation::Vec3 knuckle;             // base de l'index : bouge peu pendant un pincement
+};
+
+struct BrainRoi {
+    bool valid = false;
+    int x = 0, y = 0, w = 0, h = 0;      // pixels de la ressource
+    double expX = -1, expY = -1;         // position attendue du pointeur (image complete), -1 : inconnue
+    uint64_t imageSeq = 0;               // numero d'appel de l'image lue
+    EyeView view;                        // vue au moment de l'image
+};
+
+struct BrainFrame {
+    uint64_t nowMs = 0;
+    EyeView view;
+    BrainHand hand[2];                   // 0 gauche, 1 droite
+    bool menuOpen = false;
+    bool readerFree = true;              // une nouvelle lecture peut etre demandee
+};
+
+struct BrainOutput {
+    int dx = 0, dy = 0;                  // comptes de souris a injecter
+    int buttonEvent = -1;                // -1 rien, 0 relacher, 1 enfoncer
+    BrainRoi request;                    // valid : lire cette ROI de l'image courante
+};
+
+enum class BrainMode { Acquire, Probe, Track };
+
+class ServoBrain {
+public:
+    // Journal (niveau : 0 info, 1 avertissement) et diagnostic (tag, pixels RGBA de la ROI, detection (-1 : aucune), doigt (-100000 : hors image)).
+    using LogFn = std::function<void(int, const std::string&)>;
+    using DiagFn = std::function<void(const char*, const uint8_t*, const BrainRoi&, int, int, int, int)>;
+    void SetLogger(LogFn f) { log_ = std::move(f); }
+    void SetDiag(DiagFn f) { diag_ = std::move(f); }
+
+    void Reset();                        // oublie tout (garde le gain mesure)
+    void Recalibrate();                  // oublie aussi le gain mesure
+    void OnPixels(const uint8_t* rgba, const BrainRoi& req);
+    BrainOutput Frame(const BrainFrame& in);
+
+    BrainMode Mode() const { return mode_; }
+    const std::string& StatusText() const { return status_; }
+    double ErrorPx() const { return errPx_; }
+    int Hand() const { return hand_; }
+    bool ButtonDown() const { return down_; }
+    const ServoParams& Params() const { return params_; }
+    bool Tracking() const { return tracking_; }
+
+private:
+    struct Sample {
+        uint64_t t = 0;
+        emulation::Vec3 p;
+    };
+    int ChooseHand(const BrainFrame& in, const bool edge[2]);
+    bool PickRoi(const EyeView& ev, const Px* finger, BrainRoi* r);
+    void BuildTiles(const ImageRect& img);
+    void Log(int level, const char* fmt, ...);
+    void SetStatus(const BrainFrame& in, bool tracking);
+
+    LogFn log_;
+    DiagFn diag_;
+    uint64_t seq_ = 0, nowMs_ = 0;
+    BrainMode mode_ = BrainMode::Acquire;
+    ServoParams params_;
+    ServoController ctl_;
+    GainProbe probe_;
+    bool probeDone_ = false;
+    // detection
+    bool haveDet_ = false;
+    uint64_t lastDetMs_ = 0;
+    V2 lastDetAng_;
+    Px lastDetPx_;
+    int stable_ = 0, missRun_ = 0;
+    // balayage
+    std::vector<std::pair<int, int>> tiles_;
+    int tilePos_ = 0, tileImgW_ = 0, tileImgH_ = 0, tileW_ = 0, tileH_ = 0;
+    // main, cible, bouton
+    int hand_ = -1;
+    bool prevPinch_[2] = {false, false};
+    Sample hist_[2][24];
+    int histN_[2] = {0, 0}, histHead_[2] = {0, 0};
+    bool locked_ = false;
+    emulation::Vec3 lockTip_, lockKnuckle_;
+    bool down_ = false, tapUp_ = false, prevSelPinch_ = false, prevBoth_ = false;
+    uint64_t lastSendMs_ = 0, lastWakeMs_ = 0, pinchStartMs_ = 0, heldMs_ = 0;
+    int jiggle_ = 1;
+    // etat de la derniere image (pour l'annotation des diagnostics et le journal)
+    Px fingerPx_;
+    bool haveFinger_ = false;
+    bool tracking_ = false;
+    double errPx_ = 0, pxPerRad_ = 1215.0;
+    // journal
+    uint64_t logT_ = 0, badSince_ = 0, acquireSinceMs_ = 0;
+    int nDet_ = 0, nReq_ = 0, nMiss_ = 0, nSent_ = 0;
+    std::string status_ = "arrêté";
+};
+
+}  // namespace hands::servo

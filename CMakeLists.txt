@@ -24,7 +24,9 @@ add_library(hands_core STATIC
   core/config/IniFile.cpp
   core/config/Config.cpp
   core/config/IniEdit.cpp
-  core/log/Logger.cpp)
+  core/log/Logger.cpp
+  core/servo/PointerDetect.cpp
+  core/servo/ServoBrain.cpp)
 target_include_directories(hands_core PUBLIC core)
 find_package(Threads REQUIRED)
 target_link_libraries(hands_core PUBLIC Threads::Threads)

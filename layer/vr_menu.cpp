@@ -29,6 +29,7 @@
 #include "util/KeyNames.h"
 #include "zones.h"
 #include "mouse_click.h"
+#include "servo.h"
 #include "menu_render.h"
 #include "texture_uploader.h"
 #include "vr_menu.h"
@@ -351,20 +352,27 @@ std::vector<Row> BuildPointerRows() {
 // Souris : tout se fait au doigt ou a la souris, jamais au clavier (le casque cache le clavier).
 std::vector<Row> BuildMouseRows() {
     std::vector<Row> rows;
+    const bool servo = Mouse_Attached();
     rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
-    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_Attached() && !Mouse_IsCalibrated() ? L"Mode souris : étalonnez d'abord" : L"Mode souris : désactivé  →  activer"),
-                    Mouse_ModeOn() || !Mouse_Attached() || Mouse_IsCalibrated(), [] { Mouse_ToggleMode(); }});
-    rows.push_back({Mouse_Attached() ? L"Type : pointeur COLLÉ au bout du doigt  →  souris de bureau" : L"Type : souris de bureau  →  pointeur collé au doigt", true,
-                    [] { Mouse_SetAttached(!Mouse_Attached()); }});
-    rows.push_back({L"Étalonner (une fois) : cliquer à la souris sur 5 repères", true, [] {
-                        Mouse_StartCalibration();
-                        CloseMenu();
-                    }});
-    if (!Mouse_Attached()) {
+    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : L"Mode souris : désactivé  →  activer", true, [] { Mouse_ToggleMode(); }});
+    rows.push_back({servo ? L"Type : pointeur COLLÉ au bout du doigt  →  souris de bureau" : L"Type : souris de bureau  →  pointeur collé au doigt", true,
+                    [servo] { Mouse_SetAttached(!servo); }});
+    if (servo) {
+        {
+            const std::string st = Servo_StatusText();
+            const int n = MultiByteToWideChar(CP_UTF8, 0, st.c_str(), -1, nullptr, 0);
+            std::wstring w(static_cast<size_t>(std::max(0, n - 1)), L' ');
+            if (n > 1) MultiByteToWideChar(CP_UTF8, 0, st.c_str(), -1, &w[0], n);
+            rows.push_back({L"État : " + w, false, nullptr});
+        }
+        rows.push_back({Mouse_Eye() == 0 ? L"Œil de référence : GAUCHE (celui de MSFS)  →  droit" : L"Œil de référence : DROIT  →  gauche", true, [] { Mouse_SetEye(Mouse_Eye() == 0 ? 1 : 0); }});
+        rows.push_back({L"Remesurer la souris (1 s, main immobile)", true, [] { Servo_Recalibrate(); }});
+    } else {
         rows.push_back({L"Souris de bureau plus rapide", true, [] { Mouse_Gain(1.25); }});
         rows.push_back({L"Souris de bureau plus lente", true, [] { Mouse_Gain(0.8); }});
+        rows.push_back({L"Index tendu : la main déplace la souris. Index replié : souris soulevée.", false, nullptr});
     }
-    rows.push_back({L"Pincer = clic gauche ; garder le pincement = glisser.", false, nullptr});
+    rows.push_back({L"Pincer = clic gauche ; garder le pincement = glisser (verrière, curseurs).", false, nullptr});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;
@@ -788,6 +796,8 @@ void VrMenu_FillBoxes(HandsFrame* frame) {
 void VrMenu_NoteEndFrameFailure() {
     if (++g.failures >= 3) Disable("xrEndFrame refuse la couche du menu");
 }
+
+bool VrMenu_IsOpen() { return g.open; }
 
 void VrMenu_Stop() {
     Emu_SetMenuOpen(false);

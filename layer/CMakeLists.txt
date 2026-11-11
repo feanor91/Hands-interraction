@@ -12,6 +12,7 @@ add_library(XR_APILAYER_HANDS_bare SHARED
   vr_menu.cpp
   zones.cpp
   mouse_click.cpp
+  servo.cpp
   bridge_client.cpp
   ../win/JoyPoll.cpp)
 

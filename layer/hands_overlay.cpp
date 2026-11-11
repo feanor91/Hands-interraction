@@ -41,6 +41,7 @@
 #include "vr_menu.h"
 #include "zones.h"
 #include "mouse_click.h"
+#include "servo.h"
 
 namespace layer {
 
@@ -368,6 +369,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrDestroySwapchain(XrSwapchain sc) {
     Safe("xrDestroySwapchain", [&] {
         if (g_colorReader) g_colorReader->WaitIdle();
         if (g_depthReader) g_depthReader->WaitIdle();  // une copie en cours pourrait lire une image sur le point d'être libérée
+        Servo_OnSwapchainDestroy();
         std::lock_guard<std::mutex> lock(g_swapMutex);
         const uint64_t h = reinterpret_cast<uint64_t>(sc);
         g_gameSwapchains.erase(h);
@@ -788,6 +790,7 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
         ToHandsFrame(game, info->displayTime, &frame, &any);
         Zones_Frame(frame);
         Mouse_Frame(frame);
+        if (Mouse_Kind() == MouseKind::Servo) Servo_Frame(game, frame, VrMenu_IsOpen(), g_device, g_queue);
         addMenu = VrMenu_Frame(session, g_device, g_queue, game, info->displayTime, frame, &menuQuad);
     });
     Safe("xrEndFrame(preparation)", [&] {
@@ -804,7 +807,6 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameE
             any = false;
         }
         Zones_FillMarkers(&frame);
-        Mouse_FillMarkers(&frame);
         VrMenu_FillBoxes(&frame);
         if (!any && frame.markerCount == 0 && frame.boxCount == 0) { ++g_ov.framesSkipped; return; }  // aucune main visible : pas de couche, pas de coût GPU
 
@@ -928,8 +930,31 @@ void Overlay_OnGraphicsBinding(void* device, void* queue) {
     g_queue = static_cast<ID3D12CommandQueue*>(queue);
 }
 
+bool Overlay_GetEyeImage(const XrCompositionLayerProjection* game, int eye, EyeImage* out) {
+    if (!game || !game->views || !out || eye < 0 || eye > 1) return false;
+    const XrCompositionLayerProjectionView& v = game->views[eye];
+    std::lock_guard<std::mutex> lock(g_swapMutex);
+    const auto it = g_gameSwapchains.find(reinterpret_cast<uint64_t>(v.subImage.swapchain));
+    if (it == g_gameSwapchains.end()) return false;
+    const SwapchainInfo& sc = it->second;
+    if (sc.lastReleased < 0 || static_cast<size_t>(sc.lastReleased) >= sc.images.size()) return false;
+    ID3D12Resource* tex = sc.images[static_cast<size_t>(sc.lastReleased)];
+    if (!tex) return false;
+    const D3D12_RESOURCE_DESC d = tex->GetDesc();
+    out->tex = tex;
+    out->texW = static_cast<uint32_t>(d.Width);
+    out->texH = d.Height;
+    out->rectX = v.subImage.imageRect.offset.x;
+    out->rectY = v.subImage.imageRect.offset.y;
+    out->rectW = v.subImage.imageRect.extent.width;
+    out->rectH = v.subImage.imageRect.extent.height;
+    out->state = ColorStateFromName(CurrentConfig()->colorState);
+    return true;
+}
+
 void Overlay_Stop() {
     Safe("Overlay_Stop", [&] {
+        Servo_Stop();
         VrMenu_Stop();
         if (g_depthReader) g_depthReader->WaitIdle();
         g_depthReader.reset();

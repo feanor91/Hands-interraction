@@ -24,6 +24,9 @@ void VrMenu_NoteEndFrameFailure();
 // Ajoute a la surimpression le curseur du bout du doigt sur le panneau (retour visuel du toucher). Sans effet si le menu est ferme.
 void VrMenu_FillBoxes(HandsFrame* frame);
 
+// Le menu est-il ouvert ? (le mode souris ne clique pas pendant ce temps)
+bool VrMenu_IsOpen();
+
 // Détruit la swapchain et remet tout à zéro (avant la destruction de la session).
 void VrMenu_Stop();
 

@@ -1,34 +1,39 @@
-// mouse_click.h — mains = souris de Windows. En « mode souris », le pointeur de MSFS suit le bout de l'index (on projette le bout du doigt dans la vue ecran
-// de MSFS, qui suit la tete) ; pincer = bouton gauche enfonce, relacher = relache (donc glisser possible : verriere, curseurs). La souris sait tout manipuler
-// dans le cockpit, et ne depend d'aucune zone apprise (un interrupteur qui bouge ne pose plus de probleme).
+// mouse_click.h — mains = souris de Windows (mode souris).
 //
-// Touches : Ctrl+Alt+F11 active / desactive le mode souris ; Ctrl+Alt+F10 etalonne (une fois) : 5 reperes blancs apparaissent l'un apres l'autre, fixes
-// devant les yeux ; avec la vraie souris, posez le pointeur de MSFS sur le repere puis Ctrl+Alt+F10 ; apres le 5e, le resultat va dans mouse.ini.
+// Deux types :
+//   * « collé au doigt » (Servo, par defaut) : le pointeur de MSFS est amene sous le bout de l'index par une boucle qui REGARDE ou le jeu le dessine (servo.h) ;
+//   * « souris de bureau » (Desktop) : le deplacement de la main (plan de la vue) devient un deplacement relatif de la souris ; index replie = souris soulevee.
+// Dans les deux cas : pincer = bouton gauche enfonce, garder le pincement = glisser (verriere, curseurs).
+//
+// L'injection se fait dans un fil dedie, en evenements de 8 comptes au plus (MSFS lit des deplacements, pas des positions : jamais de SendInput absolu).
 #pragma once
 
 #include "hand_renderer.h"
 
 namespace layer {
 
-// A chaque image : etalonnage, mode souris.
-void Mouse_Frame(const HandsFrame& frame);
-// Reperes de l'etalonnage (suivent la tete).
-void Mouse_FillMarkers(HandsFrame* frame);
-bool Mouse_IsCalibrated();
-bool Mouse_Calibrating();
+enum class MouseKind { Off, Servo, Desktop };
+
+MouseKind Mouse_Kind();
+void Mouse_SetKind(MouseKind k);  // Off relache le bouton et arrete l'asservissement
 bool Mouse_ModeOn();
-void Mouse_ToggleMode();
-// Pointeur colle au bout du doigt (defaut, demande etalonnage) ou souris de bureau (deplacements relatifs de la main).
-bool Mouse_Attached();
-void Mouse_SetAttached(bool on);
-// Lance l'etalonnage (comme Ctrl+Alt+F10) ; les reperes suivants se prennent avec Ctrl+Alt+F10.
-void Mouse_StartCalibration();
-// Reglage a vue : cube vert la ou le calcul place le pointeur ; Mouse_Nudge decale (pixels) / ecarte (%) ; quitter enregistre.
-bool Mouse_TuneOn();
-void Mouse_SetTune(bool on);
-void Mouse_Nudge(int dx, int dy, double pct);
-void Mouse_CubeDepth(double factor);
-// Sensibilite de la souris-main (pixels par metre) x factor ; enregistree.
-void Mouse_Gain(double factor);  // profondeur du cube vert x factor
+void Mouse_ToggleMode();          // Off <-> dernier type actif (Servo au depart) ; Ctrl+Alt+F11 aussi
+bool Mouse_Attached();            // le type actif ou choisi est « collé au doigt »
+void Mouse_SetAttached(bool on);  // choisit le type (s'applique tout de suite si le mode est actif)
+
+// Appelee a chaque xrEndFrame : touche de secours Ctrl+Alt+F11 et mode souris de bureau.
+void Mouse_Frame(const HandsFrame& frame);
+
+// Sensibilite de la souris de bureau (pixels par metre de deplacement de la main) x `factor`, enregistree dans mouse.ini.
+void Mouse_Gain(double factor);
+
+// Oeil dans l'image duquel on cherche le pointeur (0 = gauche : c'est de lui que MSFS tire le rayon, 1 = droit : si c'est l'oeil directeur), enregistre.
+int Mouse_Eye();
+void Mouse_SetEye(int eye);
+
+// --- injection (utilisee aussi par l'asservissement) : file d'attente, jamais bloquante ---------------------------------------------------------
+void MouseInject_Move(int dx, int dy);  // comptes relatifs (decoupes en evenements de 8 comptes au plus)
+void MouseInject_Button(bool leftDown);
+void MouseInject_ReleaseIfHeld();       // relache le bouton gauche s'il est enfonce par nous
 
 }  // namespace layer
