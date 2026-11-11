@@ -106,15 +106,27 @@ bool Fit(const std::vector<double>& t, const std::vector<double>& p, double* c, 
     return true;
 }
 
-// Coordonnees absolues pour SendInput (bureau virtuel entier).
-void SendMouse(double px, double py, DWORD flags) {
-    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+// MSFS lit la souris en entree brute (raw input) : un deplacement ABSOLU de SendInput y arrive comme un deplacement relatif de milliers d'unites et fait
+// danser le pointeur. On envoie donc des deplacements RELATIFS, corriges en boucle fermee d'apres la position reelle du curseur Windows.
+void MoveCursorTo(double px, double py) {
+    POINT cur;
+    if (!GetCursorPos(&cur)) return;
+    long dx = std::lround(px - cur.x), dy = std::lround(py - cur.y);
+    if (dx == 0 && dy == 0) return;
+    dx = std::max(-250L, std::min(250L, dx));
+    dy = std::max(-250L, std::min(250L, dy));
     INPUT in{};
     in.type = INPUT_MOUSE;
-    in.mi.dx = static_cast<LONG>((px - vx) * 65535.0 / (vw - 1));
-    in.mi.dy = static_cast<LONG>((py - vy) * 65535.0 / (vh - 1));
-    in.mi.dwFlags = flags | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof in);
+}
+
+void ButtonEvent(DWORD flags) {
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = flags;
     SendInput(1, &in, sizeof in);
 }
 
@@ -152,7 +164,7 @@ bool g_sent = false;
 
 void ReleaseButton() {
     if (!g_down) return;
-    SendMouse(g_sx, g_sy, MOUSEEVENTF_LEFTUP);
+    ButtonEvent(MOUSEEVENTF_LEFTUP);
     g_down = false;
 }
 
@@ -188,15 +200,11 @@ void UpdatePointer(const HandsFrame& frame) {
         g_sy += 0.35 * (py - g_sy);
     }
     // Zone morte de 3 px : MSFS aimante le pointeur aux elements cliquables, un envoi a chaque image le ferait sauter de l'un a l'autre.
-    if (!g_sent || std::hypot(g_sx - g_lastX, g_sy - g_lastY) >= 3.0) {
-        SendMouse(g_sx, g_sy, MOUSEEVENTF_MOVE);
-        g_lastX = g_sx;
-        g_lastY = g_sy;
-        g_sent = true;
-    }
+    POINT cur;
+    if (GetCursorPos(&cur) && std::hypot(g_sx - cur.x, g_sy - cur.y) >= 3.0) MoveCursorTo(g_sx, g_sy);
     const bool pinch = frame.hand[h].pressed;
     if (pinch && !g_down) {
-        SendMouse(g_sx, g_sy, MOUSEEVENTF_LEFTDOWN);
+        ButtonEvent(MOUSEEVENTF_LEFTDOWN);
         g_down = true;
     } else if (!pinch && g_down) {
         ReleaseButton();

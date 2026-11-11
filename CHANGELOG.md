@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.25] - 2026-11-11
+
+### Corrige
+- **Mode souris : deplacements RELATIFS de la souris.** MSFS lit la souris en entree brute : un deplacement absolu de `SendInput` lui arrivait comme un deplacement de milliers d'unites, d'ou le pointeur qui dansait loin du doigt (video du 11 nov., 2:05 : doigt a droite, pointeur a gauche alors que le cube calcule etait au doigt). La souris recoit maintenant des deplacements relatifs, corriges d'apres la position reelle du curseur Windows.
+
 ## [0.0.24] - 2026-11-11
 
 ### Modifie
