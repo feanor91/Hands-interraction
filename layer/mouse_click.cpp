@@ -39,7 +39,7 @@ em::Pose g_head;
 bool g_calKeyWas = false, g_modeKeyWas = false, g_lbWas = false;
 em::Vec3 g_markerWorld;      // repere de l'etalonnage en cours : FIXE dans le monde (on peut bouger la tete pour viser)
 bool g_markerPending = true;  // a placer des que la tete est connue
-constexpr float kMarkerDist = 0.6f;  // distance du repere : celle d'un tableau de bord, pour que le pointeur de MSFS et le repere soient en contact
+constexpr float kMarkerDist = 6.0f;  // reperes LOINTAINS : MSFS dessine le pointeur a l'identique dans chaque oeil (profondeur infinie) ; un repere proche (60 cm) est vu a ~3 degres de plus par l'oeil dominant (demi-ecart pupillaire 3 cm), soit 60 px d'erreur
 bool g_mode = false;
 bool g_tune = false, g_tuneKeyWas = false;  // reglage a vue : un cube vert montre ou le calcul place le pointeur
 ULONGLONG g_tuneStep = 0;
@@ -359,7 +359,7 @@ void Mouse_FillMarkers(HandsFrame* frame) {
         const em::Vec3 d = em::Normalized(em::Vec3{static_cast<float>((p.x - g_cal.cx) / g_cal.sx), static_cast<float>((p.y - g_cal.cy) / g_cal.sy), -1.0f});
         MarkerData& m = frame->marker[frame->markerCount++];
         m.pos = frame->head.p + em::Rotate(frame->head.q, d * kMarkerDist);
-        m.size = 0.012f;
+        m.size = 0.07f;
         m.r = 0.1f;
         m.g = 1.0f;
         m.b = 0.2f;
@@ -368,7 +368,7 @@ void Mouse_FillMarkers(HandsFrame* frame) {
     if (frame->markerCount >= kMaxMarkers) return;
     MarkerData& m = frame->marker[frame->markerCount++];
     m.pos = g_markerWorld;
-    m.size = 0.02f;
+    m.size = 0.12f;
     m.r = m.g = m.b = 1.0f;
 }
 

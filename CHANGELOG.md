@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.21] - 2026-11-11
+
+### Corrige
+- **Souris : reperes d'etalonnage et cube vert a 6 m** (au lieu de 60 cm). MSFS dessine le pointeur de la souris de la meme facon dans chaque oeil (comme a l'infini) : on le voit double quand on regarde un objet proche, et un repere a 60 cm est vu a ~3 degres de plus par l'oeil dominant, soit environ 60 px d'erreur d'etalonnage. A 6 m l'ecart tombe a ~6 px et les deux se superposent sans relief.
+
 ## [0.0.20] - 2026-11-11
 
 ### Modifie
