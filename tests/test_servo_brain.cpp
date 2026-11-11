@@ -75,7 +75,10 @@ struct Sim {
     uint64_t lastMoveMs = 0;
     uint64_t t0 = 5000;
     ServoBrain brain;
-    int downs = 0, ups = 0;
+    int downs = 0, ups = 0, wheel = 0;
+    double tipNoiseM = 0.0;             // bruit du suivi de la main (ecart type, metres)
+    uint64_t nrng = 0x9E3779B97F4A7C15ull;
+    double Gauss() { double a = 0; for (int i = 0; i < 12; ++i) { nrng ^= nrng >> 12; nrng ^= nrng << 25; nrng ^= nrng >> 27; a += static_cast<double>((nrng * 2685821657736338717ull) >> 11) / 9007199254740992.0; } return a - 6.0; }
     bool buttonDown = false;
     std::vector<std::string> logs;
 
@@ -133,6 +136,7 @@ struct Frame {
     bool pinch = false;
     bool present = true;
     bool menuOpen = false;
+    double rollDeg = 0.0;               // roulis du poignet de la main droite
     bool leftPresent = false, leftPinch = false;  // la main gauche (geste d'ouverture du menu)
 };
 
@@ -183,13 +187,20 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         in.view = s.view;
         in.menuOpen = f.menuOpen;
         in.readerFree = !fl.active;
-        const em::Vec3 tip = s.WorldPoint(f.finger, f.dist);
+        em::Vec3 tip = s.WorldPoint(f.finger, f.dist);
+        const em::Vec3 trueTip = tip;
+        if (s.tipNoiseM > 0) tip = tip + em::Vec3{static_cast<float>(s.tipNoiseM * s.Gauss()), static_cast<float>(s.tipNoiseM * s.Gauss()), static_cast<float>(s.tipNoiseM * s.Gauss())};
         BrainHand& h = in.hand[1];
         h.usable = f.present;
         h.pinch = f.pinch;
         h.extended = true;
         h.tip = tip;
         h.knuckle = tip + em::Vec3{0.0f, -0.03f, 0.06f};
+        h.wristAxis = em::Vec3{0.0f, 0.0f, -1.0f};
+        {
+            const double r = f.rollDeg * 3.14159265358979 / 180.0;
+            h.palmUp = em::Vec3{static_cast<float>(-std::sin(r)), static_cast<float>(std::cos(r)), 0.0f};
+        }
         BrainHand& hl = in.hand[0];
         hl.usable = f.leftPresent;
         hl.pinch = f.leftPinch;
@@ -198,6 +209,7 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         hl.knuckle = hl.tip + em::Vec3{0.0f, -0.03f, 0.06f};
         const BrainOutput out = s.brain.Frame(in);
         s.cnt[static_cast<size_t>(k)] = {out.dx, out.dy};
+        s.wheel += out.wheelSteps;
         if (out.buttonEvent == 1) {
             ++s.downs;
             s.buttonDown = true;
@@ -212,7 +224,7 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
             fl.req = out.request;
             s.Render(out.request, now, &fl.px);
         }
-        const Px pp = s.PixelOf(s.PointerWorld()), fp = s.PixelOf(tip);
+        const Px pp = s.PixelOf(s.PointerWorld()), fp = s.PixelOf(trueTip);
         m.err.push_back(std::hypot(pp.x - fp.x, pp.y - fp.y));
     }
     return m;
@@ -437,4 +449,52 @@ TEST(ServoBrain_pointeur_re_ancre_par_MSFS_loin_du_modele_est_retrouve) {
     std::printf("      saut de 0.4 rad : retour a < 8 px apres %d images (%.1f s a 90 Hz)\n", back, back / 90.0);
     CHECK(back >= 0 && back < 270);  // moins de 3 s
     CHECK(s.brain.Mode() == BrainMode::Track);
+}
+
+TEST(ServoBrain_doigt_qui_tremble_le_pointeur_ne_danse_pas) {
+    Sim s;
+    s.tipNoiseM = 0.002;  // 2 mm de bruit sur le suivi de la main (~5 px a 45 cm)
+    const Metrics m = Run(s, 900, [](int) { return Frame(); });
+    double jit = 0;
+    int n = 0;
+    long long counts = 0;
+    for (int k = 600; k < 900; ++k) {
+        counts += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+        if (k > 600) {
+            jit += std::fabs(m.err[static_cast<size_t>(k)] - m.err[static_cast<size_t>(k - 1)]);
+            ++n;
+        }
+    }
+    std::printf("      tremblement : ecart RMS %.1f px, variation image a image %.2f px, %lld comptes en 300 images\n", RmsErr(m, 600, 900), jit / n, counts);
+    CHECK(RmsErr(m, 600, 900) < 4.0);
+    CHECK(counts < 600);  // au repos, presque aucun compte : pas de « danse »
+}
+
+TEST(ServoBrain_roulis_du_poignet_pendant_un_pincement_fait_tourner_la_molette) {
+    Sim s;
+    s.brain.SetWheel(20.0, false);
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 700;
+        f.rollDeg = k < 520 ? 0.0 : -std::min(94.0, (k - 520) * 1.0);  // sens horaire (vu de l'utilisateur), 1 deg par image : 94 deg
+        return f;
+    });
+    (void)m;
+    std::printf("      molette : %d cran(s) pour 94 deg, %d enfoncement(s) %d relachement(s)\n", s.wheel, s.downs, s.ups);
+    CHECK(s.wheel >= 3 && s.wheel <= 5);
+    CHECK(s.downs == s.ups);
+    CHECK(!s.buttonDown);
+}
+
+TEST(ServoBrain_molette_sens_inverse) {
+    Sim s;
+    s.brain.SetWheel(20.0, true);
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 700;
+        f.rollDeg = k < 520 ? 0.0 : -std::min(94.0, (k - 520) * 1.0);
+        return f;
+    });
+    (void)m;
+    CHECK(s.wheel <= -3);
 }

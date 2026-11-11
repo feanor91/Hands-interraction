@@ -28,6 +28,8 @@ struct BrainHand {
     bool extended = false;               // index tendu (aide au choix de la main)
     emulation::Vec3 tip;                 // bout reel du doigt (articulation du bout + rayon)
     emulation::Vec3 knuckle;             // base de l'index : bouge peu pendant un pincement
+    emulation::Vec3 wristAxis;           // poignet -> base du majeur (axe du roulis) ; nul si inconnu
+    emulation::Vec3 palmUp;              // « haut » de la paume : sert a mesurer le roulis du poignet (molette)
 };
 
 struct BrainRoi {
@@ -49,6 +51,7 @@ struct BrainFrame {
 struct BrainOutput {
     int dx = 0, dy = 0;                  // comptes de souris a injecter
     int buttonEvent = -1;                // -1 rien, 0 relacher, 1 enfoncer
+    int wheelSteps = 0;                  // crans de molette (+ : vers le haut / avant) a injecter
     BrainRoi request;                    // valid : lire cette ROI de l'image courante
 };
 
@@ -62,10 +65,11 @@ public:
     void SetLogger(LogFn f) { log_ = std::move(f); }
     void SetDiag(DiagFn f) { diag_ = std::move(f); }
 
+    void SetWheel(double stepDeg, bool invert) { wheelStepDeg_ = stepDeg; wheelInvert_ = invert; }
     void Reset();                        // oublie tout (garde le gain mesure)
     void Recalibrate();                  // oublie aussi le gain mesure
     void OnPixels(const uint8_t* rgba, const BrainRoi& req);
-    BrainOutput Frame(const BrainFrame& in);
+    BrainOutput Frame(const BrainFrame& inRaw);
 
     BrainMode Mode() const { return mode_; }
     const std::string& StatusText() const { return status_; }
@@ -115,6 +119,12 @@ private:
     int histN_[2] = {0, 0}, histHead_[2] = {0, 0};
     bool locked_ = false;
     emulation::Vec3 lockTip_, lockKnuckle_;
+    emulation::OneEuro tipFilter_[2];
+    uint64_t lastFrameMs_ = 0;
+    bool wheelMode_ = false;             // pincement transforme en molette (roulis du poignet)
+    emulation::Vec3 rollAxis_, rollN0_;
+    double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 20.0;
+    bool wheelInvert_ = false;
     bool down_ = false, tapUp_ = false, prevSelPinch_ = false, prevBoth_ = false;
     uint64_t lastSendMs_ = 0, lastWakeMs_ = 0, pinchStartMs_ = 0, heldMs_ = 0;
     int jiggle_ = 1;

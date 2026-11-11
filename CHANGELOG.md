@@ -2,6 +2,16 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.30] - 2026-11-11
+
+### Ajoute
+- **Molette de la souris par le poignet** (rotatifs du cockpit, qui ne repondent pas au clic) : pendant un pincement, un roulis du poignet de plus de 14 deg transforme le pincement en molette (le bouton est
+  relache), puis un cran tous les 20 deg (menu Souris : plus fin, sens inversable ; `wheel_step_deg` / `wheel_invert` dans mouse.ini). Sens horaire = molette vers le haut.
+### Corrige
+- **Pointeur qui « danse »** : le suivi des mains tremble de 1 a 3 mm (3 a 8 px a 40 cm) et la cible n'etait pas lissee. Bout du doigt lisse (One Euro), vitesse de la cible plus filtree, zone morte de 2.7 px.
+  En simulation avec 2 mm de bruit : 556 -> 188 comptes en 300 images au repos, ecart au repos 2.9 px.
+- Journal : une ligne a chaque appui / relachement du bouton ; jusqu'a 24 captures de diagnostic par session (au lieu de 8).
+
 ## [0.0.29] - 2026-11-11
 
 ### Corrige

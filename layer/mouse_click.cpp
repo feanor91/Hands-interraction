@@ -31,6 +31,8 @@ namespace {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 double g_gain = 3500.0;  // pixels par metre de deplacement de la main (souris de bureau)
 int g_eye = 0;
+double g_wheelStep = 20.0;
+bool g_wheelInvert = false;
 bool g_loaded = false;
 
 std::string IniPath() {
@@ -50,6 +52,8 @@ void Load() {
     const auto ini = hands::config::IniFile::Parse(ss.str());
     g_gain = std::fmax(500.0, std::fmin(20000.0, ini.GetDouble("mouse", "gain", g_gain)));
     g_eye = ini.GetInt("mouse", "eye", 0) == 1 ? 1 : 0;
+    g_wheelStep = std::fmax(8.0, std::fmin(60.0, ini.GetDouble("mouse", "wheel_step_deg", g_wheelStep)));
+    g_wheelInvert = ini.GetBool("mouse", "wheel_invert", false);
 }
 
 void Save() {
@@ -58,8 +62,8 @@ void Save() {
         Logger::Get().Log(LogLevel::Warn, "souris : ecriture de mouse.ini impossible (%s)", IniPath().c_str());
         return;
     }
-    char b[160];
-    std::snprintf(b, sizeof b, "[mouse]\neye = %d\ngain = %.0f\n", g_eye, g_gain);
+    char b[240];
+    std::snprintf(b, sizeof b, "[mouse]\neye = %d\ngain = %.0f\nwheel_step_deg = %.0f\nwheel_invert = %s\n", g_eye, g_gain, g_wheelStep, g_wheelInvert ? "true" : "false");
     f << b;
 }
 
@@ -69,6 +73,7 @@ void Save() {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 struct Packet {
     int dx = 0, dy = 0;
+    int wheel = 0;    // crans de molette
     int button = -1;  // -1 : inchange, 0 : relache, 1 : enfonce
 };
 
@@ -111,6 +116,13 @@ void SendPacket(const Packet& p) {
         e = INPUT{};
         e.type = INPUT_MOUSE;
         e.mi.dwFlags = p.button == 1 ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+    }
+    if (p.wheel != 0) {
+        INPUT& e = ev[n++];
+        e = INPUT{};
+        e.type = INPUT_MOUSE;
+        e.mi.mouseData = static_cast<DWORD>(p.wheel * WHEEL_DELTA);
+        e.mi.dwFlags = MOUSEEVENTF_WHEEL;
     }
     if (n > 0) SendInput(static_cast<UINT>(n), ev, sizeof(INPUT));
 }
@@ -281,6 +293,30 @@ void MouseInject_Move(int dx, int dy) {
     p.dx = dx;
     p.dy = dy;
     Post(p);
+}
+
+void MouseInject_Wheel(int notches) {
+    if (notches == 0) return;
+    Packet p;
+    p.wheel = std::max(-10, std::min(10, notches));
+    Post(p);
+}
+
+double Mouse_WheelStepDeg() {
+    Load();
+    return g_wheelStep;
+}
+
+bool Mouse_WheelInvert() {
+    Load();
+    return g_wheelInvert;
+}
+
+void Mouse_SetWheel(double stepDeg, bool invert) {
+    Load();
+    g_wheelStep = std::fmax(8.0, std::fmin(60.0, stepDeg));
+    g_wheelInvert = invert;
+    Save();
 }
 
 void MouseInject_Button(bool leftDown) {

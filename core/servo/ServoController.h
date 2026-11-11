@@ -36,11 +36,11 @@ struct ServoParams {
     double kBias = 0.5;         // innovation gain per measurement (0.1..0.6): the detector is now selective (black-outline test), so measurements can be trusted more ;
                                 // large = follows a pointer that drifts (head-anchored, snapping to controls), small = robust to bad L and to detection noise
     double lead = 0.7;          // share of the extrapolated fingertip motion fed forward (0 = none)
-    double velSmooth = 0.4;     // fingertip velocity filter (per frame)
+    double velSmooth = 0.15;     // fingertip velocity filter (per frame)
     double leadClip = 0.08;     // max feed-forward (rad)
     double innovClip = 0.08;    // max |innovation| absorbed per measurement (rad ~ 4.6 deg): outlier / false detection rejection
     int maxCounts = 60;         // per axis and frame (also what SendInput gets): 60 counts at 90 fps already sweep ~4 rad/s, far above a hand
-    double deadband = 0.0010;   // rad: |error| below this sends nothing (~1.2 px: stops count chatter at rest)
+    double deadband = 0.0022;   // rad: |error| below this sends nothing (~2.7 px: stops count chatter at rest)
     double satInnov = 0.03;     // |innovation| (rad) that counts towards a wall detection ...
     int satStreak = 5;          // ... when seen this many measurements in a row with the same sign
     int satHoldFrames = 90;     // after a wall is detected: no pushing into it for this many frames (3 s at 29 fps) ...

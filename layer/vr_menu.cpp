@@ -367,6 +367,12 @@ std::vector<Row> BuildMouseRows() {
         }
         rows.push_back({Mouse_Eye() == 0 ? L"Œil de référence : GAUCHE (celui de MSFS)  →  droit" : L"Œil de référence : DROIT  →  gauche", true, [] { Mouse_SetEye(Mouse_Eye() == 0 ? 1 : 0); }});
         rows.push_back({L"Remesurer la souris (1 s, main immobile)", true, [] { Servo_Recalibrate(); }});
+        {
+            const double st = Mouse_WheelStepDeg();
+            rows.push_back({std::wstring(L"Molette (rotatifs) : un cran tous les ") + std::to_wstring(static_cast<int>(st)) + L"° de poignet  →  plus fin", true,
+                            [st] { Mouse_SetWheel(st <= 10.0 ? 40.0 : st * 0.5, Mouse_WheelInvert()); }});
+            rows.push_back({Mouse_WheelInvert() ? L"Molette : sens INVERSÉ  →  normal" : L"Molette : sens normal  →  inverser", true, [] { Mouse_SetWheel(Mouse_WheelStepDeg(), !Mouse_WheelInvert()); }});
+        }
     } else {
         rows.push_back({L"Souris de bureau plus rapide", true, [] { Mouse_Gain(1.25); }});
         rows.push_back({L"Souris de bureau plus lente", true, [] { Mouse_Gain(0.8); }});

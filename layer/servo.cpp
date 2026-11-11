@@ -60,7 +60,7 @@ void DrawCross(std::vector<uint8_t>& rgb, int w, int h, int cx, int cy, int arm,
 // Recadrage annote (BMP 24 bits) : croix rouge = pointeur detecte, jaune = bout du doigt, vert = position attendue
 void SaveDiag(const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int detX, int detY, int fingerX, int fingerY) {
     Adapter& a = A();
-    if (a.diagSaved >= 8) return;
+    if (a.diagSaved >= 24) return;
     const uint64_t now = GetTickCount64();
     if (now - a.diagMs < 1500) return;
     a.diagMs = now;
@@ -122,6 +122,10 @@ sv::BrainHand MakeHand(const HandPoseData& h) {
     if (!b.usable) return b;
     b.pinch = h.pressed;
     b.knuckle = h.joint[kKnuckle].p;
+    if (h.jointValid[kWrist] && h.jointValid[12] && h.jointValid[0]) {  // roulis du poignet (comme les rotatifs des zones)
+        b.wristAxis = em::Normalized(h.joint[12].p - h.joint[kWrist].p);
+        b.palmUp = em::Rotate(h.joint[0].q, em::Vec3{0.0f, 1.0f, 0.0f});
+    }
     // bout reel du doigt : l'articulation du bout + son rayon dans le sens de la derniere phalange
     const em::Vec3 a = h.joint[kIndexTip].p, d = a - h.joint[kDistal].p;
     const float len = em::Length(d), r = h.radius[kIndexTip] > 0.001f ? h.radius[kIndexTip] : 0.006f;
@@ -194,7 +198,9 @@ void Servo_Frame(const XrCompositionLayerProjection* game, const HandsFrame& fra
     in.menuOpen = menuOpen;
     for (int k = 0; k < 2; ++k) in.hand[k] = MakeHand(frame.hand[k]);
     in.readerFree = a.reader && haveImg && !a.pendingActive;
+    a.brain.SetWheel(Mouse_WheelStepDeg(), Mouse_WheelInvert());
     const sv::BrainOutput out = a.brain.Frame(in);
+    if (out.wheelSteps != 0) MouseInject_Wheel(out.wheelSteps);
 
     if (out.dx != 0 || out.dy != 0) MouseInject_Move(out.dx, out.dy);
     if (out.buttonEvent >= 0) MouseInject_Button(out.buttonEvent == 1);

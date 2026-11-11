@@ -28,12 +28,17 @@ void Mouse_Frame(const HandsFrame& frame);
 void Mouse_Gain(double factor);
 
 // Oeil dans l'image duquel on cherche le pointeur (0 = gauche : c'est de lui que MSFS tire le rayon, 1 = droit : si c'est l'oeil directeur), enregistre.
+// Molette : un cran tous les `step` degres de roulis du poignet pendant un pincement ; sens inversable. Enregistres dans mouse.ini.
+double Mouse_WheelStepDeg();
+bool Mouse_WheelInvert();
+void Mouse_SetWheel(double stepDeg, bool invert);
 int Mouse_Eye();
 void Mouse_SetEye(int eye);
 
 // --- injection (utilisee aussi par l'asservissement) : file d'attente, jamais bloquante ---------------------------------------------------------
 void MouseInject_Move(int dx, int dy);  // comptes relatifs (decoupes en evenements de 8 comptes au plus)
 void MouseInject_Button(bool leftDown);
+void MouseInject_Wheel(int notches);    // crans de molette (+ : vers l'avant / le haut)
 void MouseInject_ReleaseIfHeld();       // relache le bouton gauche s'il est enfonce par nous
 
 }  // namespace layer

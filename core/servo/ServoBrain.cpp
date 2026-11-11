@@ -20,6 +20,7 @@ constexpr double kStableRad = 0.004;           // ~5 px : deux detections consec
 constexpr uint64_t kLostToAcquireMs = 4000;    // pointeur introuvable depuis si longtemps : on recommence le balayage
 constexpr uint64_t kKeepAliveMs = 700;         // MSFS masque le curseur apres quelques secondes sans mouvement et ignore les clics tant qu'il est masque
 constexpr uint64_t kPinchLockLookbackMs = 130; // le verrou du pincement reprend la position du doigt d'il y a ~130 ms
+constexpr double kWheelStartDeg = 14.0;        // roulis du poignet pendant un pincement a partir duquel le pincement devient une molette
 constexpr uint64_t kClickDebounceMs = 90;      // pincement minimal avant d'enfoncer le bouton
 }  // namespace
 
@@ -269,7 +270,8 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // Une image
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-BrainOutput ServoBrain::Frame(const BrainFrame& in) {
+BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
+    BrainFrame in = inRaw;
     BrainOutput out;
     nowMs_ = in.nowMs;
     ++seq_;
@@ -280,6 +282,19 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
     }
     const double tl = std::tan(static_cast<double>(in.view.fov.left)), tr = std::tan(static_cast<double>(in.view.fov.right));
     pxPerRad_ = (in.view.rect.w > 0 && tr > tl) ? in.view.rect.w / (tr - tl) : 1215.0;
+
+    // 0) bout du doigt lisse (One Euro) : le suivi des mains tremble de 1 a 3 mm, soit 3 a 8 px a 40 cm, et le pointeur « dansait » ; lisse a l'arret, reactif en mouvement
+    {
+        const float dt = lastFrameMs_ ? static_cast<float>(in.nowMs - lastFrameMs_) / 1000.0f : 0.0f;
+        lastFrameMs_ = in.nowMs;
+        for (int k = 0; k < 2; ++k) {
+            if (!in.hand[k].usable) {
+                tipFilter_[k].Reset();
+                continue;
+            }
+            in.hand[k].tip = tipFilter_[k].Filter(in.hand[k].tip, dt, 0.8f, 8.0f);
+        }
+    }
 
     // 1) main, bout du doigt, cible
     bool edge[2] = {false, false}, pinchNow[2] = {false, false};
@@ -408,6 +423,45 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
         ++nSent_;
     }
 
+    // 2b) molette : pendant un pincement, un roulis du poignet (comme pour les rotatifs des zones) fait tourner la molette de la souris : un cran tous les
+    //     wheelStepDeg_ degres. Le pincement devient alors une molette : le bouton est relache et ne redescend pas.
+    if (hand >= 0 && pinch && in.hand[hand].wristAxis.x * in.hand[hand].wristAxis.x + in.hand[hand].wristAxis.y * in.hand[hand].wristAxis.y + in.hand[hand].wristAxis.z * in.hand[hand].wristAxis.z > 0.5f) {
+        const BrainHand& hd = in.hand[hand];
+        const emulation::Vec3 n1 = emulation::Normalized(hd.palmUp - hd.wristAxis * emulation::Dot(hd.palmUp, hd.wristAxis));
+        if (edge[hand]) {
+            rollAxis_ = hd.wristAxis;
+            rollN0_ = n1;
+            rollAcc_ = 0;
+            rollLast_ = 0;
+            wheelMode_ = false;
+        } else {
+            const double ang = std::atan2(static_cast<double>(emulation::Dot(rollAxis_, emulation::Cross(rollN0_, n1))), static_cast<double>(emulation::Dot(rollN0_, n1))) * 57.29577951;
+            double d = ang - rollLast_;
+            while (d > 180.0) d -= 360.0;
+            while (d < -180.0) d += 360.0;
+            rollLast_ = ang;
+            rollAcc_ += d;
+            if (!wheelMode_ && std::fabs(rollAcc_) >= kWheelStartDeg) {
+                wheelMode_ = true;
+                rollAcc_ -= rollAcc_ > 0 ? kWheelStartDeg : -kWheelStartDeg;
+                Log(0, "servo : molette (roulis du poignet)");
+            }
+            if (wheelMode_) {
+                int steps = 0;
+                while (rollAcc_ >= wheelStepDeg_) {
+                    rollAcc_ -= wheelStepDeg_;
+                    ++steps;
+                }
+                while (rollAcc_ <= -wheelStepDeg_) {
+                    rollAcc_ += wheelStepDeg_;
+                    --steps;
+                }
+                out.wheelSteps = wheelInvert_ ? -steps : steps;
+            }
+        }
+    }
+    if (!pinch) wheelMode_ = false;
+
     // 3) bouton : pas de clic tant que le pointeur n'est pas repere ; le bouton ne descend qu'apres kClickDebounceMs de pincement (le geste d'ouverture du menu pince
     //    les deux mains presque ensemble : pas de clic parasite dans le cockpit) ; deux mains pincees = jamais de clic ; un pincement plus court est un « tap » (clic bref).
     const bool canClick = mode_ == BrainMode::Track && ctl_.HaveModel() && (in.nowMs - lastDetMs_ < 800);
@@ -419,7 +473,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
         down_ = false;
     } else {
         bool want = false;
-        if (hand >= 0 && pinch && !both && (canClick || down_)) want = down_ || (in.nowMs - pinchStartMs_ >= kClickDebounceMs);
+        if (hand >= 0 && pinch && !both && !wheelMode_ && (canClick || down_)) want = down_ || (in.nowMs - pinchStartMs_ >= kClickDebounceMs);
         if (want && !down_) {
             out.buttonEvent = 1;
             down_ = true;
@@ -434,6 +488,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
             lastSendMs_ = in.nowMs;
         }
     }
+    if (out.buttonEvent >= 0) Log(0, "servo : bouton %s (pointeur (%.0f,%.0f), doigt (%.0f,%.0f))", out.buttonEvent == 1 ? "ENFONCE" : "relache", lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0);
     heldMs_ = pinch ? in.nowMs - pinchStartMs_ : 0;
     prevSelPinch_ = pinch;
     prevBoth_ = both;
