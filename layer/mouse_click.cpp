@@ -370,6 +370,14 @@ void Mouse_FillMarkers(HandsFrame* frame) {
     m.pos = g_markerWorld;
     m.size = 0.12f;
     m.r = m.g = m.b = 1.0f;
+    // Avec un etalonnage existant : le repere passe au vert quand la souris est dessus (a 45 px pres selon cet etalonnage) ; sinon il reste blanc.
+    double px, py;
+    POINT c;
+    if (g_cal.ok && Project(g_markerWorld, &px, &py) && GetCursorPos(&c) && std::hypot(c.x - px, c.y - py) < 45.0) {
+        m.r = 0.1f;
+        m.g = 1.0f;
+        m.b = 0.2f;
+    }
 }
 
 }  // namespace layer

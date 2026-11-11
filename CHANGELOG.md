@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.22] - 2026-11-11
+
+### Ajoute
+- **Etalonnage de la souris : le repere passe au vert quand la souris est dessus** (a 45 px pres selon l'etalonnage precedent), pour savoir quand cliquer. Sans etalonnage existant, le repere reste blanc.
+
 ## [0.0.21] - 2026-11-11
 
 ### Corrige
