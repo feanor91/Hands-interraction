@@ -8,3 +8,10 @@ neg neg_efb_labels.bmp 0 0
 neg neg_efb_text.bmp 0 0
 neg neg_bright_panel.bmp 0 0
 neg neg_scene.bmp 0 0
+pos ptr_hand_on_blue.bmp 59.0 42.0
+pos ptr_arrow_on_panel.bmp 53.0 40.0
+neg neg_glint_canopy_speck2.bmp 0 0
+neg neg_glint_canopy_speck.bmp 0 0
+neg neg_glint_latch_streak.bmp 0 0
+neg neg_glint_latch_edge.bmp 0 0
+neg neg_glint_rail_edge.bmp 0 0

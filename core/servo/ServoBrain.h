@@ -94,6 +94,11 @@ private:
     ServoController ctl_;
     GainProbe probe_;
     bool probeDone_ = false;
+    int probeFails_ = 0;
+    std::vector<V2> bad_;  // directions (cap, site) de decors pris pour le pointeur : ignorees pendant la recherche
+    uint64_t switchSinceMs_ = 0;
+    int roiPhase_ = 0;
+    double sumScore_ = 0;
     // detection
     bool haveDet_ = false;
     uint64_t lastDetMs_ = 0;

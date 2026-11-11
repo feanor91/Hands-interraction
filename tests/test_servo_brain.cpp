@@ -62,6 +62,13 @@ struct Sim {
     bool brightBg = false;
     V2 ptr{0.30, -0.25};                // direction (cap, site) du pointeur au depart
     double wallYaw = 1e9;
+    double headSwayDeg = 0.0;           // balancement de la tete (cap) : amplitude en degres
+    double headSwayHz = 0.4;
+    bool headAnchored = false;          // le pointeur est colle a la tete (sinon : fixe dans le monde)
+    bool decoy = false;                 // une deuxieme fleche IMMOBILE (un « reflet » avec un contour noir : le pire cas pour le detecteur)
+    V2 decoyAng{0.17, -0.21};
+    int teleportAt = -1;                // appel ou MSFS « re-ancre » le pointeur (saut de 0.4 rad sans commande)
+    V2 teleportBy{0.4, 0.1};
     // etat
     EyeView view;
     std::vector<std::pair<int, int>> cnt;
@@ -82,6 +89,12 @@ struct Sim {
     double TrueGain() const { return kBaseGain * gainRatio; }
 
     em::Vec3 WorldPoint(V2 ang, double dist) const { return view.pose.p + DirOf({ang.a, ang.b}) * static_cast<float>(dist); }
+    // position MONDE du pointeur (colle a la tete : on tourne sa direction avec la tete)
+    em::Vec3 PointerWorld() const {
+        em::Vec3 d = DirOf({ptr.a, ptr.b});
+        if (headAnchored) d = em::Rotate(view.pose.q, d);
+        return view.pose.p + d;
+    }
     Px PixelOf(const em::Vec3& p) const {
         Px out;
         Project(view, p, &out);
@@ -100,15 +113,17 @@ struct Sim {
                 const int sx = (x + r.x) % bg.w, sy = (y + r.y) % bg.h;
                 for (int c = 0; c < 4; ++c) (*px)[(static_cast<size_t>(y) * r.w + x) * 4 + c] = bg.rgba[(static_cast<size_t>(sy) * bg.w + sx) * 4 + c];
             }
-        if (!Visible(now)) return;
-        const Px p = PixelOf(WorldPoint(ptr, 1.0));
-        const int tipX = static_cast<int>(std::floor(p.x)), tipY = static_cast<int>(std::floor(p.y));
-        for (int y = 0; y < a.arrow.img.h; ++y)
-            for (int x = 0; x < a.arrow.img.w; ++x) {
-                const int gx = tipX - a.arrow.tipX + x - r.x, gy = tipY - a.arrow.tipY + y - r.y;
-                if (gx < 0 || gy < 0 || gx >= r.w || gy >= r.h) continue;
-                for (int c = 0; c < 4; ++c) (*px)[(static_cast<size_t>(gy) * r.w + gx) * 4 + c] = a.arrow.img.rgba[(static_cast<size_t>(y) * a.arrow.img.w + x) * 4 + c];
-            }
+        auto paste = [&](const Px& p) {
+            const int tipX = static_cast<int>(std::floor(p.x)), tipY = static_cast<int>(std::floor(p.y));
+            for (int y = 0; y < a.arrow.img.h; ++y)
+                for (int x = 0; x < a.arrow.img.w; ++x) {
+                    const int gx = tipX - a.arrow.tipX + x - r.x, gy = tipY - a.arrow.tipY + y - r.y;
+                    if (gx < 0 || gy < 0 || gx >= r.w || gy >= r.h) continue;
+                    for (int c = 0; c < 4; ++c) (*px)[(static_cast<size_t>(gy) * r.w + gx) * 4 + c] = a.arrow.img.rgba[(static_cast<size_t>(y) * a.arrow.img.w + x) * 4 + c];
+                }
+        };
+        if (decoy) paste(PixelOf(WorldPoint(decoyAng, 1.0)));
+        if (Visible(now)) paste(PixelOf(PointerWorld()));
     }
 };
 
@@ -140,6 +155,10 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
     else s.lastMoveMs = s.t0;
     for (int k = 0; k < n; ++k) {
         const uint64_t now = s.t0 + static_cast<uint64_t>(std::llround(k * dtMs));
+        if (s.headSwayDeg != 0.0) {  // la tete se balance autour de l'axe vertical (la vue de l'oeil tourne)
+            const double th = s.headSwayDeg * 3.14159265358979 / 180.0 * std::sin(2.0 * 3.14159265358979 * s.headSwayHz * k * dtMs / 1000.0);
+            s.view.pose.q = {0.0f, static_cast<float>(std::sin(th / 2)), 0.0f, static_cast<float>(std::cos(th / 2))};
+        }
         // le « jeu » applique les comptes envoyes il y a L appels
         if (k >= s.L) {
             const auto c = s.cnt[static_cast<size_t>(k - s.L)];
@@ -149,6 +168,10 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
                 s.ptr.a = std::min(s.ptr.a, s.wallYaw);
                 s.lastMoveMs = now;
             }
+        }
+        if (k == s.teleportAt) {
+            s.ptr.a += s.teleportBy.a;
+            s.ptr.b += s.teleportBy.b;
         }
         if (fl.active && k >= fl.at) {
             s.brain.OnPixels(fl.px.data(), fl.req);
@@ -189,7 +212,7 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
             fl.req = out.request;
             s.Render(out.request, now, &fl.px);
         }
-        const Px pp = s.PixelOf(s.WorldPoint(s.ptr, 1.0)), fp = s.PixelOf(tip);
+        const Px pp = s.PixelOf(s.PointerWorld()), fp = s.PixelOf(tip);
         m.err.push_back(std::hypot(pp.x - fp.x, pp.y - fp.y));
     }
     return m;
@@ -332,7 +355,7 @@ TEST(ServoBrain_doigt_hors_de_l_image_le_pointeur_reste_dans_l_image) {
         return f;
     });
     (void)m;
-    const Px p = s.PixelOf(s.WorldPoint(s.ptr, 1.0));
+    const Px p = s.PixelOf(s.PointerWorld());
     std::printf("      doigt hors image : pointeur final en (%.0f, %.0f) dans l'image 2688x2880, mode %d\n", p.x, p.y, static_cast<int>(s.brain.Mode()));
     CHECK(p.x > 0 && p.x < 2688 && p.y > 0 && p.y < 2880);
     CHECK(s.brain.Mode() == BrainMode::Track);
@@ -365,4 +388,53 @@ TEST(ServoBrain_tap_bref_donne_un_clic_complet) {
     std::printf("      tap : %d enfoncement(s), %d relachement(s)\n", s.downs, s.ups);
     CHECK_EQ(s.downs, 1);
     CHECK_EQ(s.ups, 1);
+}
+
+TEST(ServoBrain_reflet_immobile_avec_contour_noir_est_ecarte_apres_la_mesure) {
+    Sim s;
+    s.decoy = true;  // une fleche immobile pres du doigt : le balayage la trouve en premier
+    const Metrics m = Run(s, 1400, [](int) { return Frame(); });
+    std::printf("      reflet : mode %d, ecart au repos %.1f px\n", static_cast<int>(s.brain.Mode()), MaxErr(m, 1300, 1400));
+    bool sawRetry = false;
+    for (const std::string& l : s.logs) sawRetry = sawRetry || l.find("ne repond pas") != std::string::npos;
+    CHECK(sawRetry);
+    CHECK(s.brain.Mode() == BrainMode::Track);
+    CHECK(MaxErr(m, 1300, 1400) < 8.0);
+}
+
+TEST(ServoBrain_tete_qui_se_balance_pointeur_fixe_dans_le_monde) {
+    Sim s;
+    s.headSwayDeg = 8.0;  // +-8 degres a 0.4 Hz (pic ~20 deg/s)
+    const Metrics m = Run(s, 1100, [](int) { return Frame(); });
+    std::printf("      balancement, pointeur monde : mode %d, ecart RMS apres 8 s %.1f px (max %.1f)\n", static_cast<int>(s.brain.Mode()), RmsErr(m, 700, 1100), MaxErr(m, 700, 1100));
+    CHECK(s.brain.Mode() == BrainMode::Track);
+    CHECK(RmsErr(m, 700, 1100) < 15.0);
+}
+
+TEST(ServoBrain_tete_qui_se_balance_pointeur_colle_a_la_tete) {
+    Sim s;
+    s.headSwayDeg = 8.0;
+    s.headAnchored = true;
+    const Metrics m = Run(s, 1100, [](int) { return Frame(); });
+    std::printf("      balancement, pointeur tete : mode %d, ecart RMS apres 8 s %.1f px (max %.1f)\n", static_cast<int>(s.brain.Mode()), RmsErr(m, 700, 1100), MaxErr(m, 700, 1100));
+    CHECK(s.brain.Mode() == BrainMode::Track);
+    CHECK(RmsErr(m, 700, 1100) < 40.0);
+}
+
+TEST(ServoBrain_pointeur_re_ancre_par_MSFS_loin_du_modele_est_retrouve) {
+    Sim s;
+    s.teleportAt = 700;  // le pointeur saute de ~480 px apres la convergence
+    const Metrics m = Run(s, 1300, [](int) { return Frame(); });
+    int back = -1;
+    for (int k = 700; k < 1300; ++k) {
+        bool ok = true;
+        for (int j = k; j < std::min(1300, k + 30) && ok; ++j) ok = m.err[static_cast<size_t>(j)] < 8.0;
+        if (ok) {
+            back = k - 700;
+            break;
+        }
+    }
+    std::printf("      saut de 0.4 rad : retour a < 8 px apres %d images (%.1f s a 90 Hz)\n", back, back / 90.0);
+    CHECK(back >= 0 && back < 270);  // moins de 3 s
+    CHECK(s.brain.Mode() == BrainMode::Track);
 }

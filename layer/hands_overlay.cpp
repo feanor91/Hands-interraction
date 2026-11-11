@@ -954,6 +954,7 @@ bool Overlay_GetEyeImage(const XrCompositionLayerProjection* game, int eye, EyeI
 
 void Overlay_Stop() {
     Safe("Overlay_Stop", [&] {
+        Mouse_SetKind(MouseKind::Off);  // relache le bouton et le confinement du curseur
         Servo_Stop();
         VrMenu_Stop();
         if (g_depthReader) g_depthReader->WaitIdle();

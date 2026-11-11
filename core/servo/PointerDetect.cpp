@@ -264,6 +264,29 @@ int DetectPointer(const uint8_t* rgba, int pitchBytes, int w, int h, const Detec
         const double boundFrac = nBoundary ? static_cast<double>(nBoundHalo) / nBoundary : 1.0;
         if (boundFrac < P.haloMinBound) continue;
 
+        // contour noir net (voir DetectParams::outlineDark) : part des pixels du bord ayant un pixel <= outlineDark a 2 pixels au plus, parmi ceux qui ont un voisin
+        // dans la ROI (les pixels du bord au ras de la ROI ne comptent pas)
+        std::vector<uint8_t> dkO(mask.size(), 0), vNear = valid;
+        for (int y = 0; y < ph; ++y)
+            for (int x = 0; x < pw; ++x) {
+                const size_t i = static_cast<size_t>(y * pw + x);
+                if (!valid[i]) continue;
+                const int gx = x - pad + bx0, gy = y - pad + by0;
+                if (ws.value[static_cast<size_t>(gy) * static_cast<size_t>(w) + static_cast<size_t>(gx)] <= P.outlineDark) dkO[i] = 1;
+            }
+        for (int k = 0; k < P.haloRadius; ++k) {
+            Dilate8(dkO, pw, ph, tmp);
+            Dilate8(vNear, pw, ph, tmp);
+        }
+        int nOutB = 0, nOutDark = 0;
+        for (size_t i = 0; i < mask.size(); ++i) {
+            if (!boundary[i] || !vNear[i]) continue;
+            ++nOutB;
+            if (dkO[i]) ++nOutDark;
+        }
+        const double outlineFrac = nOutB ? static_cast<double>(nOutDark) / nOutB : 1.0;
+        if (outlineFrac < P.outlineMin) continue;
+
         // moments / forme
         const double cx = sx / n, cy = sy / n;
         double mxx = 0, myy = 0, mxy = 0;
@@ -313,7 +336,8 @@ int DetectPointer(const uint8_t* rgba, int pitchBytes, int w, int h, const Detec
             const double sFill = Trap(fill, 0.22, 0.32, 0.70, 0.85);
             fShape = 0.2 + 0.8 * sSol * (0.5 + 0.5 * sFill);
         }
-        double score = fPeak * fSat * fHalo * fIso * fSize * fShape;
+        const double fOutline = 0.2 + 0.8 * Ramp(outlineFrac, 0.35, 0.85);
+        double score = fPeak * fSat * fHalo * fIso * fSize * fShape * fOutline;
         if (clipped) score *= P.clipPenalty;
 
         PointerCandidate c;
@@ -333,6 +357,7 @@ int DetectPointer(const uint8_t* rgba, int pitchBytes, int w, int h, const Detec
         c.ring = ringFrac;
         c.bound = boundFrac;
         c.elong = elong;
+        c.outline = outlineFrac;
         cands.push_back(c);
     }
 
@@ -340,7 +365,7 @@ int DetectPointer(const uint8_t* rgba, int pitchBytes, int w, int h, const Detec
         const double sg = std::max(prior->sigma, 1.0);
         for (PointerCandidate& c : cands) {
             const double d2 = (c.x - prior->x) * (c.x - prior->x) + (c.y - prior->y) * (c.y - prior->y);
-            c.score *= 0.35 + 0.65 * std::exp(-d2 / (2 * sg * sg));
+            c.score *= 0.55 + 0.45 * std::exp(-d2 / (2 * sg * sg));  // un vrai pointeur loin de la prediction garde 55 % de son score (modele faux apres une perte)
         }
     }
     std::sort(cands.begin(), cands.end(), [](const PointerCandidate& a, const PointerCandidate& b) { return a.score > b.score; });

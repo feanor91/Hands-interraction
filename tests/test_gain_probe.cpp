@@ -99,3 +99,21 @@ TEST(GainProbe_sans_mesure_echec_apres_delai) {
     CHECK(!going);
     CHECK(p.Done() && !p.Final().ok);
 }
+
+TEST(GainProbe_butee_partielle_garde_le_sens_qui_a_le_plus_bouge) {
+    // le pointeur est a 12 mrad de la butee a droite : la salve +X ne parcourt que ~25 % de ce qu'elle devrait, la salve -X est complete. Avant : « salves incoherentes ».
+    ProbePlant pl;
+    pl.wallMaxYaw = 0.1 + 0.012;
+    const auto r = RunProbe(pl);
+    std::printf("      butee partielle : ok=%d gain x %.3f (reel 0.800) %s\n", r.ok, r.radPerCountX * 1193.7, r.why);
+    CHECK(r.ok);
+    CHECK(std::fabs(r.radPerCountX * 1193.7 / 0.8 - 1.0) < 0.1);
+}
+
+TEST(GainProbe_cible_qui_ne_repond_pas_est_signalee) {
+    ProbePlant pl;
+    pl.frozen = true;
+    const auto r = RunProbe(pl);
+    CHECK(!r.ok);
+    CHECK(!r.responded);  // pas de reponse : l'appelant en conclut que la cible est un decor (eclat, reflet), pas le pointeur
+}

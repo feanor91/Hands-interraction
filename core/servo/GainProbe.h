@@ -26,6 +26,9 @@ public:
         double radPerCountY = 0;       // dy > 0 (vers le bas) -> pitch diminue : valeur negative
         int latencyFrames = 2;
         int burstsOk = 0;              // salves exploitables (sur 4)
+        bool responded = false;        // au moins une salve a fait bouger la cible dans le bon sens : faux = la cible ne repond pas aux comptes (eclat, decor...)
+        double est[4] = {0, 0, 0, 0};  // gain mesure par salve (rad / compte, signe inclus), pour le journal
+        int lat[4] = {0, 0, 0, 0};
         const char* why = "";          // raison de l'echec (journal)
     };
 
@@ -33,6 +36,7 @@ public:
     static constexpr int kPerFrame = 10;
     static constexpr int kSettleFrames = 18;
     static constexpr int kMaxWaitFrames = 240;  // attente d'un pointeur stable
+    static constexpr double kMinGain = 2e-5;    // rad / compte : en dessous, la salve n'a rien deplace (~0.02 px par compte)
 
     void Start(uint64_t seq) {
         *this = GainProbe();
@@ -152,42 +156,68 @@ private:
     }
 
     bool Fail(const char* why) {
+        const bool responded = res_.responded;
+        double est[4];
+        int lat[4];
+        for (int i = 0; i < 4; ++i) {
+            est[i] = res_.est[i];
+            lat[i] = res_.lat[i];
+        }
         res_ = Result();
+        res_.responded = responded;
+        for (int i = 0; i < 4; ++i) {
+            res_.est[i] = est[i];
+            res_.lat[i] = lat[i];
+        }
         res_.why = why;
         done_ = true;
         return false;
     }
 
     bool Finish() {
-        // gain par axe : moyenne des deux salves quand elles concordent (rapport 0.6..1.67, meme signe), sinon la salve qui a bouge
+        // Gain par axe. Une butee de MSFS ne peut que REDUIRE le deplacement d'une salve : si les deux sens ne concordent pas (rapport hors 0.6..1.67), on garde celui
+        // qui a le plus bouge. Une salve qui va dans le mauvais sens est du bruit (ou un decor qui bouge avec la tete) : ignoree. Aucune salve valide sur un axe : on
+        // y reprend l'echelle de l'autre (pixels carres : un compte vaut le meme angle en x et en y).
+        const double sgn[2] = {1.0, -1.0};  // dx > 0 -> yaw augmente ; dy > 0 (vers le bas) -> pitch diminue
         double g[2] = {0, 0};
-        bool okAxis[2] = {false, false};
+        bool known[2] = {false, false};
         std::vector<double> lat;
         int nOk = 0;
+        for (int b = 0; b < 4; ++b) {
+            res_.est[b] = est_[b].valid ? est_[b].gain : 0.0;
+            res_.lat[b] = est_[b].latency;
+        }
         for (int axis = 0; axis < 2; ++axis) {
-            const Est& p = est_[axis * 2];
-            const Est& q = est_[axis * 2 + 1];
-            const bool pv = p.valid && std::fabs(p.gain) > 1e-5, qv = q.valid && std::fabs(q.gain) > 1e-5;
-            if (pv) { ++nOk; lat.push_back(p.latency); }
-            if (qv) { ++nOk; lat.push_back(q.latency); }
-            if (pv && qv) {
-                const double r = p.gain / q.gain;
-                if (r < 0.6 || r > 1.67) return Fail("salves incoherentes");
-                g[axis] = 0.5 * (p.gain + q.gain);
-                okAxis[axis] = true;
-            } else if (pv || qv) {
-                g[axis] = pv ? p.gain : q.gain;  // l'autre sens est probablement contre une butee
-                okAxis[axis] = true;
+            double v[2];
+            int n = 0;
+            for (int k = 0; k < 2; ++k) {
+                const Est& e = est_[axis * 2 + k];
+                const double signed_ = e.gain * sgn[axis];  // positif = bon sens
+                if (e.valid && signed_ > kMinGain) {
+                    v[n++] = signed_;
+                    lat.push_back(e.latency);
+                    ++nOk;
+                }
+            }
+            if (n == 2) {
+                const double r = v[0] / v[1];
+                g[axis] = (r >= 0.6 && r <= 1.67) ? 0.5 * (v[0] + v[1]) : std::max(v[0], v[1]);
+                known[axis] = true;
+            } else if (n == 1) {
+                g[axis] = v[0];
+                known[axis] = true;
             }
         }
-        if (!okAxis[0] || !okAxis[1]) return Fail("pas de mouvement mesurable sur un axe");
-        if (g[0] <= 0 || g[1] >= 0) return Fail("sens de deplacement inattendu");
+        res_.burstsOk = nOk;
+        res_.responded = nOk > 0;
+        if (!known[0] && !known[1]) return Fail("la cible ne repond pas aux comptes de souris");
+        if (!known[0]) g[0] = g[1];
+        if (!known[1]) g[1] = g[0];
         const double prior = ServoParams().radPerCountX;
-        if (g[0] < 0.1 * prior || g[0] > 10 * prior || -g[1] < 0.1 * prior || -g[1] > 10 * prior) return Fail("gain hors de la plage plausible");
+        if (g[0] < 0.1 * prior || g[0] > 10 * prior || g[1] < 0.1 * prior || g[1] > 10 * prior) return Fail("gain hors de la plage plausible");
         res_.ok = true;
         res_.radPerCountX = g[0];
-        res_.radPerCountY = g[1];
-        res_.burstsOk = nOk;
+        res_.radPerCountY = -g[1];
         std::sort(lat.begin(), lat.end());
         res_.latencyFrames = std::max(1, std::min(4, static_cast<int>(lat.empty() ? 2 : lat[lat.size() / 2])));
         done_ = true;

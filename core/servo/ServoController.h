@@ -33,11 +33,12 @@ struct ServoParams {
     double radPerCountY = -1.0 / 1193.7;
     int latencyFrames = 2;      // L, calibrated at start (pulse) and logged
     double kControl = 0.8;      // share of the predicted error corrected per frame (0.5..1)
-    double kBias = 0.25;        // innovation gain per measurement (0.1..0.3); small = robust to bad L, slow to absorb gain errors
+    double kBias = 0.5;         // innovation gain per measurement (0.1..0.6): the detector is now selective (black-outline test), so measurements can be trusted more ;
+                                // large = follows a pointer that drifts (head-anchored, snapping to controls), small = robust to bad L and to detection noise
     double lead = 0.7;          // share of the extrapolated fingertip motion fed forward (0 = none)
     double velSmooth = 0.4;     // fingertip velocity filter (per frame)
     double leadClip = 0.08;     // max feed-forward (rad)
-    double innovClip = 0.035;   // max |innovation| absorbed per measurement (rad ~ 2 deg): outlier / false detection rejection
+    double innovClip = 0.08;    // max |innovation| absorbed per measurement (rad ~ 4.6 deg): outlier / false detection rejection
     int maxCounts = 60;         // per axis and frame (also what SendInput gets): 60 counts at 90 fps already sweep ~4 rad/s, far above a hand
     double deadband = 0.0010;   // rad: |error| below this sends nothing (~1.2 px: stops count chatter at rest)
     double satInnov = 0.03;     // |innovation| (rad) that counts towards a wall detection ...
@@ -197,6 +198,19 @@ public:
         o.dx = dx;
         o.dy = dy;
         return o;
+    }
+
+    // Trust a measurement completely (a strong detection after the pointer was lost for a while): x_hat becomes exactly this measurement, no clipping, no filtering.
+    void Reanchor(uint64_t imageSeq, V2 ptr) {
+        const int64_t k = static_cast<int64_t>(imageSeq) - p_.latencyFrames;
+        const Cnt vis = CumAt(k);
+        x0_ = ptr - V2{p_.radPerCountX * static_cast<double>(vis.a), p_.radPerCountY * static_cast<double>(vis.b)};
+        bias_ = {};
+        haveX0_ = true;
+        lastPtr_ = ptr;
+        jumpN_ = 0;
+        streak_[0] = streak_[1] = 0;
+        ++nJumps_;
     }
 
     // Where the model says the pointer is in the image of call `imageSeq` (what has landed there: commands of calls <= imageSeq - L). Used to centre the

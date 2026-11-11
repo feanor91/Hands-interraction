@@ -148,6 +148,54 @@ void Post(const Packet& p) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
+// Curseur de Windows confine a la fenetre du jeu : les comptes de souris continuent d'arriver a MSFS (entree brute, jamais confinee) mais le curseur ne peut plus
+// quitter l'ecran de MSFS vers l'autre moniteur (MSFS ne recoit alors plus les clics tant qu'on ne clique pas de nouveau dans sa fenetre). Relache a l'arret du mode.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+bool g_clipped = false;
+
+struct WinSearch {
+    DWORD pid = 0;
+    RECT best{};
+    long long area = 0;
+};
+
+BOOL CALLBACK EnumWinProc(HWND h, LPARAM lp) {
+    WinSearch* w = reinterpret_cast<WinSearch*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != w->pid || !IsWindowVisible(h)) return TRUE;
+    RECT r;
+    if (!GetWindowRect(h, &r)) return TRUE;
+    const long long a = static_cast<long long>(r.right - r.left) * (r.bottom - r.top);
+    if (a > w->area) {
+        w->area = a;
+        w->best = r;
+    }
+    return TRUE;
+}
+
+void ClipToGameWindow(bool on) {
+    if (!on) {
+        if (g_clipped) {
+            ClipCursor(nullptr);
+            g_clipped = false;
+            Logger::Get().Log(LogLevel::Info, "souris : curseur Windows libere");
+        }
+        return;
+    }
+    if (g_clipped) return;
+    WinSearch w;
+    w.pid = GetCurrentProcessId();
+    EnumWindows(EnumWinProc, reinterpret_cast<LPARAM>(&w));
+    const long long width = w.best.right - w.best.left, height = w.best.bottom - w.best.top;
+    if (width < 800 || height < 600) return;  // pas de fenetre de jeu reconnaissable : on ne confine rien
+    if (ClipCursor(&w.best)) {
+        g_clipped = true;
+        Logger::Get().Log(LogLevel::Info, "souris : curseur Windows confine a la fenetre du jeu (%ld,%ld)-(%ld,%ld)", w.best.left, w.best.top, w.best.right, w.best.bottom);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
 // Type de souris et touche de secours
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 MouseKind g_kind = MouseKind::Off;
@@ -266,6 +314,7 @@ void Mouse_SetKind(MouseKind k) {
     g_remX = g_remY = 0;
     g_kind = k;
     if (k != MouseKind::Off) g_lastOn = k;
+    ClipToGameWindow(k != MouseKind::Off);
     Logger::Get().Log(LogLevel::Info, "souris : %s",
                       k == MouseKind::Off ? "mode souris desactive" : (k == MouseKind::Servo ? "mode souris ACTIVE : pointeur colle au doigt (asservi)" : "mode souris ACTIVE : souris de bureau (relatif)"));
 }

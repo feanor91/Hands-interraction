@@ -69,6 +69,14 @@ TEST(PointerDetect_scenes_sans_pointeur_aucun_candidat_serieux) {
         const double best = n ? out[0].score : 0.0;
         std::printf("      %-22s %d candidat(s), meilleur score %.2f\n", c.file.c_str(), n, best);
         CHECK(best < 0.4);
+        // reglages de suivi (graines plus basses, contour un peu plus tolerant), avec un a priori au milieu de la scene : aucun faux positif non plus
+        DetectPrior prior;
+        prior.valid = true;
+        prior.x = img.w * 0.5;
+        prior.y = img.h * 0.5;
+        prior.sigma = 120;
+        const int nt = DetectPointer(img.rgba.data(), img.w * 4, img.w, img.h, TrackingParams(), &prior, out, 8);
+        CHECK(nt == 0 || out[0].score < 0.25);
     }
 }
 

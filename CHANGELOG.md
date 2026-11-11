@@ -2,6 +2,19 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.29] - 2026-11-11
+
+### Corrige
+- **Faux pointeurs (reflets).** Dans l'essai du 11 nov. (17:56), la couche prenait des **reflets** (eclats blancs sur la verriere, le loquet, les rails) pour la fleche de MSFS : la mesure du gain
+  echouait deux fois, et le suivi partait sur un reflet pendant une quarantaine de secondes. Quand elle avait le bon pointeur, il etait pourtant a quelques pixels du doigt (29 detections par seconde).
+  Le detecteur exige maintenant le **contour noir net** du curseur : part du bord du blanc qui a un pixel noir a 2 px au plus ; curseurs reels 0.72-1.00, reflets 0.00-0.25 (5 captures reelles de
+  l'essai). Ces captures (reflets et vrais pointeurs sur fond bleu / gris) sont ajoutees aux tests.
+- **Mesure du gain** : tolere une butee de MSFS d'un cote (garde la salve qui a le plus bouge) ; une cible qui ne repond pas aux comptes de souris est ecartee (liste noire) et la recherche reprend.
+- **Suivi** : correction par la mesure plus rapide (gain 0.5, ecart absorbe jusqu'a 4.6 deg) ; apres une perte, une detection nette remet le modele d'aplomb d'un coup ; la recherche alterne la prediction du
+  modele, la derniere position dans l'image (pointeur colle a la tete) et un balayage ; un vrai pointeur loin de la prediction est moins penalise ; le changement de main attend 350 ms (plus de va-et-vient).
+- Le curseur de Windows est **confine a la fenetre du jeu** tant que le mode souris est actif (plus de fuite vers l'autre ecran, qui coupait les clics de MSFS) ; relache a l'arret.
+- Journal : score moyen de detection, detail des quatre salves de mesure du gain. Tests : 123.
+
 ## [0.0.28] - 2026-11-11
 
 ### Modifie

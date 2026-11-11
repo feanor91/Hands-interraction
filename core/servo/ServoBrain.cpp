@@ -12,7 +12,10 @@ namespace {
 constexpr int kTileW = 768, kTileH = 576;      // balayage d'acquisition
 constexpr int kTrackW = 448, kTrackH = 336;    // ROI de suivi
 constexpr int kWideW = 768, kWideH = 576;      // ROI elargie quand le pointeur manque
-constexpr double kMinScoreTrack = 0.30, kMinScoreScan = 0.45;
+constexpr double kMinScoreTrack = 0.25, kMinScoreScan = 0.40;
+constexpr double kBlacklistRad = 0.03;         // rad (~35 px) : decors (eclats, reflets) pris pour le pointeur ; ils ne repondent pas aux comptes de souris
+constexpr int kMaxProbeFails = 2;              // apres ce nombre de mesures sans reponse on continue avec les valeurs par defaut
+constexpr uint64_t kHandSwitchMs = 350;        // l'autre main doit pointer seule pendant ce temps avant de reprendre la main (sauf pincement)
 constexpr double kStableRad = 0.004;           // ~5 px : deux detections consecutives « au meme endroit »
 constexpr uint64_t kLostToAcquireMs = 4000;    // pointeur introuvable depuis si longtemps : on recommence le balayage
 constexpr uint64_t kKeepAliveMs = 700;         // MSFS masque le curseur apres quelques secondes sans mouvement et ignore les clics tant qu'il est masque
@@ -34,6 +37,9 @@ void ServoBrain::Reset() {
     mode_ = BrainMode::Acquire;
     ctl_ = ServoController(params_);
     probe_ = GainProbe();
+    bad_.clear();
+    probeFails_ = 0;
+    switchSinceMs_ = 0;
     haveDet_ = false;
     stable_ = missRun_ = 0;
     hand_ = -1;
@@ -66,8 +72,14 @@ int ServoBrain::ChooseHand(const BrainFrame& in, const bool edge[2]) {
     for (int k = 0; k < 2; ++k) ext[k] = in.hand[k].usable && in.hand[k].extended;
     if (hand_ >= 0 && in.hand[hand_].usable) {
         const int o = 1 - hand_;
-        if (!(ext[o] && !ext[hand_])) return hand_;  // on ne change que si l'autre main pointe et pas celle-ci
+        if (!(ext[o] && !ext[hand_])) {
+            switchSinceMs_ = 0;
+            return hand_;  // on ne change que si l'autre main pointe et pas celle-ci...
+        }
+        if (!switchSinceMs_) switchSinceMs_ = in.nowMs;
+        if (in.nowMs - switchSinceMs_ < kHandSwitchMs) return hand_;  // ... depuis un moment : pas de va-et-vient quand les deux mains bougent
     }
+    switchSinceMs_ = 0;
     if (ext[1]) return 1;
     if (ext[0]) return 0;
     if (in.hand[1].usable) return 1;
@@ -108,6 +120,17 @@ bool ServoBrain::PickRoi(const EyeView& ev, const Px* finger, BrainRoi* r) {
     };
     if (mode_ == BrainMode::Track && ctl_.HaveModel()) {
         haveCenter = project(ctl_.PredictedInImage(seq_), &center);
+        // pointeur perdu depuis un moment : trois requetes en rotation, sur la prediction du modele (pointeur fixe dans le monde), sur sa DERNIERE POSITION DANS L'IMAGE (pointeur
+        // colle a la tete : il ne bouge pas dans l'image quand la tete tourne) et sur une dalle du balayage (le modele est faux : MSFS a re-ancre le pointeur)
+        if (haveDet_ && nowMs_ - lastDetMs_ > 250) {
+            roiPhase_ = (roiPhase_ + 1) % 3;
+            if (roiPhase_ == 1) {
+                center = lastDetPx_;
+                haveCenter = true;
+            } else if (roiPhase_ == 2) {
+                haveCenter = false;
+            }
+        }
     } else if (mode_ == BrainMode::Probe && haveDet_) {
         haveCenter = project(lastDetAng_, &center);
         w = 320;
@@ -183,10 +206,21 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
         }
         return;
     }
-    missRun_ = 0;
     const double px = r.x + c[0].x + 0.5, py = r.y + c[0].y + 0.5;
     const Ang a = AnglesOf(RayDir(r.view, {px, py}));
     const V2 ang{a.yaw, a.pitch};
+    {
+        const double rad = mode_ == BrainMode::Track ? 0.012 : kBlacklistRad;  // en suivi : seulement le voisinage immediat du decor
+        for (const V2& b : bad_)
+            if (Norm(ang - b) < rad) {  // un decor deja pris pour le pointeur
+                ++nMiss_;
+                stable_ = 0;
+                return;
+            }
+    }
+    const int missedBefore = missRun_;
+    missRun_ = 0;
+    sumScore_ += c[0].score;
     const bool consistent = haveDet_ && Norm(ang - lastDetAng_) < kStableRad;
     stable_ = consistent ? stable_ + 1 : 1;
     if (!haveDet_)
@@ -198,7 +232,11 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
     lastDetMs_ = nowMs_;
     ++nDet_;
     if (mode_ == BrainMode::Probe) probe_.OnMeasurement(r.imageSeq, ang);
-    if (mode_ == BrainMode::Track) ctl_.OnMeasurement(r.imageSeq, ang);
+    if (mode_ == BrainMode::Track) {
+        // apres une perte d'au moins ~6 mesures, le modele n'est plus fiable : une detection nette (score >= 0.6) le remet d'aplomb d'un coup
+        if (missedBefore >= 6 && c[0].score >= 0.6) ctl_.Reanchor(r.imageSeq, ang);
+        else ctl_.OnMeasurement(r.imageSeq, ang);
+    }
     if (mode_ == BrainMode::Acquire && stable_ >= 4) {
         if (!probeDone_) {
             mode_ = BrainMode::Probe;
@@ -315,6 +353,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
         sentDy = dy;
         if (!going && probe_.Done()) {
             const GainProbe::Result& r = probe_.Final();
+            bool retry = false;
             if (r.ok) {
                 params_.radPerCountX = r.radPerCountX;
                 params_.radPerCountY = r.radPerCountY;
@@ -322,12 +361,27 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
                 Log(0, "servo : gain mesure x %.2f px/compte, y %.2f px/compte (a priori %.2f), latence %d image(s)", r.radPerCountX * pxPerRad_, -r.radPerCountY * pxPerRad_,
                     ServoParams().radPerCountX * pxPerRad_, r.latencyFrames);
             } else {
-                Log(1, "servo : mesure du gain impossible (%s) : valeurs par defaut", r.why);
+                Log(1, "servo : mesure du gain impossible (%s ; gains par salve %.1f %.1f %.1f %.1f px/compte, latences %d %d %d %d)", r.why, r.est[0] * pxPerRad_, r.est[1] * pxPerRad_,
+                    r.est[2] * pxPerRad_, r.est[3] * pxPerRad_, r.lat[0], r.lat[1], r.lat[2], r.lat[3]);
+                if (!r.responded && probeFails_ < kMaxProbeFails && haveDet_) {  // la cible ne bouge pas avec la souris : un decor, pas le pointeur
+                    ++probeFails_;
+                    if (bad_.size() >= 8) bad_.erase(bad_.begin());
+                    bad_.push_back(lastDetAng_);
+                    Log(1, "servo : la cible reperee ne repond pas a la souris (reflet ou decor) : recherche du vrai pointeur (essai %d/%d)", probeFails_, kMaxProbeFails);
+                    retry = true;
+                }
             }
-            probeDone_ = true;
-            mode_ = BrainMode::Track;
-            ctl_ = ServoController(params_);
-            haveDet_ = haveDet_ && in.nowMs - lastDetMs_ < 1000;
+            if (retry) {
+                mode_ = BrainMode::Acquire;
+                probe_ = GainProbe();
+                haveDet_ = false;
+                stable_ = 0;
+            } else {
+                probeDone_ = true;
+                mode_ = BrainMode::Track;
+                ctl_ = ServoController(params_);
+                haveDet_ = haveDet_ && in.nowMs - lastDetMs_ < 1000;
+            }
         }
     } else {  // Track
         int jx = 0, jy = 0;
@@ -405,9 +459,11 @@ BrainOutput ServoBrain::Frame(const BrainFrame& in) {
     }
     if (in.nowMs - logT_ >= 1000) {
         const double dt = logT_ ? static_cast<double>(in.nowMs - logT_) / 1000.0 : 1.0;
-        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, gain %.2f/%.2f px/compte%s%s",
+        const double meanScore = nDet_ ? sumScore_ / nDet_ : 0.0;
+        sumScore_ = 0;
+        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), score moyen %.2f, ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, gain %.2f/%.2f px/compte%s%s",
             mode_ == BrainMode::Acquire ? "recherche" : (mode_ == BrainMode::Probe ? "mesure" : "suivi"), hand == 1 ? "droite" : (hand == 0 ? "gauche" : "aucune"), nDet_ / dt, nReq_,
-            nMiss_, errPx_, lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0, nSent_, params_.latencyFrames,
+            nMiss_, meanScore, errPx_, lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0, nSent_, params_.latencyFrames,
             params_.radPerCountX * pxPerRad_, -params_.radPerCountY * pxPerRad_, down_ ? ", bouton enfonce" : "", ctl_.Jumps() ? ", sauts du pointeur" : "");
         nDet_ = nReq_ = nMiss_ = nSent_ = 0;
         logT_ = in.nowMs;
