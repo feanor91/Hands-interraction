@@ -2,6 +2,12 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.23] - 2026-11-11
+
+### Corrige
+- **Souris : le pointeur de MSFS est fixe dans le monde, pas dans la tete.** Il ne bouge que si la souris bouge ; tourner la tete ne le deplace pas. Le calcul le supposait colle a la vue, d'ou un etalonnage incoherent (la position du pointeur pour une meme direction vue variait de plus de 400 px), un cube vert qui suivait la tete et un pointeur qui « dansait » en mode souris. Pixel <-> direction se calcule maintenant en cap / site dans l'espace du jeu, depuis la position de la tete. Le cube vert ne suit donc que la souris.
+- **L'ancien etalonnage est ignore : il faut le refaire une fois** (menu Souris > Etalonner).
+
 ## [0.0.22] - 2026-11-11
 
 ### Ajoute

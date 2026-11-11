@@ -22,7 +22,7 @@ namespace {
 
 struct Calib {
     bool ok = false;
-    double cx = 0, sx = 0, cy = 0, sy = 0;  // pixel = c + s * tan(angle) ; angles relatifs a la tete
+    double cx = 0, sx = 0, cy = 0, sy = 0;  // pixel = c + s * angle (radians) ; angles de la direction DANS LE MONDE (cap, site), pas relatifs a la tete
 };
 Calib g_cal;
 bool g_loaded = false;
@@ -65,12 +65,16 @@ void Load() {
     ss << f.rdbuf();
     const auto ini = hands::config::IniFile::Parse(ss.str());
     if (!ini.Has("mouse", "sx")) return;
+    if (!ini.Has("mouse", "world")) {  // ancien etalonnage (angles relatifs a la tete) : le pointeur de MSFS est fixe dans le monde, il faut refaire
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : ancien etalonnage ignore (refaire l'etalonnage)");
+        return;
+    }
     g_cal.cx = ini.GetDouble("mouse", "cx", 0);
     g_cal.sx = ini.GetDouble("mouse", "sx", 0);
     g_cal.cy = ini.GetDouble("mouse", "cy", 0);
     g_cal.sy = ini.GetDouble("mouse", "sy", 0);
     g_cal.ok = g_cal.sx != 0 && g_cal.sy != 0;
-    if (g_cal.ok) hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage charge (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+    if (g_cal.ok) hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage charge (x = %.1f + %.1f*cap, y = %.1f + %.1f*site)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
 }
 
 void Save() {
@@ -80,7 +84,7 @@ void Save() {
         return;
     }
     char b[256];
-    std::snprintf(b, sizeof b, "[mouse]\ncx = %.3f\nsx = %.3f\ncy = %.3f\nsy = %.3f\n", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+    std::snprintf(b, sizeof b, "[mouse]\nworld = 1\ncx = %.3f\nsx = %.3f\ncy = %.3f\nsy = %.3f\n", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
     f << b;
 }
 
@@ -113,12 +117,27 @@ void SendMouse(double px, double py, DWORD flags) {
     SendInput(1, &in, sizeof in);
 }
 
+// Le pointeur de MSFS en VR est fixe dans le monde : il ne bouge que si la souris bouge, pas quand la tete tourne. Pixel <-> direction (cap, site) depuis la
+// position de la tete, dans les axes de l'espace du jeu.
+void Angles(const em::Vec3& d, double* yaw, double* pitch) {
+    *yaw = std::atan2(static_cast<double>(d.x), static_cast<double>(-d.z));
+    *pitch = std::asin(std::fmax(-1.0, std::fmin(1.0, static_cast<double>(d.y))));
+}
+
+em::Vec3 DirFromAngles(double yaw, double pitch) {
+    return em::Vec3{static_cast<float>(std::sin(yaw) * std::cos(pitch)), static_cast<float>(std::sin(pitch)), static_cast<float>(-std::cos(yaw) * std::cos(pitch))};
+}
+
 bool Project(const em::Vec3& world, double* px, double* py) {
     if (!g_cal.ok || !g_headValid) return false;
-    const em::Vec3 d = em::Rotate(em::Conjugate(g_head.q), world - g_head.p);
-    if (d.z > -0.05f) return false;  // derriere ou tout pres
-    *px = g_cal.cx + g_cal.sx * (d.x / -d.z);
-    *py = g_cal.cy + g_cal.sy * (d.y / -d.z);
+    const em::Vec3 v = world - g_head.p;
+    if (em::Length(v) < 0.05f) return false;
+    const em::Vec3 d = em::Normalized(v);
+    double yaw, pitch;
+    Angles(d, &yaw, &pitch);
+    if (std::fabs(yaw) > 1.4) return false;
+    *px = g_cal.cx + g_cal.sx * yaw;
+    *py = g_cal.cy + g_cal.sy * pitch;
     return true;
 }
 
@@ -219,7 +238,7 @@ void Mouse_SetTune(bool on) {
     } else {
         g_cal.ok = true;
         Save();
-        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage enregistre (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : reglage enregistre (x = %.1f + %.1f*cap, y = %.1f + %.1f*site)", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
     }
 }
 
@@ -305,9 +324,9 @@ void Mouse_Frame(const HandsFrame& frame) {
     if (g_markerPending || !frame.headValid) return;
     POINT p;
     GetCursorPos(&p);
-    const em::Vec3 loc = em::Rotate(em::Conjugate(frame.head.q), g_markerWorld - frame.head.p);
-    if (loc.z > -0.05f) return;  // repere derriere la tete : on ne retient rien
-    g_samples.push_back({loc.x / -loc.z, loc.y / -loc.z, static_cast<double>(p.x), static_cast<double>(p.y)});
+    double yaw, pitch;
+    Angles(em::Normalized(g_markerWorld - frame.head.p), &yaw, &pitch);
+    g_samples.push_back({yaw, pitch, static_cast<double>(p.x), static_cast<double>(p.y)});
     hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : repere %d/5 pris : pointeur en (%ld, %ld)", g_calStep + 1, p.x, p.y);
     g_markerPending = true;
     if (++g_calStep < 5) return;
@@ -344,9 +363,9 @@ void Mouse_Frame(const HandsFrame& frame) {
         g_cal = c;
         Save();
         for (size_t i = 0; i < tx.size(); ++i)
-            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : repere %zu : tan (%.3f, %.3f), pointeur (%.0f, %.0f), ecart apres calcul (%.0f, %.0f) px", i + 1, tx[i], ty[i], px[i],
+            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : repere %zu : angles (%.3f, %.3f) rad, pointeur (%.0f, %.0f), ecart apres calcul (%.0f, %.0f) px", i + 1, tx[i], ty[i], px[i],
                                           py[i], px[i] - (c.cx + c.sx * tx[i]), py[i] - (c.cy + c.sy * ty[i]));
-        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage termine (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", c.cx, c.sx, c.cy, c.sy);
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage termine (x = %.1f + %.1f*cap, y = %.1f + %.1f*site)", c.cx, c.sx, c.cy, c.sy);
     } else {
         hands::log::Logger::Get().Log(hands::log::LogLevel::Warn, "souris : etalonnage impossible (reperes confondus)");
     }
@@ -356,9 +375,9 @@ void Mouse_FillMarkers(HandsFrame* frame) {
     if (frame && g_tune && frame->headValid && frame->markerCount < kMaxMarkers && g_cal.sx != 0 && g_cal.sy != 0) {
         POINT p;
         GetCursorPos(&p);
-        const em::Vec3 d = em::Normalized(em::Vec3{static_cast<float>((p.x - g_cal.cx) / g_cal.sx), static_cast<float>((p.y - g_cal.cy) / g_cal.sy), -1.0f});
+        const em::Vec3 d = DirFromAngles((p.x - g_cal.cx) / g_cal.sx, (p.y - g_cal.cy) / g_cal.sy);
         MarkerData& m = frame->marker[frame->markerCount++];
-        m.pos = frame->head.p + em::Rotate(frame->head.q, d * kMarkerDist);
+        m.pos = frame->head.p + d * kMarkerDist;  // fixe dans le monde : ne suit PAS la tete, seulement la souris
         m.size = 0.07f;
         m.r = 0.1f;
         m.g = 1.0f;
