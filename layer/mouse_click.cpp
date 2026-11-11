@@ -41,6 +41,7 @@ em::Vec3 g_markerWorld;      // repere de l'etalonnage en cours : FIXE dans le m
 bool g_markerPending = true;  // a placer des que la tete est connue
 constexpr float kMarkerDist = 6.0f;  // reperes LOINTAINS : MSFS dessine le pointeur a l'identique dans chaque oeil (profondeur infinie) ; un repere proche (60 cm) est vu a ~3 degres de plus par l'oeil dominant (demi-ecart pupillaire 3 cm), soit 60 px d'erreur
 bool g_mode = false;
+double g_gain = 3500.0;  // sensibilite de la souris-main : pixels par metre de deplacement de la main
 float g_cubeDist = 0.6f;  // profondeur du cube vert : celle de la surface visee, pour que le pointeur de MSFS (dessine sur la surface) et le cube se superposent en relief
 bool g_tune = false, g_tuneKeyWas = false;  // reglage a vue : un cube vert montre ou le calcul place le pointeur
 ULONGLONG g_tuneStep = 0;
@@ -65,6 +66,7 @@ void Load() {
     std::stringstream ss;
     ss << f.rdbuf();
     const auto ini = hands::config::IniFile::Parse(ss.str());
+    g_gain = std::fmax(500.0, std::fmin(20000.0, ini.GetDouble("mouse", "gain", g_gain)));
     if (!ini.Has("mouse", "sx")) return;
     if (!ini.Has("mouse", "world")) {  // ancien etalonnage (angles relatifs a la tete) : le pointeur de MSFS est fixe dans le monde, il faut refaire
         hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : ancien etalonnage ignore (refaire l'etalonnage)");
@@ -85,7 +87,7 @@ void Save() {
         return;
     }
     char b[256];
-    std::snprintf(b, sizeof b, "[mouse]\nworld = 1\ncx = %.3f\nsx = %.3f\ncy = %.3f\nsy = %.3f\n", g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
+    std::snprintf(b, sizeof b, "[mouse]\nworld = 1\ngain = %.0f\ncx = %.3f\nsx = %.3f\ncy = %.3f\nsy = %.3f\n", g_gain, g_cal.cx, g_cal.sx, g_cal.cy, g_cal.sy);
     f << b;
 }
 
@@ -168,41 +170,68 @@ void ReleaseButton() {
     g_down = false;
 }
 
+// Souris « de bureau » : le doigt EST la souris. Le deplacement de la main (a gauche / a droite, en haut / en bas, dans le plan de la vue) devient un
+// deplacement RELATIF de la souris de Windows, que MSFS traite comme celui d'une vraie souris. Pincer = bouton gauche ; garder le pincement = glisser.
+// Reference de la main : la base de l'index (articulation 7), qui bouge peu quand on pince ; le bout de l'index se deplace vers le pouce et ferait derapper
+// le pointeur au moment du clic. Index replie = souris « soulevee » (la main peut revenir sans deplacer le pointeur).
+bool g_prevValid = false;
+em::Vec3 g_prev;
+double g_remX = 0, g_remY = 0;  // fractions de pixel non encore envoyees
+
+void MoveRelative(long dx, long dy) {
+    if (dx == 0 && dy == 0) return;
+    dx = std::max(-300L, std::min(300L, dx));
+    dy = std::max(-300L, std::min(300L, dy));
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof in);
+}
+
 void UpdatePointer(const HandsFrame& frame) {
+    auto usable = [&](int k) { return frame.hand[k].valid && frame.hand[k].jointValid[1] && frame.hand[k].jointValid[7] && frame.hand[k].jointValid[kIndexTip]; };
     int h = -1;
-    if (g_hand >= 0 && frame.hand[g_hand].valid && frame.hand[g_hand].jointValid[kIndexTip]) h = g_hand;
+    if (g_hand >= 0 && usable(g_hand)) h = g_hand;
     if (h < 0 && !g_down) {  // main droite de preference, sinon la gauche
         for (int k : {1, 0})
-            if (frame.hand[k].valid && frame.hand[k].jointValid[kIndexTip]) {
+            if (usable(k)) {
                 h = k;
                 break;
             }
     }
-    if (h < 0) {
+    if (h < 0 || !g_headValid) {
         ReleaseButton();
         g_hand = -1;
-        g_haveSmooth = false;
+        g_prevValid = false;
         return;
     }
+    if (h != g_hand) g_prevValid = false;
     g_hand = h;
-    double px, py;
-    if (!Project(frame.hand[h].joint[kIndexTip].p, &px, &py)) return;
-    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    px = std::fmax(vx, std::fmin(vx + vw - 1, px));
-    py = std::fmax(vy, std::fmin(vy + vh - 1, py));
-    if (!g_haveSmooth) {
-        g_sx = px;
-        g_sy = py;
-        g_haveSmooth = true;
-    } else {  // lissage leger contre le tremblement du suivi
-        g_sx += 0.35 * (px - g_sx);
-        g_sy += 0.35 * (py - g_sy);
+    const HandPoseData& hd = frame.hand[h];
+    const bool pinch = hd.pressed;
+    const em::Vec3 pos = hd.joint[7].p;
+    // Index tendu ? (bout nettement plus loin du poignet que la base de l'index) ; en pincement on suit toujours (glisser).
+    const bool extended = em::Length(hd.joint[kIndexTip].p - hd.joint[1].p) - em::Length(pos - hd.joint[1].p) > 0.045f;
+    const bool live = pinch || extended;
+    if (g_prevValid && live) {
+        const em::Vec3 d = pos - g_prev;
+        const em::Vec3 fwd = em::Rotate(g_head.q, em::Vec3{0.0f, 0.0f, -1.0f});
+        em::Vec3 fl{fwd.x, 0.0f, fwd.z};
+        if (em::Length(fl) > 0.1f) {
+            fl = em::Normalized(fl);
+            const em::Vec3 right{-fl.z, 0.0f, fl.x};
+            g_remX += g_gain * (d.x * right.x + d.z * right.z);
+            g_remY += -g_gain * d.y;
+            const long ix = std::lround(g_remX), iy = std::lround(g_remY);
+            g_remX -= ix;
+            g_remY -= iy;
+            MoveRelative(ix, iy);
+        }
     }
-    // Zone morte de 3 px : MSFS aimante le pointeur aux elements cliquables, un envoi a chaque image le ferait sauter de l'un a l'autre.
-    POINT cur;
-    if (GetCursorPos(&cur) && std::hypot(g_sx - cur.x, g_sy - cur.y) >= 3.0) MoveCursorTo(g_sx, g_sy);
-    const bool pinch = frame.hand[h].pressed;
+    g_prev = pos;
+    g_prevValid = true;
     if (pinch && !g_down) {
         ButtonEvent(MOUSEEVENTF_LEFTDOWN);
         g_down = true;
@@ -224,15 +253,11 @@ bool Mouse_ModeOn() { return g_mode; }
 
 void Mouse_ToggleMode() {
     Load();
-    if (!g_mode && !g_cal.ok) {
-        hands::log::Logger::Get().Log(hands::log::LogLevel::Warn, "souris : pas d'etalonnage ; faites d'abord Ctrl+Alt+F10");
-        return;
-    }
     g_mode = !g_mode;
+    g_prevValid = false;
     if (!g_mode) {
         ReleaseButton();
         g_hand = -1;
-        g_haveSmooth = false;
     }
     hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : mode souris %s", g_mode ? "ACTIVE" : "desactive");
 }
@@ -270,6 +295,12 @@ void Mouse_Nudge(int dx, int dy, double pct) {
 }
 
 void Mouse_CubeDepth(double factor) { g_cubeDist = static_cast<float>(std::fmax(0.25, std::fmin(8.0, g_cubeDist * factor))); }
+
+void Mouse_Gain(double factor) {
+    g_gain = std::fmax(500.0, std::fmin(20000.0, g_gain * factor));
+    Save();
+    hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : sensibilite %.0f px par metre", g_gain);
+}
 
 void Mouse_StartCalibration() {
     Load();

@@ -352,22 +352,11 @@ std::vector<Row> BuildPointerRows() {
 std::vector<Row> BuildMouseRows() {
     std::vector<Row> rows;
     rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
-    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_IsCalibrated() ? L"Mode souris : désactivé  →  activer (le doigt pilote la souris)" : L"Mode souris : étalonnez d'abord"),
-                    Mouse_ModeOn() || Mouse_IsCalibrated(), [] { Mouse_ToggleMode(); }});
-    rows.push_back({L"Étalonner : cliquer (souris) sur 5 repères blancs", true, [] {
-                        Mouse_StartCalibration();
-                        CloseMenu();
-                    }});
-    rows.push_back({Mouse_TuneOn() ? L"Réglage à vue : EN COURS (cube vert)  →  terminer et enregistrer" : L"Réglage à vue : afficher le cube vert (suit la souris)", true,
-                    [] { Mouse_SetTune(!Mouse_TuneOn()); }});
-    if (Mouse_TuneOn()) {
-        rows.push_back({L"   Cube plus à gauche  ◂", true, [] { Mouse_Nudge(-8, 0, 0); }});
-        rows.push_back({L"   Cube plus à droite  ▸", true, [] { Mouse_Nudge(8, 0, 0); }});
-        rows.push_back({L"   Cube plus haut  ▴", true, [] { Mouse_Nudge(0, 8, 0); }});
-        rows.push_back({L"   Cube plus bas  ▾", true, [] { Mouse_Nudge(0, -8, 0); }});
-        rows.push_back({L"   Cube plus près de moi (profondeur)", true, [] { Mouse_CubeDepth(0.8); }});
-        rows.push_back({L"   Cube plus loin de moi (profondeur)", true, [] { Mouse_CubeDepth(1.25); }});
-    }
+    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : L"Mode souris : désactivé  →  activer (la main bouge la souris)", true, [] { Mouse_ToggleMode(); }});
+    rows.push_back({L"Souris plus rapide", true, [] { Mouse_Gain(1.25); }});
+    rows.push_back({L"Souris plus lente", true, [] { Mouse_Gain(0.8); }});
+    rows.push_back({L"Index tendu : la main déplace la souris. Index replié : souris soulevée.", false, nullptr});
+    rows.push_back({L"Pincer = clic gauche. Garder le pincement = glisser (verrière, curseurs).", false, nullptr});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;

@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.26] - 2026-11-11
+
+### Modifie
+- **Mode souris : le doigt EST la souris** (plus de visee depuis la tete, plus d'etalonnage). Le deplacement de la main (gauche / droite, haut / bas, dans le plan de la vue) devient un deplacement relatif de la souris de Windows, que MSFS traite comme celui d'une vraie souris. Pincer = bouton gauche ; garder le pincement = glisser. Index replie = souris soulevee (la main revient sans deplacer le pointeur). La main est suivie par la base de l'index, qui bouge peu quand on pince. Menu Souris : activer, plus rapide / plus lente (3500 px par metre au depart, `gain` dans mouse.ini).
+
 ## [0.0.25] - 2026-11-11
 
 ### Corrige
