@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.27] - 2026-11-11
+
+### Modifie
+- **Souris : deux types, « pointeur colle au bout du doigt » par defaut.** Le pointeur de MSFS est amene sur la ligne tete -> bout de l'index, c'est-a-dire la ou l'on voit le doigt (il est dessine par MSFS sur la surface visee, il ne peut pas flotter en l'air). Utilise l'etalonnage de la souris (menu Souris > Etalonner). Pendant le pincement, la position de depart du bout du doigt est gardee et seul le deplacement de la base de l'index est suivi : pas de derapage au clic, glisser possible. L'autre type, « souris de bureau » (deplacements relatifs de la main, 0.0.26), reste disponible dans le menu.
+
 ## [0.0.26] - 2026-11-11
 
 ### Modifie

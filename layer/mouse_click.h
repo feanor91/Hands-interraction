@@ -18,6 +18,9 @@ bool Mouse_IsCalibrated();
 bool Mouse_Calibrating();
 bool Mouse_ModeOn();
 void Mouse_ToggleMode();
+// Pointeur colle au bout du doigt (defaut, demande etalonnage) ou souris de bureau (deplacements relatifs de la main).
+bool Mouse_Attached();
+void Mouse_SetAttached(bool on);
 // Lance l'etalonnage (comme Ctrl+Alt+F10) ; les reperes suivants se prennent avec Ctrl+Alt+F10.
 void Mouse_StartCalibration();
 // Reglage a vue : cube vert la ou le calcul place le pointeur ; Mouse_Nudge decale (pixels) / ecarte (%) ; quitter enregistre.

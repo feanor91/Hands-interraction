@@ -352,11 +352,19 @@ std::vector<Row> BuildPointerRows() {
 std::vector<Row> BuildMouseRows() {
     std::vector<Row> rows;
     rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
-    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : L"Mode souris : désactivé  →  activer (la main bouge la souris)", true, [] { Mouse_ToggleMode(); }});
-    rows.push_back({L"Souris plus rapide", true, [] { Mouse_Gain(1.25); }});
-    rows.push_back({L"Souris plus lente", true, [] { Mouse_Gain(0.8); }});
-    rows.push_back({L"Index tendu : la main déplace la souris. Index replié : souris soulevée.", false, nullptr});
-    rows.push_back({L"Pincer = clic gauche. Garder le pincement = glisser (verrière, curseurs).", false, nullptr});
+    rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : (Mouse_Attached() && !Mouse_IsCalibrated() ? L"Mode souris : étalonnez d'abord" : L"Mode souris : désactivé  →  activer"),
+                    Mouse_ModeOn() || !Mouse_Attached() || Mouse_IsCalibrated(), [] { Mouse_ToggleMode(); }});
+    rows.push_back({Mouse_Attached() ? L"Type : pointeur COLLÉ au bout du doigt  →  souris de bureau" : L"Type : souris de bureau  →  pointeur collé au doigt", true,
+                    [] { Mouse_SetAttached(!Mouse_Attached()); }});
+    rows.push_back({L"Étalonner (une fois) : cliquer à la souris sur 5 repères", true, [] {
+                        Mouse_StartCalibration();
+                        CloseMenu();
+                    }});
+    if (!Mouse_Attached()) {
+        rows.push_back({L"Souris de bureau plus rapide", true, [] { Mouse_Gain(1.25); }});
+        rows.push_back({L"Souris de bureau plus lente", true, [] { Mouse_Gain(0.8); }});
+    }
+    rows.push_back({L"Pincer = clic gauche ; garder le pincement = glisser.", false, nullptr});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;

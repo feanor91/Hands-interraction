@@ -190,7 +190,74 @@ void MoveRelative(long dx, long dy) {
     SendInput(1, &in, sizeof in);
 }
 
+bool g_attached = true;  // vrai : le pointeur est colle au bout du doigt (direction tete -> bout du doigt) ; faux : souris de bureau (deplacements relatifs)
+bool g_lastPinch = false;
+em::Vec3 g_lastTip, g_lockTip, g_lockJ7;
+double g_tx = 0, g_ty = 0;
+bool g_haveT = false;
+
+// Pointeur colle au doigt : le pointeur de MSFS (fixe dans le monde, voir Project) est amene sur la ligne tete -> bout de l'index, donc la ou l'on voit le
+// doigt. Il est dessine par MSFS sur la surface visee (il ne peut pas flotter en l'air au bout du doigt). Pendant le pincement on garde la position de
+// depart du bout du doigt (qui glisse vers le pouce) et on ne suit que le deplacement de la base de l'index : pas de derapage au clic, glisser possible.
+void UpdateAttached(const HandsFrame& frame) {
+    auto usable = [&](int k) { return frame.hand[k].valid && frame.hand[k].jointValid[7] && frame.hand[k].jointValid[kIndexTip]; };
+    int h = -1;
+    if (g_hand >= 0 && usable(g_hand)) h = g_hand;
+    if (h < 0 && !g_down) {
+        for (int k : {1, 0})
+            if (usable(k)) {
+                h = k;
+                break;
+            }
+    }
+    if (h < 0 || !g_headValid) {
+        ReleaseButton();
+        g_hand = -1;
+        g_haveT = false;
+        return;
+    }
+    g_hand = h;
+    const HandPoseData& hd = frame.hand[h];
+    const bool pinch = hd.pressed;
+    const em::Vec3 tip = hd.joint[kIndexTip].p, j7 = hd.joint[7].p;
+    if (pinch && !g_lastPinch) {
+        g_lockTip = g_lastTip;
+        g_lockJ7 = j7;
+    }
+    g_lastPinch = pinch;
+    const em::Vec3 pos = pinch ? g_lockTip + (j7 - g_lockJ7) : tip;
+    if (!pinch) g_lastTip = tip;
+    double px, py;
+    if (Project(pos, &px, &py)) {
+        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        px = std::fmax(vx, std::fmin(vx + vw - 1, px));
+        py = std::fmax(vy, std::fmin(vy + vh - 1, py));
+        if (!g_haveT) {
+            g_tx = px;
+            g_ty = py;
+            g_haveT = true;
+        } else {
+            g_tx += 0.5 * (px - g_tx);
+            g_ty += 0.5 * (py - g_ty);
+        }
+        POINT cur;
+        if (GetCursorPos(&cur) && std::hypot(g_tx - cur.x, g_ty - cur.y) >= 3.0) MoveCursorTo(g_tx, g_ty);
+    }
+    if (pinch && !g_down) {
+        ButtonEvent(MOUSEEVENTF_LEFTDOWN);
+        g_down = true;
+    } else if (!pinch && g_down) {
+        ReleaseButton();
+        g_hand = -1;
+    }
+}
+
 void UpdatePointer(const HandsFrame& frame) {
+    if (g_attached) {
+        UpdateAttached(frame);
+        return;
+    }
     auto usable = [&](int k) { return frame.hand[k].valid && frame.hand[k].jointValid[1] && frame.hand[k].jointValid[7] && frame.hand[k].jointValid[kIndexTip]; };
     int h = -1;
     if (g_hand >= 0 && usable(g_hand)) h = g_hand;
@@ -250,11 +317,23 @@ bool Mouse_IsCalibrated() {
 
 bool Mouse_Calibrating() { return g_calibrating; }
 bool Mouse_ModeOn() { return g_mode; }
+bool Mouse_Attached() { return g_attached; }
+void Mouse_SetAttached(bool on) {
+    g_attached = on;
+    g_haveT = false;
+    g_prevValid = false;
+    hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : pointeur %s", on ? "colle au bout du doigt" : "souris de bureau (relatif)");
+}
 
 void Mouse_ToggleMode() {
     Load();
+    if (!g_mode && g_attached && !g_cal.ok) {
+        hands::log::Logger::Get().Log(hands::log::LogLevel::Warn, "souris : pointeur colle au doigt : etalonnez d'abord (menu Souris)");
+        return;
+    }
     g_mode = !g_mode;
     g_prevValid = false;
+    g_haveT = false;
     if (!g_mode) {
         ReleaseButton();
         g_hand = -1;
