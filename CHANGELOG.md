@@ -2,6 +2,11 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.18] - 2026-11-11
+
+### Modifie
+- **Etalonnage de la souris plus robuste** : une seule echelle pour x et y (pixels carres) au lieu de deux echelles libres ; un repere mal vise ne fausse plus l'ensemble. Le journal donne maintenant, pour chaque repere, l'angle attendu, la position du pointeur et l'ecart apres calcul.
+
 ## [0.0.17] - 2026-11-10
 
 ### Modifie

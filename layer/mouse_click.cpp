@@ -263,11 +263,33 @@ void Mouse_Frame(const HandsFrame& frame) {
         px.push_back(s.px);
         py.push_back(s.py);
     }
+    // Pixels carres : meme echelle en x et en y (px = cx + s*tx ; py = cy - s*ty). Un repere mal vise (pointeur minuscule, difficile a voir) fausse
+    // beaucoup moins qu'avec deux echelles libres.
     Calib c;
-    if (Fit(tx, px, &c.cx, &c.sx) && Fit(ty, py, &c.cy, &c.sy)) {
+    double mtx = 0, mty = 0, mpx = 0, mpy = 0;
+    const double n = static_cast<double>(tx.size());
+    for (size_t i = 0; i < tx.size(); ++i) {
+        mtx += tx[i] / n;
+        mty += ty[i] / n;
+        mpx += px[i] / n;
+        mpy += py[i] / n;
+    }
+    double num = 0, den = 0;
+    for (size_t i = 0; i < tx.size(); ++i) {
+        num += (tx[i] - mtx) * (px[i] - mpx) - (ty[i] - mty) * (py[i] - mpy);
+        den += (tx[i] - mtx) * (tx[i] - mtx) + (ty[i] - mty) * (ty[i] - mty);
+    }
+    if (den > 1e-9 && num / den > 50.0) {
+        c.sx = num / den;
+        c.sy = -c.sx;
+        c.cx = mpx - c.sx * mtx;
+        c.cy = mpy - c.sy * mty;
         c.ok = true;
         g_cal = c;
         Save();
+        for (size_t i = 0; i < tx.size(); ++i)
+            hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : repere %zu : tan (%.3f, %.3f), pointeur (%.0f, %.0f), ecart apres calcul (%.0f, %.0f) px", i + 1, tx[i], ty[i], px[i],
+                                          py[i], px[i] - (c.cx + c.sx * tx[i]), py[i] - (c.cy + c.sy * ty[i]));
         hands::log::Logger::Get().Log(hands::log::LogLevel::Info, "souris : etalonnage termine (x = %.1f + %.1f*tan, y = %.1f + %.1f*tan)", c.cx, c.sx, c.cy, c.sy);
     } else {
         hands::log::Logger::Get().Log(hands::log::LogLevel::Warn, "souris : etalonnage impossible (reperes confondus)");
