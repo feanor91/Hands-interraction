@@ -30,6 +30,7 @@ struct BrainHand {
     emulation::Vec3 knuckle;             // base de l'index : bouge peu pendant un pincement
     emulation::Vec3 wristAxis;           // poignet -> base du majeur (axe du roulis) ; nul si inconnu
     emulation::Vec3 palmUp;              // « haut » de la paume : sert a mesurer le roulis du poignet (molette)
+    float pinchDist = -1.0f;             // distance pouce - bout du doigt (m) ; < 0 : inconnue (pre-verrou du pointeur quand le pouce s'approche)
 };
 
 struct BrainRoi {
@@ -66,6 +67,9 @@ struct BrainTrace {
     double detX = -1, detY = -1, detAgeMs = -1;  // derniere detection du pointeur
     double predX = -1, predY = -1;       // position du pointeur selon le modele
     double errPx = -1;                   // ecart cible / modele
+    int insideBits = 0;                  // 1/2 : doigt gauche/droit dans l'image, 4/8 : main gauche/droite exploitable, 16 : pre-verrou, 32 : pause des comptes
+    float pinchDist = -1.0f;             // mm
+    double headYawDeg = 0, headPitchDeg = 0, detYawDeg = 0, detPitchDeg = 0;  // direction de la tete et du pointeur vu (cap / site, degres, repere du jeu)
     int dx = 0, dy = 0, wheel = 0;
 };
 
@@ -143,7 +147,13 @@ private:
     bool down_ = false, tapUp_ = false, prevSelPinch_ = false, prevBoth_ = false;
     bool prevRaw_[2] = {false, false};   // pincement brut de l'image precedente (un front se detecte sur le brut)
     bool armed_[2] = {false, false};     // pincement commence DANS l'image, main choisie : seul un pincement arme peut cliquer
-    uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0;
+    uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0, pinchEdgeMs_[2] = {0, 0};
+    bool prelatched_ = false, preArmed_ = false;
+    uint64_t prelatchMs_ = 0, lastDetSeq_ = 0, blockUntilMs_ = 0;
+    float prevDist_[2] = {1.0f, 1.0f};
+    long long stuckSx_ = 0, stuckSy_ = 0;
+    int blockN_ = 0, lastJumps_ = 0;
+    Px stuckRef_;
     bool prevCanClick_ = false, pinchClicked_ = false, prevWheelUsed_ = false;
     double errNowPx_ = 1e9;              // ecart cible / modele de cette image (1e9 : inconnu)
     std::string skipWhy_;                // pourquoi le pincement en cours ne clique pas (journal)

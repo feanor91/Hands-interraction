@@ -138,6 +138,8 @@ struct Frame {
     bool menuOpen = false;
     double rollDeg = 0.0;               // roulis du poignet de la main droite
     bool leftPresent = false, leftPinch = false;  // la main gauche (geste d'ouverture du menu)
+    double pinchDist = -1.0;            // distance pouce - doigt de la main droite (m), -1 : inconnue
+    bool fixKnuckle = false;            // la base de l'index ne bouge pas (seul le bout glisse vers le pouce)
 };
 
 struct Metrics {
@@ -193,9 +195,10 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         BrainHand& h = in.hand[1];
         h.usable = f.present;
         h.pinch = f.pinch;
+        h.pinchDist = static_cast<float>(f.pinchDist);
         h.extended = true;
         h.tip = tip;
-        h.knuckle = tip + em::Vec3{0.0f, -0.03f, 0.06f};
+        h.knuckle = (f.fixKnuckle ? s.WorldPoint({0.05, -0.12}, 0.45) : tip) + em::Vec3{0.0f, -0.03f, 0.06f};
         h.wristAxis = em::Vec3{0.0f, 0.0f, -1.0f};
         {
             const double r = f.rollDeg * 3.14159265358979 / 180.0;
@@ -504,7 +507,11 @@ TEST(ServoBrain_pointeur_re_ancre_par_MSFS_loin_du_modele_est_retrouve) {
             break;
         }
     }
-    std::printf("      saut de 0.4 rad : retour a < 8 px apres %d images (%.1f s a 90 Hz)\n", back, back / 90.0);
+    int pauses = 0;
+    for (const std::string& l : s.logs) pauses += l.find("ne suit plus") != std::string::npos ? 1 : 0;
+    std::printf("      saut de 0.4 rad : retour a < 8 px apres %d images (%.1f s a 90 Hz), %d pause(s) des comptes\n", back, back / 90.0, pauses);
+    for (const std::string& l : s.logs)
+        if (l.find("ne suit plus") != std::string::npos) std::printf("        %s\n", l.c_str());
     CHECK(back >= 0 && back < 270);  // moins de 3 s
     CHECK(s.brain.Mode() == BrainMode::Track);
 }
@@ -555,4 +562,56 @@ TEST(ServoBrain_molette_sens_inverse) {
     });
     (void)m;
     CHECK(s.wheel <= -3);
+}
+
+TEST(ServoBrain_mur_de_MSFS_les_comptes_font_une_pause_au_lieu_de_marteler) {
+    Sim s;
+    s.wallYaw = 0.0;
+    const Metrics m = Run(s, 1000, [](int) {
+        Frame f;
+        f.finger = {0.45, -0.12};  // derriere le mur : le pointeur ne bougera pas
+        return f;
+    });
+    (void)m;
+    long long sent = 0;
+    for (int k = 600; k < 1000; ++k) sent += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+    int pauses = 0;
+    for (const std::string& l : s.logs) pauses += l.find("ne suit plus") != std::string::npos ? 1 : 0;
+    std::printf("      mur : %lld comptes en 400 images, %d pause(s)\n", sent, pauses);
+    CHECK(pauses >= 1);
+    CHECK(sent < 5000);  // sans la pause : 60 comptes par image = 24000
+}
+
+TEST(ServoBrain_l_autre_main_pincee_depuis_longtemps_n_empeche_pas_de_cliquer) {
+    Sim s;
+    // la main gauche reste pincee (posee sur une manette) ; la droite clique 120 ms 200 images plus tard : ce n'est pas le geste d'ouverture du menu
+    const Metrics m = Run(s, 700, [](int k) {
+        Frame f;
+        f.leftPresent = true;
+        f.leftPinch = k >= 300 && k < 700;
+        f.pinch = k >= 520 && k < 560;
+        return f;
+    });
+    (void)m;
+    std::printf("      main gauche pincee depuis longtemps : %d enfoncement(s)\n", s.downs);
+    CHECK_EQ(s.downs, 1);
+}
+
+TEST(ServoBrain_le_pre_verrou_garde_le_pointeur_la_ou_le_doigt_etait_avant_le_geste) {
+    Sim s;
+    // le doigt est immobile en (0.05, -0.12) puis, pendant que le pouce vient (60 -> 20 mm en 28 images), il glisse de 0.04 rad (~48 px) ; pincement a l'image 528
+    const Metrics m = Run(s, 700, [](int k) {
+        Frame f;
+        const double t = std::min(1.0, std::max(0.0, (k - 500) / 28.0));
+        f.finger = {0.05 + 0.04 * t, -0.12};
+        f.pinchDist = 0.060 - 0.040 * t;
+        f.fixKnuckle = true;
+        f.pinch = k >= 528 && k < 640;
+        return f;
+    });
+    // pendant le pincement (image 620) le pointeur doit etre reste pres de l'endroit d'avant le geste : l'ecart au doigt (qui a glisse de ~49 px) reste proche de 49 px
+    const double errHeld = m.err[620];
+    std::printf("      pre-verrou : pendant le pincement le pointeur est a %.0f px du doigt (qui a glisse de 49 px ; sans pre-verrou ~21 px)\n", errHeld);
+    CHECK(errHeld > 33.0 && errHeld < 65.0);
+    CHECK_EQ(s.downs, 1);
 }

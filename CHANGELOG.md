@@ -2,6 +2,24 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.32] - 2026-11-12
+
+### Corrige
+- **Pointeur qui martele un mur** (essai du 12 nov., trace `servo_trace.csv`) : dans 13 % des images (77 series de plus de 10 images, jusqu'a 113 images d'affilee) la couche envoyait 60 comptes
+  par image alors que le pointeur de MSFS ne bougeait pas (mur de MSFS quand on regarde vers le bas, menu 2D « ESC Back » ouvert par un clic, curseur fige). Maintenant : si le deplacement commande
+  depasse de 450 px ce que le pointeur a fait, **pause des comptes** de 2 s (puis 4, 8 s si ca recommence), le modele repart du pointeur vu, aucun clic pendant la pause (journal : « le pointeur ne suit
+  plus les comptes »).
+- **Clics sur la mauvaise commande quand le doigt est tout pres** : le geste de pincement deplace le doigt (a 25 cm, 1 cm = 3 deg = ~60 px). Pre-verrou : des que le pouce s'approche a moins de 34 mm du
+  doigt, le pointeur se fige a la position du doigt d'il y a 130 ms (comme le mode rayon) ; il se libere si le pouce repart (> 38 mm) ou apres 1.5 s.
+- **Clics bloques « au hasard »** : une main pincee depuis longtemps (posee sur la manette des gaz) bloquait tous les clics de l'autre main (« deux mains pincees », jusqu'a 15 s dans le journal). La regle
+  « deux mains = pas de clic » (geste d'ouverture du menu) ne vaut plus que si les deux pincements commencent a moins de 0.4 s l'un de l'autre.
+- Une main n'est ecartee que si son bout de doigt est HORS de l'image (marge 0, au lieu de 40 px) ; le pincement n'est arme que si la main est deja la main choisie au moment du front (plus de
+  « pincement de 7451000 ms »).
+- **Danse** : zone morte a hysteresis plus large (un axe immobile ne bouge qu'au-dela de 6 px, puis corrige jusqu'a 1.8 px) et bout du doigt un peu plus reactif en mouvement (One Euro 1 Hz, beta 12).
+### Ajoute
+- Trace `servo_trace.csv` : etat des mains (dans l'image / exploitable), distance pouce-doigt, direction de la tete et du pointeur (cap / site) pour comprendre les murs de MSFS.
+- Tests : 133.
+
 ## [0.0.31] - 2026-11-12
 
 ### Corrige
