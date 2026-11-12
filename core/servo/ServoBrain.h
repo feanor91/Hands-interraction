@@ -83,6 +83,7 @@ public:
     using TraceFn = std::function<void(const BrainTrace&)>;
     void SetTrace(TraceFn f) { trace_ = std::move(f); }
 
+    void SetTipFilter(float minCutoffHz, float beta) { tipMinHz_ = minCutoffHz; tipBeta_ = beta; }  // reglage du lissage du bout du doigt (tests : 1000 = sans lissage)
     void SetWheel(double stepDeg, bool invert) { wheelStepDeg_ = stepDeg; wheelInvert_ = invert; }
     void Reset();                        // oublie tout (garde le gain mesure)
     void Recalibrate();                  // oublie aussi le gain mesure
@@ -107,6 +108,9 @@ private:
     void BuildTiles(const ImageRect& img);
     void Log(int level, const char* fmt, ...);
     void SetStatus(const BrainFrame& in, bool tracking);
+    bool ComputeJac(const EyeView& view, V2 ang, Jac* out) const;
+    long long CumAt(const long long* arr, uint64_t imageSeq) const;
+    void ResetStuck();
 
     LogFn log_;
     DiagFn diag_;
@@ -141,6 +145,10 @@ private:
     emulation::OneEuro tipFilter_[2];
     uint64_t lastFrameMs_ = 0;
     double frameMsEma_ = 11.1;
+    int prevTargetHand_ = -2;
+    bool prevTargetLocked_ = false, haveFingerJump_ = false;
+    Px jumpPrevPx_;
+    float tipMinHz_ = 1.0f, tipBeta_ = 12.0f;
     bool wheelMode_ = false;             // pincement transforme en molette (roulis du poignet)
     emulation::Vec3 rollAxis_, rollN0_;
     double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 20.0;
@@ -161,7 +169,7 @@ private:
     emulation::Vec3 deferTipW_, lastLockedTipW_;
     uint64_t prelatchMs_ = 0, lastDetSeq_ = 0, blockUntilMs_ = 0;
     float prevDist_[2] = {1.0f, 1.0f};
-    long long stuckSx_ = 0, stuckSy_ = 0;
+    long long cumX_[64] = {}, cumY_[64] = {}, stuckBaseX_ = 0, stuckBaseY_ = 0;
     int blockN_ = 0, lastJumps_ = 0;
     Px stuckRef_;
     bool prevCanClick_ = false, pinchClicked_ = false, prevWheelUsed_ = false;

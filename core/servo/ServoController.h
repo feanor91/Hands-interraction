@@ -26,6 +26,15 @@ inline V2 operator-(V2 x, V2 y) { return {x.a - y.a, x.b - y.b}; }
 inline V2 operator*(V2 x, double s) { return {x.a * s, x.b * s}; }
 inline double Norm(V2 x) { return std::sqrt(x.a * x.a + x.b * x.b); }
 
+// Local geometry of the plant, given by the caller each frame: MSFS moves its pointer by a constant number of IMAGE pixels per mouse count (measured 1.05 px/count from
+// 20 to 80 deg below the horizon), so the angle (yaw, pitch) change per count depends on where the pointer is and where the head looks (1/cos(pitch) in yaw: x2.8 at -69 deg,
+// the reason for the "dance" when looking down). [dYaw; dPitch] = [a b; c d] * [dx; dy] counts. gx, gy = pixels per count, pxPerRad converts them to radians.
+struct Jac {
+    double a = 0, b = 0, c = 0, d = 0;
+    double gx = 1, gy = 1, pxPerRad = 1215.0;
+    bool valid = false;
+};
+
 struct ServoParams {
     // Plant gain prior: radians per mouse count. mouse.ini fit: px = 1280.7 + 1193.7*yaw (1 OS pixel = 1/1193.7 rad) - valid if MSFS sees 1 count = 1 px.
     // dy > 0 moves the pointer DOWN, i.e. decreases pitch. Calibrate / refine with the calibration pulse.
@@ -58,6 +67,7 @@ public:
         int dx = 0, dy = 0;     // counts to inject now (relative mouse move)
         V2 predicted;           // x_hat: pointer direction once everything sent has landed
         V2 error;               // target_ahead - x_hat
+        double errUnits = 0;    // |error| in the control chart: pixels when a Jac was given, radians otherwise
         bool haveModel = false; // false until the first measurement: nothing is sent (caller may run its acquisition / wake-up logic)
         bool saturated = false; // a wall was detected on this frame
     };
@@ -65,6 +75,7 @@ public:
     explicit ServoController(const ServoParams& p = ServoParams()) : p_(p) {}
     void SetParams(const ServoParams& p) { p_ = p; }
     void SetMaxCounts(int n) { p_.maxCounts = n; }
+    void ResetTarget() { haveT_ = false; }  // the target jumped (hand switch, lock / unlock): forget its velocity, no feed-forward spike
     const ServoParams& Params() const { return p_; }
     void Reset() { *this = ServoController(p_); }
 
@@ -74,7 +85,7 @@ public:
         if (started_ && im + static_cast<int64_t>(kHist) <= lastSeq_) return;  // older than the history: ignore
         const int64_t k = im - p_.latencyFrames;
         const Cnt vis = CumAt(k);
-        const V2 gv{p_.radPerCountX * static_cast<double>(vis.a), p_.radPerCountY * static_cast<double>(vis.b)};  // what our commands did, per the model
+        const V2 gv{vis.a, vis.b};  // what our commands did, per the model (angle increments accumulated per frame)
         if (!haveX0_) {
             x0_ = ptr - gv;
             bias_ = {};
@@ -130,7 +141,7 @@ public:
 
     // One call per xrEndFrame (seq increases by 1 per call; gaps are filled with "no command"). target = fingertip direction (rad, game axes).
     // extraDx / extraDy : counts the caller adds on top (keep-alive jiggle) ; they are part of the model like any other count.
-    Out Step(uint64_t seq, bool targetValid, V2 target, int extraDx = 0, int extraDy = 0) {
+    Out Step(uint64_t seq, bool targetValid, V2 target, int extraDx = 0, int extraDy = 0, const Jac* jac = nullptr) {
         Out o;
         const int64_t sq = static_cast<int64_t>(seq);
         if (!started_) {
@@ -149,12 +160,26 @@ public:
         }
         lastSeq_ = sq;
         const Cnt prev = {cumA_[Slot(sq - 1)], cumB_[Slot(sq - 1)]};
+        Jac J;
+        if (jac && jac->valid && std::fabs(jac->a * jac->d - jac->b * jac->c) > 1e-12) {
+            J = *jac;
+        } else {  // legacy: axis-aligned, constant gain (the angle chart IS the control chart)
+            J.a = p_.radPerCountX;
+            J.d = p_.radPerCountY;
+            J.b = J.c = 0;
+            J.gx = std::fabs(p_.radPerCountX);
+            J.gy = std::fabs(p_.radPerCountY);
+            J.pxPerRad = 1.0;
+            J.valid = true;
+        }
+        const double det = J.a * J.d - J.b * J.c;
+        const auto toCounts = [&](V2 v) { return V2{(J.d * v.a - J.b * v.b) / det, (-J.c * v.a + J.a * v.b) / det}; };  // angle vector -> counts
         int dx = 0, dy = 0;
         o.haveModel = haveX0_;
         o.saturated = satFlag_;
         satFlag_ = false;
         if (haveX0_) {
-            const V2 xh = x0_ + bias_ + V2{p_.radPerCountX * static_cast<double>(prev.a), p_.radPerCountY * static_cast<double>(prev.b)};
+            const V2 xh = x0_ + bias_ + V2{prev.a, prev.b};
             o.predicted = xh;
             if (targetValid) {
                 if (!haveT_) {
@@ -164,18 +189,25 @@ public:
                 }
                 vT_ = vT_ * (1.0 - p_.velSmooth) + (target - tPrev_) * p_.velSmooth;
                 tPrev_ = target;
+                // everything below happens in COUNTS space (and in pixels through gx, gy): the same pixel error must give the same correction wherever the pointer is
+                const V2 vc = toCounts(vT_);  // fingertip velocity in counts per frame
+                const double spd = std::hypot(vc.a * J.gx, vc.b * J.gy) / J.pxPerRad;
                 // feed-forward only once the fingertip is really moving : at rest the velocity estimate is mostly hand-tracking noise
-                const double spd = Norm(vT_);
                 const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
-                V2 ff = vT_ * (p_.lead * p_.latencyFrames * ffGate);
-                ff.a = std::max(-p_.leadClip, std::min(p_.leadClip, ff.a));
-                ff.b = std::max(-p_.leadClip, std::min(p_.leadClip, ff.b));
-                V2 err = (target + ff) - xh;
-                o.error = err;
+                V2 fc = vc * (p_.lead * p_.latencyFrames * ffGate);
                 {
-                    double* e[2] = {&err.a, &err.b};
+                    const double kx = fc.a * J.gx / J.pxPerRad, ky = fc.b * J.gy / J.pxPerRad;
+                    const double sc = std::max(std::fabs(kx), std::fabs(ky)) > p_.leadClip ? p_.leadClip / std::max(std::fabs(kx), std::fabs(ky)) : 1.0;
+                    fc = fc * sc;
+                }
+                V2 ec = toCounts(target - xh) + fc;  // error in counts (feed-forward included)
+                o.error = V2{J.a * ec.a + J.b * ec.b, J.c * ec.a + J.d * ec.b};
+                o.errUnits = std::hypot(ec.a * J.gx, ec.b * J.gy);
+                {
+                    double* e[2] = {&ec.a, &ec.b};
+                    const double gq[2] = {J.gx, J.gy};
                     for (int ax = 0; ax < 2; ++ax) {
-                        const double m = std::fabs(*e[ax]);
+                        const double m = std::fabs(*e[ax]) * gq[ax] / J.pxPerRad;  // |error| in the control chart (rad-equivalent)
                         if (active_[ax]) active_[ax] = m >= p_.deadband;
                         else active_[ax] = m > p_.deadStart;
                         if (!active_[ax]) {
@@ -187,7 +219,7 @@ public:
                 const double tg[2] = {target.a, target.b};
                 for (int ax = 0; ax < 2; ++ax)
                     if (blockUntil_[ax] > sq && std::fabs(tg[ax] - blockTarget_[ax]) > p_.satReleaseRad) blockUntil_[ax] = 0;
-                const double want[2] = {p_.kControl * err.a / p_.radPerCountX, p_.kControl * err.b / p_.radPerCountY};
+                const double want[2] = {p_.kControl * ec.a, p_.kControl * ec.b};
                 int out[2] = {0, 0};
                 for (int ax = 0; ax < 2; ++ax) {
                     const double c = want[ax] + rem_[ax];
@@ -209,8 +241,8 @@ public:
         }
         dx += extraDx;
         dy += extraDy;
-        cumA_[Slot(sq)] = prev.a + dx;
-        cumB_[Slot(sq)] = prev.b + dy;
+        cumA_[Slot(sq)] = prev.a + J.a * dx + J.b * dy;  // angle increments caused by this frame's counts (incl. the caller's extra counts)
+        cumB_[Slot(sq)] = prev.b + J.c * dx + J.d * dy;
         o.dx = dx;
         o.dy = dy;
         return o;
@@ -220,7 +252,7 @@ public:
     void Reanchor(uint64_t imageSeq, V2 ptr) {
         const int64_t k = static_cast<int64_t>(imageSeq) - p_.latencyFrames;
         const Cnt vis = CumAt(k);
-        x0_ = ptr - V2{p_.radPerCountX * static_cast<double>(vis.a), p_.radPerCountY * static_cast<double>(vis.b)};
+        x0_ = ptr - V2{vis.a, vis.b};
         bias_ = {};
         haveX0_ = true;
         lastPtr_ = ptr;
@@ -233,7 +265,13 @@ public:
     // readback region of interest. Meaningful once HaveModel().
     V2 PredictedInImage(uint64_t imageSeq) const {
         const Cnt vis = CumAt(static_cast<int64_t>(imageSeq) - p_.latencyFrames);
-        return x0_ + bias_ + V2{p_.radPerCountX * static_cast<double>(vis.a), p_.radPerCountY * static_cast<double>(vis.b)};
+        return x0_ + bias_ + V2{vis.a, vis.b};
+    }
+
+    // Where the model says the pointer will be once every command already sent has landed (x_hat of the NEXT Step), for the caller's Jacobian.
+    V2 PredictedNow() const {
+        if (!started_) return x0_ + bias_;
+        return x0_ + bias_ + V2{cumA_[Slot(lastSeq_)], cumB_[Slot(lastSeq_)]};
     }
 
     // Diagnostics
@@ -247,7 +285,7 @@ private:
     static constexpr uint64_t kHist = 64;
     static constexpr double kStuckEps = 0.004;  // rad: pointer displacement between two measurements below which it counts as stationary
     struct Cnt {
-        int64_t a = 0, b = 0;
+        double a = 0, b = 0;  // accumulated angle increments (rad)
     };
     static size_t Slot(int64_t s) { return static_cast<size_t>(((s % static_cast<int64_t>(kHist)) + static_cast<int64_t>(kHist)) % static_cast<int64_t>(kHist)); }
     Cnt CumAt(int64_t k) const {  // sum of the counts issued at calls <= k
@@ -260,7 +298,7 @@ private:
     ServoParams p_;
     bool started_ = false, haveX0_ = false, haveT_ = false, satFlag_ = false;
     int64_t firstSeq_ = 0, lastSeq_ = -1;
-    int64_t cumA_[kHist] = {}, cumB_[kHist] = {};
+    double cumA_[kHist] = {}, cumB_[kHist] = {};
     V2 x0_, bias_, lastInnov_, tPrev_, vT_, lastPtr_;
     double rem_[2] = {0, 0};
     bool active_[2] = {false, false};  // axis currently correcting (deadband hysteresis)

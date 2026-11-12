@@ -53,6 +53,45 @@ void ServoBrain::Log(int level, const char* fmt, ...) {
     log_(level, buf);
 }
 
+// Jacobian of the plant at the model's pointer position for the current view (see Jac in ServoController.h): angle change per mouse count
+bool ServoBrain::ComputeJac(const EyeView& view, V2 ang, Jac* out) const {
+    Px p0;
+    if (!Project(view, view.pose.p + DirOf({ang.a, ang.b}), &p0)) return false;
+    const auto angAt = [&](double x, double y) {
+        const Ang a = AnglesOf(RayDir(view, {x, y}));
+        return V2{a.yaw, a.pitch};
+    };
+    const V2 a0 = angAt(p0.x, p0.y), ax = angAt(p0.x + 1.0, p0.y), ay = angAt(p0.x, p0.y + 1.0);
+    const auto wrap = [](double d) {
+        while (d > 3.14159265358979) d -= 6.28318530717959;
+        while (d < -3.14159265358979) d += 6.28318530717959;
+        return d;
+    };
+    const double gx = std::fabs(params_.radPerCountX) * pxPerRad_, gy = std::fabs(params_.radPerCountY) * pxPerRad_;  // pixels per count
+    out->a = wrap(ax.a - a0.a) * gx;
+    out->c = (ax.b - a0.b) * gx;
+    out->b = wrap(ay.a - a0.a) * gy;
+    out->d = (ay.b - a0.b) * gy;  // dy > 0 moves the pointer DOWN: pitch decreases
+    out->gx = gx;
+    out->gy = gy;
+    out->pxPerRad = pxPerRad_;
+    out->valid = true;
+    return true;
+}
+
+long long ServoBrain::CumAt(const long long* arr, uint64_t imageSeq) const {
+    const int64_t k = static_cast<int64_t>(imageSeq) - params_.latencyFrames;
+    if (k > static_cast<int64_t>(seq_)) return arr[seq_ % 64];
+    if (k + 62 < static_cast<int64_t>(seq_)) return arr[(seq_ + 1) % 64];  // trop vieux : la plus ancienne valeur connue
+    return arr[static_cast<uint64_t>(k) % 64];
+}
+
+void ServoBrain::ResetStuck() {
+    stuckRef_ = lastDetPx_;
+    stuckBaseX_ = CumAt(cumX_, lastDetSeq_);
+    stuckBaseY_ = CumAt(cumY_, lastDetSeq_);
+}
+
 void ServoBrain::Reset() {
     mode_ = BrainMode::Acquire;
     ctl_ = ServoController(params_);
@@ -77,7 +116,9 @@ void ServoBrain::Reset() {
     blockUntilMs_ = 0;
     blockN_ = 0;
     lastJumps_ = 0;
-    stuckSx_ = stuckSy_ = 0;
+    std::fill(std::begin(cumX_), std::end(cumX_), 0LL);
+    std::fill(std::begin(cumY_), std::end(cumY_), 0LL);
+    stuckBaseX_ = stuckBaseY_ = 0;
     prevDist_[0] = prevDist_[1] = 1.0f;
     errNowPx_ = 1e9;
     tilePos_ = 0;
@@ -269,7 +310,9 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
     lastDetMs_ = nowMs_;
     lastDetSeq_ = r.imageSeq;
     ++nDet_;
-    if (mode_ == BrainMode::Probe) probe_.OnMeasurement(r.imageSeq, ang);
+    // la mesure du gain se fait dans le plan de l'image (pseudo-angles = pixels / pxPerRad) : MSFS deplace son pointeur d'un nombre constant de PIXELS par compte, pas de radians
+    const V2 chart{(px - (r.view.rect.x + r.view.rect.w * 0.5)) / pxPerRad_, -(py - (r.view.rect.y + r.view.rect.h * 0.5)) / pxPerRad_};
+    if (mode_ == BrainMode::Probe) probe_.OnMeasurement(r.imageSeq, chart);
     if (mode_ == BrainMode::Track) {
         // apres une perte d'au moins ~6 mesures, le modele n'est plus fiable : une detection nette (score >= 0.6) le remet d'aplomb d'un coup
         if (missedBefore >= 6 && c[0].score >= 0.6) ctl_.Reanchor(r.imageSeq, ang);
@@ -279,7 +322,7 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
         if (!probeDone_) {
             mode_ = BrainMode::Probe;
             probe_.Start(seq_);
-            probe_.OnMeasurement(r.imageSeq, ang);
+            probe_.OnMeasurement(r.imageSeq, chart);
             Log(0, "servo : mesure du gain de la souris (quatre petites salves, gardez la main immobile)");
         } else {
             mode_ = BrainMode::Track;
@@ -312,6 +355,8 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     BrainOutput out;
     nowMs_ = in.nowMs;
     ++seq_;
+    cumX_[seq_ % 64] = cumX_[(seq_ + 63) % 64];
+    cumY_[seq_ % 64] = cumY_[(seq_ + 63) % 64];
     if (mode_ == BrainMode::Acquire) {
         if (!acquireSinceMs_) acquireSinceMs_ = in.nowMs;
     } else {
@@ -333,7 +378,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 tipFilter_[k].Reset();
                 continue;
             }
-            in.hand[k].tip = tipFilter_[k].Filter(in.hand[k].tip, dt, 1.0f, 12.0f);
+            in.hand[k].tip = tipFilter_[k].Filter(in.hand[k].tip, dt, tipMinHz_, tipBeta_);
         }
     }
 
@@ -382,8 +427,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         if (hand >= 0) {
             Log(0, "servo : main %s", hand == 1 ? "droite" : "gauche");
             lastSwitchMs_ = in.nowMs;
-            stuckSx_ = stuckSy_ = 0;
-            stuckRef_ = lastDetPx_;
+            ResetStuck();
         }
     }
     if (hand >= 0 && edge[hand]) armed_[hand] = true;  // seul un pincement commence PENDANT que cette main est la main choisie peut cliquer
@@ -421,6 +465,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     if (!pinch && !prelatched_ && !freeWheel_) locked_ = false;
     if (deferTap_ && (in.nowMs > deferUntilMs_ || hand != deferHand_ || pinch || in.menuOpen)) deferTap_ = false;
     haveFinger_ = false;
+    if (hand < 0) haveFingerJump_ = false;
     V2 target;
     if (hand >= 0) {
         const BrainHand& hd = in.hand[hand];
@@ -441,6 +486,13 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 const Ang a = AnglesOf(emulation::Normalized(d));
                 target = {a.yaw, a.pitch};
             }
+            // saut de la cible (changement de main, verrou qui se pose ou se leve) : pas de pic d'anticipation (la vitesse de la cible serait enorme)
+            const bool lockedNow = ((pinch || prelatched_ || freeWheel_) && locked_) || deferTap_;
+            if (hand != prevTargetHand_ || lockedNow != prevTargetLocked_ || (haveFingerJump_ && std::hypot(px.x - jumpPrevPx_.x, px.y - jumpPrevPx_.y) > 150.0)) ctl_.ResetTarget();
+            prevTargetHand_ = hand;
+            prevTargetLocked_ = lockedNow;
+            jumpPrevPx_ = px;
+            haveFingerJump_ = true;
             fingerPx_ = px;
             haveFinger_ = true;
         }
@@ -510,29 +562,30 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         const bool blocked = blockUntilMs_ > in.nowMs;
         if (!blocked && blockUntilMs_) {  // fin de la pause : on repart du pointeur tel qu'on le voit
             blockUntilMs_ = 0;
-            stuckSx_ = stuckSy_ = 0;
-            stuckRef_ = lastDetPx_;
+            ResetStuck();
             if (haveDet_ && in.nowMs - lastDetMs_ < 400) ctl_.Reanchor(lastDetSeq_, lastDetAng_);
         }
-        const ServoController::Out o = ctl_.Step(seq_, hand >= 0 && haveFinger_ && !blocked, target, jx, jy);
+        Jac jac;
+        const bool haveJ = ctl_.HaveModel() && ComputeJac(in.view, ctl_.PredictedNow(), &jac);
+        const ServoController::Out o = ctl_.Step(seq_, hand >= 0 && haveFinger_ && !blocked, target, jx, jy, haveJ ? &jac : nullptr);
+        // cumul des comptes envoyes (hors garde) par numero d'image : sert a savoir ce qui a DEJA pu atterrir dans l'image d'ou vient la derniere detection
+        cumX_[seq_ % 64] = cumX_[(seq_ + 63) % 64] + (blocked ? 0 : o.dx - jx);
+        cumY_[seq_ % 64] = cumY_[(seq_ + 63) % 64] + (blocked ? 0 : o.dy - jy);
         if (!blocked) {
-            // le pointeur suit-il les comptes ? deplacement commande (gain connu) contre deplacement vu depuis la reference
+            // le pointeur suit-il les comptes ? deplacement commande ATTERRI (comptes envoyes jusqu'a l'image de la detection - latence) contre deplacement vu depuis la reference
             if (ctl_.Jumps() != lastJumps_) {  // le pointeur a saute (re-ancrage par MSFS) : nouvelle reference
                 lastJumps_ = ctl_.Jumps();
-                stuckSx_ = stuckSy_ = 0;
-                stuckRef_ = lastDetPx_;
+                ResetStuck();
             }
-            stuckSx_ += o.dx - jx;
-            stuckSy_ += o.dy - jy;
             if (haveDet_ && in.nowMs - lastDetMs_ < 120) {  // detection FRAICHE seulement : un pointeur non detecte (hors de la vue, ROI a cote) n'est pas un pointeur fige
-                const double ex = stuckSx_ * params_.radPerCountX * pxPerRad_, ey = -stuckSy_ * params_.radPerCountY * pxPerRad_;
+                const long long sx = CumAt(cumX_, lastDetSeq_) - stuckBaseX_, sy = CumAt(cumY_, lastDetSeq_) - stuckBaseY_;
+                const double ex = sx * params_.radPerCountX * pxPerRad_, ey = -sy * params_.radPerCountY * pxPerRad_;
                 const double mx = lastDetPx_.x - stuckRef_.x, my = lastDetPx_.y - stuckRef_.y;
                 const double en = std::hypot(ex, ey);
                 const double along = en > 1e-6 ? (mx * ex + my * ey) / en : 0.0;
                 const double shortfall = en - along;
                 if (std::hypot(mx, my) > kStuckResetMovePx && shortfall < kStuckOkShortfallPx) {
-                    stuckRef_ = lastDetPx_;
-                    stuckSx_ = stuckSy_ = 0;
+                    ResetStuck();
                     blockN_ = 0;
                 } else if (en > kStuckShortfallPx && shortfall > kStuckShortfallPx) {
                     const uint64_t ms = std::min(kBlockMaxMs, kBlockBaseMs << std::min(blockN_, 2));
@@ -544,11 +597,12 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         }
         sentDx = o.dx;  // inclut deja les comptes de garde (jx, jy)
         sentDy = o.dy;
-        if (o.haveModel && hand >= 0) errPx_ = Norm(o.error) * pxPerRad_;
+        const double errPxNow = haveJ ? o.errUnits : Norm(o.error) * pxPerRad_;  // pixels
+        if (o.haveModel && hand >= 0) errPx_ = errPxNow;
         if (o.haveModel) {
             havePred = true;
             predAng = o.predicted;
-            if (hand >= 0 && haveFinger_) errNowPx_ = Norm(o.error) * pxPerRad_;
+            if (hand >= 0 && haveFinger_) errNowPx_ = errPxNow;
         }
         if (in.nowMs - lastDetMs_ > kLostToAcquireMs && haveDet_) {
             Log(1, "servo : pointeur introuvable depuis %.1f s : nouvelle recherche", static_cast<double>(in.nowMs - lastDetMs_) / 1000.0);

@@ -64,9 +64,9 @@ void DrawCross(std::vector<uint8_t>& rgb, int w, int h, int cx, int cy, int arm,
 // Recadrage annote (BMP 24 bits) : croix rouge = pointeur detecte, jaune = bout du doigt, vert = position attendue
 void SaveDiag(const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int detX, int detY, int fingerX, int fingerY) {
     Adapter& a = A();
-    if (a.diagSaved >= 24) return;
+    // anneau de 60 captures (la plus ancienne est ecrasee), espacees de 6 s apres les 4 premieres : elles couvrent tout l'essai, pas seulement les premieres secondes
     const uint64_t now = GetTickCount64();
-    if (now - a.diagMs < 1500) return;
+    if (now - a.diagMs < (a.diagSaved < 4 ? 1500u : 6000u)) return;
     a.diagMs = now;
     std::vector<uint8_t> rgb(static_cast<size_t>(r.w) * r.h * 3);
     for (int i = 0; i < r.w * r.h; ++i) {
@@ -78,10 +78,19 @@ void SaveDiag(const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int d
     if (fingerX > -100000) DrawCross(rgb, r.w, r.h, fingerX, fingerY, 10, 255, 255, 0);
     if (r.expX >= 0) DrawCross(rgb, r.w, r.h, static_cast<int>(r.expX) - r.x, static_cast<int>(r.expY) - r.y, 8, 0, 255, 0);
     char name[96];
-    std::snprintf(name, sizeof(name), "servo_%02d_%s.bmp", a.diagSaved + 1, tag);
+    const int slot = a.diagSaved % 60 + 1;
+    std::snprintf(name, sizeof(name), "servo_%02d_%s.bmp", slot, tag);
     const std::filesystem::path file = LayerBaseDir() / "logs" / "captures" / name;
     std::error_code ec;
     std::filesystem::create_directories(file.parent_path(), ec);
+    {  // l'emplacement est reutilise : on efface l'ancienne capture (son nom porte un autre tag)
+        char prefix[16];
+        std::snprintf(prefix, sizeof(prefix), "servo_%02d_", slot);
+        for (const auto& e : std::filesystem::directory_iterator(file.parent_path(), ec)) {
+            const std::string fn = e.path().filename().string();
+            if (fn.rfind(prefix, 0) == 0) std::filesystem::remove(e.path(), ec);
+        }
+    }
     FILE* f = nullptr;
     if (_wfopen_s(&f, file.c_str(), L"wb") != 0 || !f) return;
     const uint32_t stride = (static_cast<uint32_t>(r.w) * 3 + 3) & ~3u, imgSize = stride * static_cast<uint32_t>(r.h), fileSize = 54 + imgSize, offset = 54, dib = 40;
@@ -109,7 +118,7 @@ void SaveDiag(const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int d
     }
     std::fclose(f);
     ++a.diagSaved;
-    Logger::Get().Log(LogLevel::Info, "servo : capture de diagnostic %s (%s), ROI (%d,%d) %dx%d", name, tag, r.x, r.y, r.w, r.h);
+    Logger::Get().Log(LogLevel::Info, "servo : capture de diagnostic n%d -> %s (%s), ROI (%d,%d) %dx%d", a.diagSaved, name, tag, r.x, r.y, r.w, r.h);
 }
 
 void WriteTrace(const sv::BrainTrace& t) {

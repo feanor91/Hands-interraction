@@ -2,6 +2,23 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.34] - 2026-11-12
+
+### Corrige
+- **LA cause de la danse quand on regarde vers le bas** (trace du 12 nov., 11:23 : le doigt immobile a +-3 px, le pointeur qui tourne autour a +-50 px, 23 comptes par image) : MSFS deplace son pointeur
+  d'un nombre CONSTANT de PIXELS de l'image par compte (mesure sur la trace : 1.05 px/compte, de -20 a -80 deg de site, reponse = un retard pur de 3 images), alors que la couche raisonnait en angles
+  (cap, site) a gain constant. Or a 65 deg sous l'horizon, un pixel represente 1/cos = 2.4 fois plus de cap : la boucle avait 2 a 3 fois trop de gain et oscillait (periode ~7 images). C'est aussi pour
+  ca que la mesure du gain donnait 0.85, 1.24 ou 1.57 px/compte selon la posture de la tete. Maintenant la regulation se fait dans le plan de l'image : la matrice (cap, site) par compte est recalculee
+  a chaque image a l'endroit ou est le pointeur (le gain est toujours 1 px/compte), la mesure du gain se fait en pixels, la zone morte, l'anticipation et l'ecart sont en pixels. Simulation, tete
+  inclinee de 0, -45 et -65 deg : gain mesure 1.00 / 1.02 / 1.02 px/compte (1.0 / 1.2 / 1.85 avant), 93 comptes en 300 images au repos a -65 deg (690 avant).
+- **La pause « le pointeur ne suit plus les comptes » se declenchait a tort** (34 % du suivi en pause !) : avec 150 comptes par image, 3 images de comptes sont en vol et n'ont pas pu atterrir. Elle compare
+  maintenant ce qui a pu atterrir (comptes envoyes jusqu'a l'image de la detection moins la latence) a ce que le pointeur a fait.
+- **Changement de main** : quand la cible saute (autre main, verrou qui se pose ou se leve, saut de plus de 150 px), la vitesse de la cible est oubliee : plus de pic d'anticipation qui envoie le pointeur
+  trop loin (simulation : depassement 12 px, stable en 0.33 s a 30 i/s pour un saut de 0.6 rad).
+- **Captures de diagnostic** : un anneau de 60 captures espacees de 6 s (au lieu de 24 prises dans les premieres secondes) : elles couvrent tout l'essai, les plus anciennes sont ecrasees.
+### Ajoute
+- Tests : 143 (tete penchee, saut de cible, cadence irreguliere, trajet de doigt reel rejoue).
+
 ## [0.0.33] - 2026-11-12
 
 ### Corrige

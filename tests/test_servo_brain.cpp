@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -55,6 +56,7 @@ const Assets& GetAssets() {
 
 struct Sim {
     int L = 2, readLat = 1;             // latence souris -> image du jeu, latence de lecture (images)
+    double readJitter = 0.0;            // part des lectures qui prennent une image de plus (cadence irreguliere : 31 / 47 ms dans le journal reel)
     double gainRatio = 1.0;             // gain reel / gain a priori du cerveau
     double fps = 90.0;
     bool hideIdle = true;               // MSFS masque le curseur apres 3 s sans mouvement
@@ -65,6 +67,7 @@ struct Sim {
     double headSwayDeg = 0.0;           // balancement de la tete (cap) : amplitude en degres
     double headSwayHz = 0.4;
     bool headAnchored = false;          // le pointeur est colle a la tete (sinon : fixe dans le monde)
+    bool pxPlant = true;                // MSFS deplace son pointeur d'un nombre CONSTANT de PIXELS de l'image par compte (mesure : 1.05 px/compte de -20 a -80 deg de site), pas de radians
     bool decoy = false;                 // une deuxieme fleche IMMOBILE (un « reflet » avec un contour noir : le pire cas pour le detecteur)
     V2 decoyAng{0.17, -0.21};
     int teleportAt = -1;                // appel ou MSFS « re-ancre » le pointeur (saut de 0.4 rad sans commande)
@@ -169,8 +172,16 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         if (k >= s.L) {
             const auto c = s.cnt[static_cast<size_t>(k - s.L)];
             if (c.first != 0 || c.second != 0) {
-                s.ptr.a += s.TrueGain() * c.first;
-                s.ptr.b += -s.TrueGain() * c.second;
+                if (s.pxPlant) {
+                    Px q = s.PixelOf(s.PointerWorld());
+                    q.x += s.TrueGain() * kPxPerRad * c.first;
+                    q.y += s.TrueGain() * kPxPerRad * c.second;
+                    const Ang an = AnglesOf(RayDir(s.view, q));
+                    s.ptr = {an.yaw, an.pitch};
+                } else {
+                    s.ptr.a += s.TrueGain() * c.first;
+                    s.ptr.b += -s.TrueGain() * c.second;
+                }
                 s.ptr.a = std::min(s.ptr.a, s.wallYaw);
                 s.lastMoveMs = now;
             }
@@ -223,7 +234,7 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         }
         if (out.request.valid) {
             fl.active = true;
-            fl.at = k + s.readLat;
+            fl.at = k + s.readLat + ((s.readJitter > 0.0 && (s.Gauss() + 6.0) / 12.0 < s.readJitter) ? 1 : 0);
             fl.req = out.request;
             s.Render(out.request, now, &fl.px);
         }
@@ -488,6 +499,7 @@ TEST(ServoBrain_tete_qui_se_balance_pointeur_colle_a_la_tete) {
     Sim s;
     s.headSwayDeg = 8.0;
     s.headAnchored = true;
+    s.pxPlant = false;
     const Metrics m = Run(s, 1100, [](int) { return Frame(); });
     std::printf("      balancement, pointeur tete : mode %d, ecart RMS apres 8 s %.1f px (max %.1f)\n", static_cast<int>(s.brain.Mode()), RmsErr(m, 700, 1100), MaxErr(m, 700, 1100));
     CHECK(s.brain.Mode() == BrainMode::Track);
@@ -701,5 +713,195 @@ TEST(ServoBrain_derive_lente_du_poignet_ou_main_qui_bouge_pas_de_molette) {
         (void)m;
         std::printf("      roulis pendant un deplacement : %d cran(s)\n", s.wheel);
         CHECK_EQ(s.wheel, 0);
+    }
+}
+
+TEST(ServoBrain_grand_deplacement_a_30_images_par_seconde_pas_de_fausse_pause) {
+    for (int L : {2, 3}) {
+        Sim s;
+        s.fps = 30.0;
+        s.L = L;
+        s.readLat = 2;
+        const Metrics m = Run(s, 700, [](int k) {
+            Frame f;
+            if (k >= 400 && k < 500) f.finger = {0.55, -0.45};
+            return f;
+        });
+        int pauses = 0;
+        for (const std::string& l : s.logs) pauses += l.find("ne suit plus") != std::string::npos ? 1 : 0;
+        std::printf("      grand deplacement 30 i/s L=%d : %d pause(s), ecart 40 images apres l'arrivee %.1f px\n", L, pauses, MaxErr(m, 460, 500));
+        CHECK_EQ(pauses, 0);
+        CHECK(MaxErr(m, 460, 500) < 12.0);
+    }
+}
+
+TEST(ServoBrain_cadence_irreguliere_le_pointeur_ne_oscille_pas_autour_du_doigt) {
+    for (double jit : {0.0, 0.3, 0.5}) {
+        Sim s;
+        s.fps = 30.0;
+        s.L = 2;
+        s.readLat = 1;
+        s.readJitter = jit;
+        s.gainRatio = 1.1;
+        const Metrics m = Run(s, 900, [](int) { return Frame(); });
+        double sum = 0, mx = 0;
+        long long counts = 0;
+        for (int k = 600; k < 900; ++k) {
+            sum += m.err[static_cast<size_t>(k)];
+            mx = std::max(mx, m.err[static_cast<size_t>(k)]);
+            counts += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+        }
+        std::printf("      cadence irreguliere %.0f %% : ecart moyen au repos %.1f px (max %.1f), %lld comptes en 300 images\n", jit * 100, sum / 300.0, mx, counts);
+        CHECK(sum / 300.0 < 8.0);
+    }
+}
+
+TEST(ServoBrain_rejoue_un_vrai_trajet_de_doigt_quasi_immobile_sans_osciller) {
+    // 169 images reelles (essai du 12 nov., 11:23) : le doigt reste dans un carre de 36 x 40 px ; dans le casque le pointeur tournait autour (ecart median 33 px)
+    std::vector<Px> path;
+    {
+        std::FILE* f = std::fopen((std::string(HANDS_TESTDATA_DIR) + "/finger_path.txt").c_str(), "r");
+        CHECK(f != nullptr);
+        if (!f) return;
+        double x, y;
+        while (std::fscanf(f, "%lf %lf", &x, &y) == 2) path.push_back({x, y});
+        std::fclose(f);
+    }
+    CHECK(path.size() > 100);
+    for (double gainRatio : {0.8, 1.0}) {
+        Sim s;
+        s.fps = 30.0;
+        s.L = 2;
+        s.readLat = 1;
+        s.gainRatio = gainRatio;
+        s.brain.SetTipFilter(1000.0f, 0.0f);  // le trajet est deja lisse (c'est la cible que la couche a vue)
+        const int warm = 600;
+        auto script = [&](int k) {
+            Frame f;
+            const Px p = path[std::min(path.size() - 1, static_cast<size_t>(std::max(0, k - warm)))];
+            const Ang a = AnglesOf(RayDir(s.view, p));
+            f.finger = {a.yaw, a.pitch};
+            return f;
+        };
+        const int n = warm + static_cast<int>(path.size());
+        const Metrics m = Run(s, n, script);
+        double sum = 0, mx = 0;
+        long long counts = 0;
+        for (int k = warm; k < n; ++k) {
+            sum += m.err[static_cast<size_t>(k)];
+            mx = std::max(mx, m.err[static_cast<size_t>(k)]);
+            counts += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+        }
+        std::printf("      trajet reel, gain x%.1f : ecart moyen %.1f px (max %.1f), %lld comptes en %zu images\n", gainRatio, sum / path.size(), mx, counts, path.size());
+        CHECK(sum / path.size() < 12.0);
+    }
+}
+
+// EXPERIENCE (ignoree sans la variable HANDS_REPLAY_CSV) : rejoue le controleur sur les vraies donnees d'une trace
+TEST(ServoReplay_trace_reelle) {
+    const char* path = std::getenv("HANDS_REPLAY_CSV");
+    if (!path) return;
+    const int from = std::getenv("HANDS_REPLAY_FROM") ? std::atoi(std::getenv("HANDS_REPLAY_FROM")) : 11078, count = 120;
+    std::FILE* f = std::fopen(path, "r");
+    CHECK(f != nullptr);
+    if (!f) return;
+    char line[512];
+    struct Row { double t, fx, fy, dxp, dyp, age, rdx, rdy, rpx, rpy; };
+    std::vector<Row> rows;
+    int idx = -1;
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == 't') continue;
+        ++idx;
+        if (idx < from || idx >= from + count) continue;
+        double v[24];
+        int n = 0;
+        char* c = line;
+        while (n < 24) {
+            v[n++] = std::strtod(c, &c);
+            if (*c != ',') break;
+            ++c;
+        }
+        // t_ms,mode,hand,pinch_raw,pinch,down,can_click,finger_x,finger_y,det_x,det_y,det_age_ms,pred_x,pred_y,err_px,dx,dy,wheel
+        rows.push_back({v[0], v[7], v[8], v[9], v[10], v[11], v[15], v[16], v[12], v[13]});
+    }
+    std::fclose(f);
+    EyeView view;
+    view.fov = {-0.94f, 0.70f, 0.77f, -0.96f};
+    view.rect = {0, 0, 2688, 2880};
+    view.pose = {{0, 0, 0, 1}, {0, 0, 0}};
+    ServoParams p;
+    p.radPerCountX = 0.85 / 1215.0;
+    p.radPerCountY = -1.00 / 1215.0;
+    p.latencyFrames = 2;
+    ServoController ctl(p);
+    auto ang = [&](double x, double y) {
+        const Ang a = AnglesOf(RayDir(view, {x, y}));
+        return V2{a.yaw, a.pitch};
+    };
+    std::printf("      row   real dx,dy   replay dx,dy   real pred   replay pred   err(px)\n");
+    uint64_t seq = 1000;
+    for (size_t i = 0; i < rows.size(); ++i, ++seq) {
+        const Row& r = rows[i];
+        if (r.age < 100) {
+            const int lat = r.age < 40 ? 1 : (r.age < 55 ? 2 : 3);
+            ctl.OnMeasurement(seq - lat, ang(r.dxp, r.dyp));
+        }
+        const ServoController::Out o = ctl.Step(seq, true, ang(r.fx, r.fy));
+        const Px pp = [&] { Px q; Project(view, DirOf({o.predicted.a, o.predicted.b}), &q); return q; }();
+        if (i < 45) std::printf("      %3zu   %4.0f,%4.0f    %4d,%4d    %5.0f,%5.0f   %5.0f,%5.0f   %5.0f\n", i, r.rdx, r.rdy, o.dx, o.dy, r.rpx, r.rpy, pp.x, pp.y, Norm(o.error) * 1215.0);
+    }
+}
+
+TEST(ServoBrain_tete_penchee_vers_le_bas_le_gain_en_cap_change_et_le_pointeur_ne_danse_pas) {
+    for (double pitchDeg : {0.0, -45.0, -65.0}) {
+        Sim s;
+        s.pxPlant = true;
+        s.tipNoiseM = 0.002;
+        const double th = pitchDeg * 3.14159265358979 / 180.0;
+        s.view.pose.q = {static_cast<float>(std::sin(th / 2)), 0.0f, 0.0f, static_cast<float>(std::cos(th / 2))};  // la tete regarde vers le bas
+        const double axisPitch = th;                                                                                // site de l'axe de vue
+        s.ptr = {0.30, axisPitch + 0.1};
+        const V2 finger{0.05, axisPitch - 0.05};
+        const Metrics m = Run(s, 1100, [&](int) {
+            Frame f;
+            f.finger = finger;
+            return f;
+        });
+        long long counts = 0;
+        for (int k = 800; k < 1100; ++k) counts += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+        std::printf("      tete a %.0f deg : mode %d, gain mesure x%.2f (px/compte), ecart RMS au repos %.1f px (max %.1f), %lld comptes en 300 images\n", pitchDeg,
+                    static_cast<int>(s.brain.Mode()), s.brain.Params().radPerCountX * kPxPerRad, RmsErr(m, 800, 1100), MaxErr(m, 800, 1100), counts);
+        CHECK(s.brain.Mode() == BrainMode::Track);
+        CHECK(RmsErr(m, 800, 1100) < 7.0);
+        CHECK(counts < 700);
+    }
+}
+
+TEST(ServoBrain_saut_de_la_cible_changement_de_main_pas_de_depassement) {
+    for (double fps : {30.0, 90.0}) {
+        Sim s;
+        s.fps = fps;
+        const int k0 = static_cast<int>(fps * 5.0);
+        const Metrics m = Run(s, k0 + static_cast<int>(fps * 4), [&](int k) {
+            Frame f;
+            if (k >= k0) f.finger = {0.45, -0.40};
+            return f;
+        });
+        // depassement : ecart maximum une fois arrive a moins de 15 px puis relache ; temps pour rester sous 10 px
+        int arrived = -1, settled = -1;
+        double over = 0;
+        for (int k = k0; k < static_cast<int>(m.err.size()); ++k) {
+            if (arrived < 0 && m.err[static_cast<size_t>(k)] < 15.0) arrived = k - k0;
+            if (arrived >= 0) over = std::max(over, m.err[static_cast<size_t>(k)]);
+        }
+        for (int k = k0; k < static_cast<int>(m.err.size()) && settled < 0; ++k) {
+            bool ok = true;
+            for (int j = k; j < std::min(static_cast<int>(m.err.size()), k + static_cast<int>(fps * 0.5)) && ok; ++j) ok = m.err[static_cast<size_t>(j)] < 10.0;
+            if (ok) settled = k - k0;
+        }
+        std::printf("      saut de cible a %.0f i/s : arrive apres %.2f s, depassement max %.0f px, stable (<10 px) apres %.2f s\n", fps, arrived / fps, over, settled / fps);
+        CHECK(arrived >= 0 && settled >= 0);
+        CHECK(over < 40.0);
+        CHECK(settled / fps < 1.2);
     }
 }
