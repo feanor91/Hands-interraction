@@ -66,6 +66,8 @@ struct Sim {
     double wallYaw = 1e9;
     double headSwayDeg = 0.0;           // balancement de la tete (cap) : amplitude en degres
     double headSwayHz = 0.4;
+    double headTriAmpDeg = 0.0;         // la tete tourne a vitesse CONSTANTE (onde triangulaire) : jamais immobile (essai reel : on regarde partout pendant la mesure)
+    double headTriDegS = 30.0;
     bool headAnchored = false;          // le pointeur est colle a la tete (sinon : fixe dans le monde)
     bool pxPlant = true;                // MSFS deplace son pointeur d'un nombre CONSTANT de PIXELS de l'image par compte (mesure : 1.05 px/compte de -20 a -80 deg de site), pas de radians
     bool decoy = false;                 // une deuxieme fleche IMMOBILE (un « reflet » avec un contour noir : le pire cas pour le detecteur)
@@ -90,6 +92,8 @@ struct Sim {
         view.rect = {0, 0, 2688, 2880};
         view.pose = {{0, 0, 0, 1}, {0, 0, 0}};
         brain.SetLogger([this](int, const std::string& m) { logs.push_back(m); });
+        brain.SetAutoProbe(true);  // les tests valident la mesure ; en production elle n'est faite que sur demande (menu « Remesurer ») : voir les tests « sans mesure »
+        brain.Recalibrate();
     }
 
     double TrueGain() const { return kBaseGain * gainRatio; }
@@ -166,6 +170,11 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         const uint64_t now = s.t0 + static_cast<uint64_t>(std::llround(k * dtMs));
         if (s.headSwayDeg != 0.0) {  // la tete se balance autour de l'axe vertical (la vue de l'oeil tourne)
             const double th = s.headSwayDeg * 3.14159265358979 / 180.0 * std::sin(2.0 * 3.14159265358979 * s.headSwayHz * k * dtMs / 1000.0);
+            s.view.pose.q = {0.0f, static_cast<float>(std::sin(th / 2)), 0.0f, static_cast<float>(std::cos(th / 2))};
+        }
+        if (s.headTriAmpDeg != 0.0) {
+            const double A = s.headTriAmpDeg, per = 4.0 * A / s.headTriDegS, ph = std::fmod(k * dtMs / 1000.0, per) / per;  // 0..1
+            const double th = (ph < 0.25 ? 4.0 * ph : (ph < 0.75 ? 2.0 - 4.0 * ph : 4.0 * ph - 4.0)) * A * 3.14159265358979 / 180.0;
             s.view.pose.q = {0.0f, static_cast<float>(std::sin(th / 2)), 0.0f, static_cast<float>(std::cos(th / 2))};
         }
         // le « jeu » applique les comptes envoyes il y a L appels
@@ -493,6 +502,48 @@ TEST(ServoBrain_tete_qui_se_balance_pointeur_fixe_dans_le_monde) {
     std::printf("      balancement, pointeur monde : mode %d, ecart RMS apres 8 s %.1f px (max %.1f)\n", static_cast<int>(s.brain.Mode()), RmsErr(m, 700, 1100), MaxErr(m, 700, 1100));
     CHECK(s.brain.Mode() == BrainMode::Track);
     CHECK(RmsErr(m, 700, 1100) < 15.0);
+}
+
+TEST(ServoBrain_mesure_du_gain_tete_en_mouvement_continu) {
+    // essai reel du 12 nov. 17:57 : la tete bouge en permanence, le pointeur est fixe dans le monde. La mesure ne trouvait jamais un pointeur « stable » en pixels (0 salve
+    // envoyee, « mesure du gain impossible », puis le vrai pointeur mis sur la liste des decors).
+    Sim s;
+    s.headTriAmpDeg = 25.0;  // +-25 deg a 30 deg/s, sans arret
+    const Metrics m = Run(s, 1800, [](int) { return Frame(); });
+    bool measured = false, blacklisted = false, impossible = false;
+    for (const std::string& l : s.logs) {
+        measured = measured || l.find("gain mesure") != std::string::npos;
+        blacklisted = blacklisted || l.find("ne repond pas") != std::string::npos;
+        impossible = impossible || l.find("impossible") != std::string::npos;
+    }
+    std::printf("      mesure tete mobile : mesure %d, decor %d, impossible %d, mode %d, ecart RMS final %.1f px\n", measured, blacklisted, impossible, static_cast<int>(s.brain.Mode()), RmsErr(m, 1500, 1800));
+    CHECK(measured);
+    CHECK(!blacklisted);
+    CHECK(!impossible);
+    CHECK(s.brain.Mode() == BrainMode::Track);
+    CHECK(RmsErr(m, 1500, 1800) < 15.0);
+}
+
+TEST(ServoBrain_sans_mesure_du_gain_le_suivi_demarre_tout_de_suite) {
+    // production : pas de mesure au demarrage (valeurs a priori) ; le regulateur absorbe un gain et une latence differents
+    const double ratios[] = {0.7, 1.0, 1.4};
+    for (const double ratio : ratios) {
+        Sim s;
+        s.brain.SetAutoProbe(false);
+        s.brain.Recalibrate();  // (le constructeur du Sim a active la mesure) : puis on la desactive proprement
+        s.brain.SetAutoProbe(false);
+        s.brain.Reset();
+        s.gainRatio = ratio;
+        s.L = 3;
+        s.headSwayDeg = 10.0;
+        const Metrics m = Run(s, 900, [](int) { return Frame(); });
+        bool probed = false;
+        for (const std::string& l : s.logs) probed = probed || l.find("quatre petites salves") != std::string::npos;
+        std::printf("      sans mesure, gain x%.1f, L=3, tete mobile : mode %d, ecart RMS %.1f px (max %.1f), mesure lancee %d\n", ratio, static_cast<int>(s.brain.Mode()), RmsErr(m, 500, 900), MaxErr(m, 500, 900), probed);
+        CHECK(!probed);
+        CHECK(s.brain.Mode() == BrainMode::Track);
+        CHECK(RmsErr(m, 500, 900) < 15.0);
+    }
 }
 
 TEST(ServoBrain_tete_qui_se_balance_pointeur_colle_a_la_tete) {

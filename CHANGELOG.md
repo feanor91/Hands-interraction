@@ -2,6 +2,18 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.36] - 2026-11-12
+
+### Corrige
+- **Le pointeur colle au doigt ne demarrait jamais** (essai de 17:57 : le suivi restait en « mesure du gain » jusqu'a l'abandon, `servo_trace.csv` : mode 1 du debut a la fin, 0 compte envoye). C'est une
+  regression de la 0.0.34 : la mesure du gain attendait un pointeur « stable » en PIXELS de l'image, or le pointeur de MSFS est fixe dans le monde et l'image bouge des que la tete bouge (la tete bougeait
+  en permanence, jusqu'a 85 deg de cap) : jamais stable, aucune salve envoyee, echec apres 8 s, puis le vrai pointeur etait mis sur la liste des « decors » (« la cible ne repond pas a la souris »).
+  Trois corrections : (1) **plus de mesure au demarrage** : le suivi part tout de suite avec les valeurs a priori (1.02 px/compte, latence 2 images), le regulateur tient des gains de 0.6 a 1.6 et une
+  latence a +-1 (tests) ; la mesure ne se fait plus que sur demande (menu Souris > Remesurer) ; (2) quand elle est demandee, les positions sont projetees dans la vue du debut de la mesure (la tete peut
+  bouger) ; (3) un pointeur n'est mis sur la liste des decors que si des comptes ont vraiment ete envoyes. Tests : mesure avec la tete qui tourne sans arret (echoue avec l'ancien code), suivi sans
+  mesure avec gain x0.7 / x1.4 et latence 3.
+- Plus d'anciennes captures `cap_NN` en mode colle au doigt (elles ne montrent que le decor autour du doigt, jamais le pointeur) ; seules les `servo_NN_*.bmp` sont ecrites.
+
 ## [0.0.35] - 2026-11-12
 
 ### Ajoute

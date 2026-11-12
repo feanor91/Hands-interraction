@@ -614,6 +614,7 @@ D3D12_RESOURCE_STATES ColorStateFromName(const std::string& n) {
 
 void CaptureFrame(const XrFrameEndInfo* info) {
     const auto cfg = CurrentConfig();
+    if (Mouse_Kind() == MouseKind::Servo) return;  // en mode colle au doigt, les captures utiles sont les servo_NN (autour du pointeur) ; celles-ci dataient du rayon
     if (cfg->captureMax <= 0 || g_capturesDone >= cfg->captureMax || g_colorReaderFailed || !info || !info->layers || !g_device || !g_queue) return;
     const XrCompositionLayerProjection* game = FindGameProjection(info);
     if (!game) return;

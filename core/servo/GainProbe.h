@@ -26,6 +26,7 @@ public:
         double radPerCountY = 0;       // dy > 0 (vers le bas) -> pitch diminue : valeur negative
         int latencyFrames = 2;
         int burstsOk = 0;              // salves exploitables (sur 4)
+        bool sent = false;             // au moins une salve de comptes a vraiment ete envoyee (sinon l'echec ne dit rien sur la cible)
         bool responded = false;        // au moins une salve a fait bouger la cible dans le bon sens : faux = la cible ne repond pas aux comptes (eclat, decor...)
         double est[4] = {0, 0, 0, 0};  // gain mesure par salve (rad / compte, signe inclus), pour le journal
         int lat[4] = {0, 0, 0, 0};
@@ -73,6 +74,7 @@ public:
             const int axis = burst_ / 2, sign = (burst_ % 2 == 0) ? 1 : -1;
             if (sq - burstStart_ < kBurstFrames) {
                 (axis == 0 ? *dx : *dy) = sign * kPerFrame;
+                sent_ = true;
                 return true;
             }
             phase_ = Phase::Settle;
@@ -164,6 +166,7 @@ private:
             lat[i] = res_.lat[i];
         }
         res_ = Result();
+        res_.sent = sent_;
         res_.responded = responded;
         for (int i = 0; i < 4; ++i) {
             res_.est[i] = est[i];
@@ -208,6 +211,7 @@ private:
                 known[axis] = true;
             }
         }
+        res_.sent = sent_;
         res_.burstsOk = nOk;
         res_.responded = nOk > 0;
         if (!known[0] && !known[1]) return Fail("la cible ne repond pas aux comptes de souris");
@@ -224,7 +228,7 @@ private:
         return false;
     }
 
-    bool started_ = false, done_ = false;
+    bool started_ = false, done_ = false, sent_ = false;
     uint64_t startSeq_ = 0;
     int64_t burstStart_ = 0, settleStart_ = 0;
     int burst_ = 0;

@@ -98,6 +98,8 @@ void ServoBrain::Reset() {
     probe_ = GainProbe();
     bad_.clear();
     probeFails_ = 0;
+    probeDone_ = !autoProbe_;
+    probeViewSet_ = false;
     switchSinceMs_ = 0;
     haveDet_ = false;
     stable_ = missRun_ = 0;
@@ -130,8 +132,8 @@ void ServoBrain::Reset() {
 
 void ServoBrain::Recalibrate() {
     params_ = ServoParams();
-    probeDone_ = false;
     Reset();
+    probeDone_ = false;  // apres Reset() (qui le remet selon autoProbe_)
     Log(0, "servo : nouvelle mesure du gain demandee");
 }
 
@@ -311,8 +313,17 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
     lastDetSeq_ = r.imageSeq;
     ++nDet_;
     // la mesure du gain se fait dans le plan de l'image (pseudo-angles = pixels / pxPerRad) : MSFS deplace son pointeur d'un nombre constant de PIXELS par compte, pas de radians
-    const V2 chart{(px - (r.view.rect.x + r.view.rect.w * 0.5)) / pxPerRad_, -(py - (r.view.rect.y + r.view.rect.h * 0.5)) / pxPerRad_};
-    if (mode_ == BrainMode::Probe) probe_.OnMeasurement(r.imageSeq, chart);
+    // La tete peut bouger pendant la mesure (pointeur fixe dans le monde) : les positions sont projetees dans la vue de reference du debut de la mesure.
+    const auto chartIn = [&](const EyeView& v, bool* ok) {
+        Px q;
+        *ok = Project(v, v.pose.p + DirOf({ang.a, ang.b}), &q);
+        return V2{(q.x - (v.rect.x + v.rect.w * 0.5)) / pxPerRad_, -(q.y - (v.rect.y + v.rect.h * 0.5)) / pxPerRad_};
+    };
+    if (mode_ == BrainMode::Probe && probeViewSet_) {
+        bool ok = false;
+        const V2 chart = chartIn(probeView_, &ok);
+        if (ok) probe_.OnMeasurement(r.imageSeq, chart);
+    }
     if (mode_ == BrainMode::Track) {
         // apres une perte d'au moins ~6 mesures, le modele n'est plus fiable : une detection nette (score >= 0.6) le remet d'aplomb d'un coup
         if (missedBefore >= 6 && c[0].score >= 0.6) ctl_.Reanchor(r.imageSeq, ang);
@@ -322,7 +333,11 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
         if (!probeDone_) {
             mode_ = BrainMode::Probe;
             probe_.Start(seq_);
-            probe_.OnMeasurement(r.imageSeq, chart);
+            probeView_ = r.view;
+            probeViewSet_ = true;
+            bool ok = false;
+            const V2 chart = chartIn(probeView_, &ok);
+            if (ok) probe_.OnMeasurement(r.imageSeq, chart);
             Log(0, "servo : mesure du gain de la souris (quatre petites salves, gardez la main immobile)");
         } else {
             mode_ = BrainMode::Track;
@@ -533,7 +548,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             } else {
                 Log(1, "servo : mesure du gain impossible (%s ; gains par salve %.1f %.1f %.1f %.1f px/compte, latences %d %d %d %d)", r.why, r.est[0] * pxPerRad_, r.est[1] * pxPerRad_,
                     r.est[2] * pxPerRad_, r.est[3] * pxPerRad_, r.lat[0], r.lat[1], r.lat[2], r.lat[3]);
-                if (!r.responded && probeFails_ < kMaxProbeFails && haveDet_) {  // la cible ne bouge pas avec la souris : un decor, pas le pointeur
+                if (r.sent && !r.responded && probeFails_ < kMaxProbeFails && haveDet_) {  // la cible ne bouge pas avec la souris : un decor, pas le pointeur
                     ++probeFails_;
                     if (bad_.size() >= 8) bad_.erase(bad_.begin());
                     bad_.push_back(lastDetAng_);

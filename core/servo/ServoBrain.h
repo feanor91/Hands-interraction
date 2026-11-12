@@ -86,7 +86,10 @@ public:
     void SetTipFilter(float minCutoffHz, float beta) { tipMinHz_ = minCutoffHz; tipBeta_ = beta; }  // reglage du lissage du bout du doigt (tests : 1000 = sans lissage)
     void SetWheel(double stepDeg, bool invert) { wheelStepDeg_ = stepDeg; wheelInvert_ = invert; }
     void Reset();                        // oublie tout (garde le gain mesure)
-    void Recalibrate();                  // oublie aussi le gain mesure
+    void Recalibrate();                  // oublie aussi le gain mesure et refait la mesure (menu « Remesurer »)
+    // Mesure du gain au demarrage (4 salves, main et tete immobiles). Faux (defaut) : on part des valeurs a priori (gain 1.02 px/compte, latence 2) : le regulateur tient
+    // des gains de 0.6 a 1.6 et une latence a +-1 (tests), alors qu'une mesure qui ne trouve jamais un pointeur « stable » (tete qui bouge) retarde le suivi de plusieurs secondes.
+    void SetAutoProbe(bool on) { autoProbe_ = on; }
     void OnPixels(const uint8_t* rgba, const BrainRoi& req);
     BrainOutput Frame(const BrainFrame& inRaw);
 
@@ -120,7 +123,10 @@ private:
     ServoParams params_;
     ServoController ctl_;
     GainProbe probe_;
-    bool probeDone_ = false;
+    bool probeDone_ = true;   // vrai = pas de mesure du gain (voir SetAutoProbe) ; Recalibrate le remet a faux
+    bool autoProbe_ = false;
+    EyeView probeView_;       // vue de reference de la mesure du gain : les positions du pointeur y sont projetees (la tete peut bouger pendant la mesure)
+    bool probeViewSet_ = false;
     int probeFails_ = 0;
     std::vector<V2> bad_;  // directions (cap, site) de decors pris pour le pointeur : ignorees pendant la recherche
     uint64_t switchSinceMs_ = 0;
