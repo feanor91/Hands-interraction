@@ -172,6 +172,7 @@ private:
     uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0, pinchEdgeMs_[2] = {0, 0};
     bool prelatched_ = false, preArmed_ = false, deferTap_ = false;
     bool freeWheel_ = false, freeRefValid_ = false, haveFingerPrev_ = false;   // molette sans pincement
+    uint64_t freeDiagMs_ = 0;                                                  // dernier diagnostic « molette libre refusee »
     int freeHand_ = -1, freeRefHand_ = -1;
     emulation::Vec3 freeRef_;
     uint64_t freeLastMoveMs_ = 0;

@@ -41,7 +41,7 @@ constexpr double kStuckOkShortfallPx = 150.0;  // ... il suit (a peu pres) tant 
 constexpr double kStuckResetMovePx = 60.0;     // deplacement du pointeur a partir duquel on repart d'une nouvelle reference
 constexpr uint64_t kBlockBaseMs = 2000, kBlockMaxMs = 8000;  // pause des comptes quand le pointeur ne suit plus (doublee a chaque nouvel echec)
 constexpr double kFreeStartDeg = 16.0;         // molette SANS pincement (rotatifs : pas besoin de cliquer) : roulis rapide du poignet, doigt immobile sur la commande
-constexpr double kFreeCalmPxPerS = 300.0;      // le bout du doigt ne doit pas bouger de plus de ca (px/s) pour que le roulis compte
+constexpr double kFreeCalmPxPerS = 600.0;      // le bout du doigt ne doit pas bouger de plus de ca (px/s) pour que le roulis compte
 constexpr double kFreeRefTauS = 1.0;           // la reference du roulis suit la main avec cette constante de temps : une derive lente ne declenche rien
 constexpr uint64_t kFreeAfterPinchMs = 1200;   // pas de molette libre dans ce temps apres un pincement (le poignet revient en position)
 constexpr uint64_t kFreeIdleMs = 1500;         // la molette s'arrete si le poignet ne bouge plus depuis ce temps
@@ -754,6 +754,11 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 const bool calm = fpSpeed_ < kFreeCalmPxPerS;
                 const bool ready = hd.extended && calm && haveFinger_ && errNowPx_ <= 60.0 && in.nowMs - lastDetMs_ < kClickFreshMs && blockUntilMs_ <= in.nowMs && !down_ &&
                                    in.nowMs - lastSwitchMs_ > 600 && in.nowMs - wheelPinchMs_ > kFreeAfterPinchMs;  // le poignet qui revient apres un pincement n'est pas un nouveau roulis
+                if (!ready && std::fabs(ang) >= 1.2 && in.nowMs - freeDiagMs_ > 1000) {  // hors conditions la reference est remise a la position courante : on voit donc un roulis par image
+                    freeDiagMs_ = in.nowMs;
+                    Log(0, "servo : roulis libre %.1f deg/image refuse (tendu=%d calme=%d vitesse=%.0f err=%.0f det=%d bloque=%d appui=%d depuis_pincement=%d ms)", ang, hd.extended ? 1 : 0, calm ? 1 : 0, fpSpeed_,
+                        errNowPx_, in.nowMs - lastDetMs_ < kClickFreshMs ? 1 : 0, blockUntilMs_ > in.nowMs ? 1 : 0, down_ ? 1 : 0, static_cast<int>(in.nowMs - wheelPinchMs_));
+                }
                 if (ready && std::fabs(ang) >= kFreeStartDeg) {
                     freeWheel_ = true;
                     freeHand_ = hand;

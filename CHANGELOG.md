@@ -2,6 +2,14 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.38] - 2026-11-12
+
+### Corrige
+- **Molette SANS pincement (roulis du poignet sur un rotatif, sans cliquer)** : elle ne se declenchait que 4 fois contre une douzaine avec pincement dans l'essai de 18:46. Le doigt devait bouger
+  de moins de 300 px/s ; or le roulis du poignet fait lui-meme bouger le bout du doigt (une dizaine de cm de l'axe), la molette etait donc refusee au debut du geste. Seuil porte a 600 px/s
+  (arret en cours de molette a 1800 px/s).
+- **Diagnostic** : quand un roulis rapide est refuse, le journal dit pourquoi (« roulis libre ... refuse (tendu, calme, vitesse, erreur, ...) »), au plus une fois par seconde.
+
 ## [0.0.37] - 2026-11-12
 
 ### Corrige
