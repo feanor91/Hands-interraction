@@ -615,3 +615,91 @@ TEST(ServoBrain_le_pre_verrou_garde_le_pointeur_la_ou_le_doigt_etait_avant_le_ge
     CHECK(errHeld > 33.0 && errHeld < 65.0);
     CHECK_EQ(s.downs, 1);
 }
+
+TEST(ServoBrain_a_30_images_par_seconde_le_retard_est_compense_en_mouvement_regulier) {
+    Sim s;
+    s.fps = 30.0;
+    s.L = 2;
+    s.readLat = 1;
+    // doigt qui glisse a vitesse reguliere (0.003 rad par image = ~3.6 px par image = 110 px/s) puis a 0.011 rad par image (~13 px/image)
+    auto script = [](int k) {
+        Frame f;
+        double x = 0.05;
+        if (k > 300) x += 0.003 * std::min(100, k - 300);
+        if (k > 400) x += 0.008 * std::min(30, k - 400);
+        f.finger = {x, -0.12};
+        return f;
+    };
+    const Metrics m = Run(s, 560, script);
+    double slow = 0, fast = 0;
+    for (int k = 350; k < 400; ++k) slow += m.err[static_cast<size_t>(k)];
+    for (int k = 415; k < 430; ++k) fast += m.err[static_cast<size_t>(k)];
+    slow /= 50.0;
+    fast /= 15.0;
+    std::printf("      mouvement regulier a 30 i/s : ecart moyen %.1f px a 3.6 px/image, %.1f px a 13 px/image\n", slow, fast);
+    CHECK(slow < 8.0);
+    CHECK(fast < 22.0);
+}
+
+TEST(ServoBrain_pincement_avant_l_arrivee_du_pointeur_le_clic_est_differe) {
+    Sim s;
+    // le doigt saute loin (la main change) et pince presque tout de suite : un pincement de 100 ms, fini bien avant que le pointeur n'arrive
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        if (k >= 500) f.finger = {0.60, -0.55};
+        f.pinch = k >= 503 && k < 510;
+        return f;
+    });
+    (void)m;
+    for (const std::string& l : s.logs)
+        if (l.find("bouton") != std::string::npos || l.find("pincement") != std::string::npos) std::printf("        %s\n", l.c_str());
+    bool deferred = false;
+    for (const std::string& l : s.logs) deferred = deferred || l.find("clic differe") != std::string::npos;
+    std::printf("      clic differe : %d enfoncement(s), %d relachement(s), journal %s\n", s.downs, s.ups, deferred ? "ok" : "absent");
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+    CHECK(deferred);
+}
+
+TEST(ServoBrain_roulis_du_poignet_sans_pincement_fait_tourner_la_molette_sans_cliquer) {
+    Sim s;
+    s.brain.SetWheel(20.0, false);
+    const Metrics m = Run(s, 900, [](int k) {
+        Frame f;
+        f.rollDeg = k < 520 ? 0.0 : -std::min(94.0, (k - 520) * 1.0);  // 1 deg par image a 90 i/s : 90 deg/s
+        return f;
+    });
+    (void)m;
+    std::printf("      molette sans pincement : %d cran(s) pour 94 deg, %d enfoncement(s)\n", s.wheel, s.downs);
+    CHECK(s.wheel >= 3 && s.wheel <= 5);
+    CHECK_EQ(s.downs, 0);
+}
+
+TEST(ServoBrain_derive_lente_du_poignet_ou_main_qui_bouge_pas_de_molette) {
+    {
+        Sim s;
+        // 60 deg en 10 s (6 deg/s) : un geste lent, pas un roulis
+        const Metrics m = Run(s, 1400, [](int k) {
+            Frame f;
+            f.rollDeg = k < 500 ? 0.0 : -std::min(60.0, (k - 500) * 0.066);
+            return f;
+        });
+        (void)m;
+        std::printf("      derive lente : %d cran(s)\n", s.wheel);
+        CHECK_EQ(s.wheel, 0);
+    }
+    {
+        Sim s;
+        // roulis rapide MAIS le doigt est en plein deplacement (on va vers une commande) : pas de molette
+        const Metrics m = Run(s, 800, [](int k) {
+            Frame f;
+            const double t = std::min(1.0, std::max(0.0, (k - 520) / 40.0));
+            f.finger = {0.05 + 0.25 * t, -0.12};
+            f.rollDeg = k < 520 ? 0.0 : -std::min(94.0, (k - 520) * 2.0);
+            return f;
+        });
+        (void)m;
+        std::printf("      roulis pendant un deplacement : %d cran(s)\n", s.wheel);
+        CHECK_EQ(s.wheel, 0);
+    }
+}

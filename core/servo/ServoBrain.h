@@ -140,6 +140,7 @@ private:
     emulation::Vec3 lockTip_, lockKnuckle_;
     emulation::OneEuro tipFilter_[2];
     uint64_t lastFrameMs_ = 0;
+    double frameMsEma_ = 11.1;
     bool wheelMode_ = false;             // pincement transforme en molette (roulis du poignet)
     emulation::Vec3 rollAxis_, rollN0_;
     double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 20.0;
@@ -148,7 +149,16 @@ private:
     bool prevRaw_[2] = {false, false};   // pincement brut de l'image precedente (un front se detecte sur le brut)
     bool armed_[2] = {false, false};     // pincement commence DANS l'image, main choisie : seul un pincement arme peut cliquer
     uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0, pinchEdgeMs_[2] = {0, 0};
-    bool prelatched_ = false, preArmed_ = false;
+    bool prelatched_ = false, preArmed_ = false, deferTap_ = false;
+    bool freeWheel_ = false, freeRefValid_ = false, haveFingerPrev_ = false;   // molette sans pincement
+    int freeHand_ = -1, freeRefHand_ = -1;
+    emulation::Vec3 freeRef_;
+    uint64_t freeLastMoveMs_ = 0;
+    double fpSpeed_ = 0.0, lastFrameDtS_ = 0.033;
+    Px fingerPrevPx_;
+    int deferHand_ = -1;
+    uint64_t deferUntilMs_ = 0;
+    emulation::Vec3 deferTipW_, lastLockedTipW_;
     uint64_t prelatchMs_ = 0, lastDetSeq_ = 0, blockUntilMs_ = 0;
     float prevDist_[2] = {1.0f, 1.0f};
     long long stuckSx_ = 0, stuckSy_ = 0;

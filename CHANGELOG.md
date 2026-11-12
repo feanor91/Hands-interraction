@@ -2,6 +2,25 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.33] - 2026-11-12
+
+### Corrige
+- **« Le pointeur suit le mouvement du doigt mais pas LE doigt »** (trace du 12 nov., 10:35 : a 3-10 px par image le pointeur etait a 12 px du doigt, ~2.6 images de retard ; a 10-20 px par image, 47 px) :
+  l'anticipation etait trop timide (0.7 x la latence, vitesse de la cible lissee sur ~6 images). Maintenant 1.3 x la latence, vitesse lissee sur ~2 images, et coupee a l'arret (la vitesse d'un doigt
+  immobile n'est que du bruit : la « danse » ne revient pas). En simulation a 30 i/s : retard divise par deux (11 -> 7 px a 3.6 px/image, 28 -> 13 px a 13 px/image), 39 comptes en 300 images au repos.
+- Plafond de comptes par image adapte a la cadence (150 a 30 i/s, 60 a 90 i/s) : le pointeur rattrape une main rapide (jusqu'a 2000 px/s) et change de main en ~0.2 s au lieu de ~0.5 s.
+- **Changement de main** (25 changements : 8 seulement ont atteint le doigt en moins de 3 s ; des va-et-vient en 0.4 s) : la main qui vient de prendre la main la garde 0.8 s (au lieu de 0.3 s, et aussi
+  contre le choix par index tendu) ; le verrou du pincement ne remonte plus a plus de 3 cm en arriere (un doigt qui arrive vite ne laisse plus le pointeur a l'endroit d'ou il vient).
+- **Clic perdu quand on change de main** : si le pincement se termine avant que le pointeur ne soit arrive sous le doigt, le clic est **differe** (600 ms) : il part des que le pointeur arrive, a l'endroit
+  ou le doigt etait pendant le pincement.
+- La pause « le pointeur ne suit plus les comptes » ne se declenche plus que sur une detection fraiche (< 120 ms) : 23 % du temps de suivi etait en pause, dont beaucoup de fausses pauses (pointeur hors
+  de la vue apres un mouvement de tete, ou change de main).
+### Ajoute
+- **Molette sans pincement** (les rotatifs n'ont pas besoin de clic) : doigt sur la commande, pointeur arrive, doigt quasi immobile (< 300 px/s) et roulis rapide du poignet d'au moins 22 deg par rapport a sa
+  position lissee -> un cran tous les `wheel_step_deg` degres, sans aucun clic, pointeur verrouille sur la commande ; s'arrete apres 1.5 s sans mouvement du poignet ou si le doigt part. Une derive lente ou un
+  roulis pendant un deplacement ne declenche rien. La molette avec pincement reste disponible.
+- Trace : bits 64 (molette libre) et 128 (clic differe). Tests : 137.
+
 ## [0.0.32] - 2026-11-12
 
 ### Corrige

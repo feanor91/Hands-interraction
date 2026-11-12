@@ -35,8 +35,9 @@ struct ServoParams {
     double kControl = 0.8;      // share of the predicted error corrected per frame (0.5..1)
     double kBias = 0.5;         // innovation gain per measurement (0.1..0.6): the detector is now selective (black-outline test), so measurements can be trusted more ;
                                 // large = follows a pointer that drifts (head-anchored, snapping to controls), small = robust to bad L and to detection noise
-    double lead = 0.7;          // share of the extrapolated fingertip motion fed forward (0 = none)
-    double velSmooth = 0.15;     // fingertip velocity filter (per frame)
+    double lead = 1.3;          // share of the extrapolated fingertip motion fed forward (0 = none)
+    double velSmooth = 0.4;     // fingertip velocity filter (per frame)
+    double ffSpeedLo = 0.0012, ffSpeedHi = 0.0030;  // rad/frame : feed-forward gate (0 below Lo, full above Hi)
     double leadClip = 0.08;     // max feed-forward (rad)
     double innovClip = 0.08;    // max |innovation| absorbed per measurement (rad ~ 4.6 deg): outlier / false detection rejection
     int maxCounts = 60;         // per axis and frame (also what SendInput gets): 60 counts at 90 fps already sweep ~4 rad/s, far above a hand
@@ -63,6 +64,7 @@ public:
 
     explicit ServoController(const ServoParams& p = ServoParams()) : p_(p) {}
     void SetParams(const ServoParams& p) { p_ = p; }
+    void SetMaxCounts(int n) { p_.maxCounts = n; }
     const ServoParams& Params() const { return p_; }
     void Reset() { *this = ServoController(p_); }
 
@@ -162,7 +164,10 @@ public:
                 }
                 vT_ = vT_ * (1.0 - p_.velSmooth) + (target - tPrev_) * p_.velSmooth;
                 tPrev_ = target;
-                V2 ff = vT_ * (p_.lead * p_.latencyFrames);
+                // feed-forward only once the fingertip is really moving : at rest the velocity estimate is mostly hand-tracking noise
+                const double spd = Norm(vT_);
+                const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
+                V2 ff = vT_ * (p_.lead * p_.latencyFrames * ffGate);
                 ff.a = std::max(-p_.leadClip, std::min(p_.leadClip, ff.a));
                 ff.b = std::max(-p_.leadClip, std::min(p_.leadClip, ff.b));
                 V2 err = (target + ff) - xh;
