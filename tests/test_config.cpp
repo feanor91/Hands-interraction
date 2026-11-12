@@ -160,7 +160,7 @@ TEST(Config_menu_dans_le_casque) {
 
 TEST(Config_captures) {
     Config d = Config::FromIni(IniFile::Parse(""));
-    CHECK_EQ(d.captureMax, 16);
+    CHECK_EQ(d.captureMax, 0);
     CHECK_EQ(d.captureIntervalMs, 3000);
     CHECK_EQ(d.colorState, std::string("render_target"));
     Config c = Config::FromIni(IniFile::Parse("[touch]\ncapture_max = 999\ncapture_interval_ms = 1\ncolor_state = n_importe_quoi\n"));

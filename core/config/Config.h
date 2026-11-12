@@ -141,7 +141,7 @@ struct Config {
     // Captures d'écran du rendu du jeu autour de la main (pour comprendre ce que MSFS dessine : flèche, rayon, point d'impact) :
     // au plus `captureMax` images par session (0 = aucune), enregistrées dans logs\captures, au plus une toutes les `captureIntervalMs`
     // (et à chaque début de clic).
-    int captureMax = 16;
+    int captureMax = 0;
     int captureIntervalMs = 3000;
     std::string colorState = "render_target";  // état des images couleur du jeu (render_target, common, shader, copy_source)
 
@@ -178,6 +178,8 @@ struct Config {
     int zoneClearButton = 0;
     int zoneServerPort = 3210;    // port de StreamSim (127.0.0.1)
     bool menuEnabled = true;
+    // Applaudir (frapper les deux mains l'une contre l'autre) bascule le mode souris, sans passer par le menu.
+    bool clapToggle = true;
     int menuHoldMs = 1200;
     // Autres facons d'afficher / cacher le menu : une touche du clavier (nom : LSHIFT, F9, M... ; vide = aucune) et / ou un bouton de manette / HOTAS.
     std::string menuToggleKey;

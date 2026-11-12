@@ -2,6 +2,22 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.35] - 2026-11-12
+
+### Ajoute
+- **Applaudir bascule le mode souris** (sans menu) : frapper les deux mains l'une contre l'autre, d'un geste franc, active ou desactive le mode souris (pointeur colle au doigt). Il faut que les mains aient
+  ete ecartees (> 25 cm) juste avant, que le rapprochement soit rapide (> 0.9 m/s) et que les paumes finissent a moins de 11 cm ; si le suivi perd une main au choc (les mains se cachent), le choc compte
+  quand meme. Ignore quand le menu est ouvert, pendant un pincement ou une prise de rotatif ; 1.5 s de repos entre deux applaudissements. Journal : « souris : applaudissement -> ... ».
+  Reglage : `[mouse] clap_toggle = true` dans hands.ini. Detecteur testable : `core/emulation/Clap.h` (6 tests).
+
+### Corrige
+- **Le dernier essai (17:31) n'etait PAS en mode « pointeur colle au doigt »** : le journal dit « mode souris ACTIVE : souris de bureau (relatif) », il n'y a aucune ligne `servo :`, ni `servo_trace.csv`
+  ni captures `servo_NN` (le `servo_trace.csv` date de 11:25). Le type « souris de bureau » (deplacements relatifs de la main, pointeur qui ne colle pas au doigt) avait ete choisi sur la ligne
+  « Type » du menu, juste sous « Mode souris », et il restait memorise d'une activation a l'autre. Maintenant : chaque activation du mode souris repart TOUJOURS du pointeur colle au doigt ;
+  la ligne du menu dit clairement le type actuel (« COLLE AU DOIGT (normal) » ou « SOURIS DE BUREAU (pas collee) ») ; changer de type hors mode souris est journalise.
+- Les anciennes captures `cap_NN_survol` / `cap_NN_clic` (autour du bout de l'index, sans rayon ni pointeur : elles dataient de l'epoque du rayon) sont desactivees par defaut
+  (`capture_max = 0`). Les captures utiles sont les `servo_NN_*.bmp` (autour du POINTEUR de MSFS, anneau de 60), ecrites seulement en mode colle au doigt.
+
 ## [0.0.34] - 2026-11-12
 
 ### Corrige

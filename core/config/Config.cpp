@@ -128,6 +128,7 @@ Config Config::FromIni(const IniFile& ini) {
     if (c.zoneRearmMs > 5000.0) c.zoneRearmMs = 5000.0;
     if (c.zoneServerPort < 1 || c.zoneServerPort > 65535) c.zoneServerPort = 3210;
     c.menuEnabled = ini.GetBool("menu", "enabled", c.menuEnabled);
+    c.clapToggle = ini.GetBool("mouse", "clap_toggle", c.clapToggle);
     c.menuHoldMs = ini.GetInt("menu", "open_hold_ms", c.menuHoldMs);
     c.menuToggleKey = ini.GetString("menu", "toggle_key", c.menuToggleKey);
     c.menuToggleButton = std::max(0, ini.GetInt("menu", "toggle_button", c.menuToggleButton));

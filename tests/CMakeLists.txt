@@ -5,6 +5,7 @@ add_executable(core_tests
   test_config.cpp
   test_iniedit.cpp
   test_pinch.cpp
+  test_clap.cpp
   test_zonetracker.cpp
   test_handpresence.cpp
   test_simnames.cpp

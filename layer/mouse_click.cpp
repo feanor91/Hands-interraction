@@ -14,9 +14,12 @@
 #include <vector>
 
 #include "config/IniFile.h"
+#include "emulation/Clap.h"
 #include "emulation/PoseMath.h"
 #include "log/Logger.h"
 #include "servo.h"
+#include "vr_menu.h"
+#include "zones.h"
 #include "state.h"
 
 namespace layer {
@@ -349,7 +352,8 @@ void Mouse_SetKind(MouseKind k) {
     g_prevValid = false;
     g_remX = g_remY = 0;
     g_kind = k;
-    if (k != MouseKind::Off) g_lastOn = k;
+    // Chaque activation repart du pointeur COLLE AU DOIGT : le type « souris de bureau » ne reste pas choisi d'une fois sur l'autre (il a ete pris pour le mode normal).
+    g_lastOn = (k == MouseKind::Off) ? MouseKind::Servo : k;
     ClipToGameWindow(k != MouseKind::Off);
     Logger::Get().Log(LogLevel::Info, "souris : %s",
                       k == MouseKind::Off ? "mode souris desactive" : (k == MouseKind::Servo ? "mode souris ACTIVE : pointeur colle au doigt (asservi)" : "mode souris ACTIVE : souris de bureau (relatif)"));
@@ -361,6 +365,7 @@ void Mouse_SetAttached(bool on) {
     const MouseKind k = on ? MouseKind::Servo : MouseKind::Desktop;
     if (g_kind == MouseKind::Off) {
         g_lastOn = k;  // pris en compte a la prochaine activation
+        Logger::Get().Log(LogLevel::Info, "souris : type choisi pour la prochaine activation : %s", on ? "pointeur colle au doigt (asservi)" : "souris de bureau (relatif)");
         return;
     }
     Mouse_SetKind(k);
@@ -388,6 +393,21 @@ void Mouse_SetEye(int eye) {
 
 void Mouse_Frame(const HandsFrame& frame) {
     Load();
+    // Applaudissement : bascule du mode souris. Ignore quand le menu est ouvert, pendant un pincement ou une prise de rotatif.
+    {
+        static em::ClapDetector clap;
+        const auto cfg = CurrentConfig();
+        const bool both = frame.hand[0].valid && frame.hand[1].valid;
+        double d = 0;
+        if (both) d = em::Length(frame.hand[0].joint[0].p - frame.hand[1].joint[0].p);  // paume contre paume
+        const bool blocked = VrMenu_IsOpen() || Zones_AnyGrab() || frame.hand[0].pressed || frame.hand[1].pressed;
+        if (!cfg || !cfg->clapToggle || blocked) {
+            clap.Reset();
+        } else if (clap.Update(GetTickCount64(), both, d)) {
+            Logger::Get().Log(LogLevel::Info, "souris : applaudissement -> %s", g_kind == MouseKind::Off ? "mode souris active" : "mode souris desactive");
+            Mouse_ToggleMode();
+        }
+    }
     const bool key = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState(VK_F11) & 0x8000);
     if (key && !g_modeKeyWas) Mouse_ToggleMode();
     g_modeKeyWas = key;

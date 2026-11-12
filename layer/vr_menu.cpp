@@ -355,7 +355,7 @@ std::vector<Row> BuildMouseRows() {
     const bool servo = Mouse_Attached();
     rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
     rows.push_back({Mouse_ModeOn() ? L"Mode souris : ACTIVÉ  →  désactiver" : L"Mode souris : désactivé  →  activer", true, [] { Mouse_ToggleMode(); }});
-    rows.push_back({servo ? L"Type : pointeur COLLÉ au bout du doigt  →  souris de bureau" : L"Type : souris de bureau  →  pointeur collé au doigt", true,
+    rows.push_back({servo ? L"Type actuel : COLLÉ AU DOIGT (normal)  —  toucher pour passer en souris de bureau" : L"Type actuel : SOURIS DE BUREAU (pas collée)  —  toucher pour revenir au pointeur collé au doigt", true,
                     [servo] { Mouse_SetAttached(!servo); }});
     if (servo) {
         {
