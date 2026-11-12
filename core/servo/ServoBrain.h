@@ -57,6 +57,18 @@ struct BrainOutput {
 
 enum class BrainMode { Acquire, Probe, Track };
 
+// Une ligne par image pour l'analyse hors ligne (layer/servo.cpp l'ecrit dans logs/servo_trace.csv).
+struct BrainTrace {
+    uint64_t t = 0;
+    int mode = 0, hand = -1;
+    bool pinchRaw = false, pinch = false, down = false, canClick = false;
+    double fingerX = -1, fingerY = -1;   // bout du doigt (pixels de l'image), -1 : pas de doigt exploitable
+    double detX = -1, detY = -1, detAgeMs = -1;  // derniere detection du pointeur
+    double predX = -1, predY = -1;       // position du pointeur selon le modele
+    double errPx = -1;                   // ecart cible / modele
+    int dx = 0, dy = 0, wheel = 0;
+};
+
 class ServoBrain {
 public:
     // Journal (niveau : 0 info, 1 avertissement) et diagnostic (tag, pixels RGBA de la ROI, detection (-1 : aucune), doigt (-100000 : hors image)).
@@ -64,6 +76,8 @@ public:
     using DiagFn = std::function<void(const char*, const uint8_t*, const BrainRoi&, int, int, int, int)>;
     void SetLogger(LogFn f) { log_ = std::move(f); }
     void SetDiag(DiagFn f) { diag_ = std::move(f); }
+    using TraceFn = std::function<void(const BrainTrace&)>;
+    void SetTrace(TraceFn f) { trace_ = std::move(f); }
 
     void SetWheel(double stepDeg, bool invert) { wheelStepDeg_ = stepDeg; wheelInvert_ = invert; }
     void Reset();                        // oublie tout (garde le gain mesure)
@@ -92,6 +106,7 @@ private:
 
     LogFn log_;
     DiagFn diag_;
+    TraceFn trace_;
     uint64_t seq_ = 0, nowMs_ = 0;
     BrainMode mode_ = BrainMode::Acquire;
     ServoParams params_;
@@ -126,6 +141,12 @@ private:
     double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 20.0;
     bool wheelInvert_ = false;
     bool down_ = false, tapUp_ = false, prevSelPinch_ = false, prevBoth_ = false;
+    bool prevRaw_[2] = {false, false};   // pincement brut de l'image precedente (un front se detecte sur le brut)
+    bool armed_[2] = {false, false};     // pincement commence DANS l'image, main choisie : seul un pincement arme peut cliquer
+    uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0;
+    bool prevCanClick_ = false, pinchClicked_ = false, prevWheelUsed_ = false;
+    double errNowPx_ = 1e9;              // ecart cible / modele de cette image (1e9 : inconnu)
+    std::string skipWhy_;                // pourquoi le pincement en cours ne clique pas (journal)
     uint64_t lastSendMs_ = 0, lastWakeMs_ = 0, pinchStartMs_ = 0, heldMs_ = 0;
     int jiggle_ = 1;
     // etat de la derniere image (pour l'annotation des diagnostics et le journal)

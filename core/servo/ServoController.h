@@ -40,7 +40,8 @@ struct ServoParams {
     double leadClip = 0.08;     // max feed-forward (rad)
     double innovClip = 0.08;    // max |innovation| absorbed per measurement (rad ~ 4.6 deg): outlier / false detection rejection
     int maxCounts = 60;         // per axis and frame (also what SendInput gets): 60 counts at 90 fps already sweep ~4 rad/s, far above a hand
-    double deadband = 0.0022;   // rad: |error| below this sends nothing (~2.7 px: stops count chatter at rest)
+    double deadband = 0.0015;   // rad: once correcting, an axis keeps correcting until |error| falls below this (~1.8 px) ...
+    double deadStart = 0.0035;  // ... and an idle axis only starts correcting above this (~4.2 px) : hysteresis, so hand-tracking tremor at rest sends nothing at all (no "dance")
     double satInnov = 0.03;     // |innovation| (rad) that counts towards a wall detection ...
     int satStreak = 5;          // ... when seen this many measurements in a row with the same sign
     int satHoldFrames = 90;     // after a wall is detected: no pushing into it for this many frames (3 s at 29 fps) ...
@@ -166,8 +167,18 @@ public:
                 ff.b = std::max(-p_.leadClip, std::min(p_.leadClip, ff.b));
                 V2 err = (target + ff) - xh;
                 o.error = err;
-                if (std::fabs(err.a) < p_.deadband) err.a = 0;
-                if (std::fabs(err.b) < p_.deadband) err.b = 0;
+                {
+                    double* e[2] = {&err.a, &err.b};
+                    for (int ax = 0; ax < 2; ++ax) {
+                        const double m = std::fabs(*e[ax]);
+                        if (active_[ax]) active_[ax] = m >= p_.deadband;
+                        else active_[ax] = m > p_.deadStart;
+                        if (!active_[ax]) {
+                            *e[ax] = 0;
+                            rem_[ax] = 0;
+                        }
+                    }
+                }
                 const double tg[2] = {target.a, target.b};
                 for (int ax = 0; ax < 2; ++ax)
                     if (blockUntil_[ax] > sq && std::fabs(tg[ax] - blockTarget_[ax]) > p_.satReleaseRad) blockUntil_[ax] = 0;
@@ -247,6 +258,7 @@ private:
     int64_t cumA_[kHist] = {}, cumB_[kHist] = {};
     V2 x0_, bias_, lastInnov_, tPrev_, vT_, lastPtr_;
     double rem_[2] = {0, 0};
+    bool active_[2] = {false, false};  // axis currently correcting (deadband hysteresis)
     int streak_[2] = {0, 0}, lastSign_[2] = {0, 0}, blockSign_[2] = {0, 0}, nMeas_ = 0, jumpN_ = 0, nJumps_ = 0;
     V2 lastBig_, lastGv_;
     int64_t blockUntil_[2] = {0, 0};

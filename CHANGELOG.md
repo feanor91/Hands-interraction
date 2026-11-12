@@ -2,6 +2,22 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.31] - 2026-11-12
+
+### Corrige
+- **Clics intempestifs** (essai du 12 nov. : 74 appuis en 10 min, dont des dizaines de « clics » de 33 ms, d'autres a 1000 px du doigt). Causes trouvees dans le journal :
+  - une main qui repose **hors de l'image** (bas / cote) pincait, prenait la main et cliquait : une main n'est candidate que si son bout de doigt est dans l'image (marge 40 px) ;
+  - le clic partait meme quand le pointeur n'etait pas arrive au doigt (changement de main, doigt rapide, mur de MSFS) : il faut maintenant que le pointeur ait ete **vu depuis moins de 300 ms** et soit a
+    **moins de 45 px du doigt**, sinon le pincement est abandonne au bout de 700 ms (pas de clic tardif) ; le journal dit pourquoi (« pincement de N ms sans clic (...) ») ;
+  - les parasites du suivi des mains (pincement de 1 a 3 images) faisaient des « taps » : un tap doit durer 50 a 110 ms (appui continu : 110 ms) ;
+  - un pincement qui « saute » pendant un appui relachait puis renfoncait le bouton (= deux clics pour MSFS) : le bouton ne se relache qu'apres 90 ms sans pincement, le doigt reste verrouille ;
+  - une main qui entre dans l'image deja pincee, ou une autre main qui pince 300 ms apres un changement de main, ne prend plus la main.
+- **Pointeur qui danse** : zone morte a hysteresis (un axe immobile ne bouge qu'au-dela de 4.2 px, puis corrige jusqu'a 1.8 px) : au repos, le tremblement du suivi des mains n'envoie plus rien
+  (simulation a 2 mm de bruit : 188 -> 94 comptes en 300 images, ecart RMS 3 px).
+### Ajoute
+- `logs/servo_trace.csv` : une ligne par image (main, pincement, bouton, doigt, pointeur vu, pointeur modele, ecart, comptes envoyes) pour analyser finement les mouvements du pointeur et les clics.
+- Tests : 130 (pincements parasites, pincement qui saute, pointeur qui ne peut pas atteindre le doigt, doigt hors image).
+
 ## [0.0.30] - 2026-11-11
 
 ### Ajoute

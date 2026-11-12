@@ -36,6 +36,10 @@ struct Adapter {
     bool pendingActive = false;
     int diagSaved = 0;
     uint64_t diagMs = 0;
+    FILE* trace = nullptr;   // logs/servo_trace.csv : une ligne par image (analyse hors ligne de la « danse » et des clics)
+    int traceRows = 0;
+    bool traceFailed = false;
+    uint64_t traceT0 = 0;
 };
 
 Adapter& A() {
@@ -108,6 +112,29 @@ void SaveDiag(const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int d
     Logger::Get().Log(LogLevel::Info, "servo : capture de diagnostic %s (%s), ROI (%d,%d) %dx%d", name, tag, r.x, r.y, r.w, r.h);
 }
 
+void WriteTrace(const sv::BrainTrace& t) {
+    Adapter& a = A();
+    if (a.traceFailed || a.traceRows >= 120000) return;
+    if (!a.trace) {
+        const std::filesystem::path file = LayerBaseDir() / "logs" / "servo_trace.csv";
+        std::error_code ec;
+        std::filesystem::create_directories(file.parent_path(), ec);
+        static bool firstOpen = true;  // premiere session du processus : on ecrase ; les suivantes s'ajoutent (marquees par t_ms qui repart de 0)
+        const bool ok = _wfopen_s(&a.trace, file.c_str(), firstOpen ? L"wb" : L"ab") == 0 && a.trace;
+        firstOpen = false;
+        if (!ok) {
+            a.trace = nullptr;
+            a.traceFailed = true;
+            return;
+        }
+        a.traceT0 = t.t;
+        std::fputs("t_ms,mode,hand,pinch_raw,pinch,down,can_click,finger_x,finger_y,det_x,det_y,det_age_ms,pred_x,pred_y,err_px,dx,dy,wheel\n", a.trace);
+    }
+    std::fprintf(a.trace, "%llu,%d,%d,%d,%d,%d,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%d,%d\n", static_cast<unsigned long long>(t.t - a.traceT0), t.mode, t.hand, t.pinchRaw ? 1 : 0,
+                 t.pinch ? 1 : 0, t.down ? 1 : 0, t.canClick ? 1 : 0, t.fingerX, t.fingerY, t.detX, t.detY, t.detAgeMs, t.predX, t.predY, t.errPx, t.dx, t.dy, t.wheel);
+    if (++a.traceRows % 30 == 0) std::fflush(a.trace);
+}
+
 sv::EyeView MakeView(const XrCompositionLayerProjectionView& v) {
     sv::EyeView ev;
     ev.pose = {{v.pose.orientation.x, v.pose.orientation.y, v.pose.orientation.z, v.pose.orientation.w}, {v.pose.position.x, v.pose.position.y, v.pose.position.z}};
@@ -138,6 +165,7 @@ void Wire(Adapter& a) {
     if (a.wired) return;
     a.wired = true;
     a.brain.SetLogger([](int level, const std::string& m) { Logger::Get().Log(level == 0 ? LogLevel::Info : LogLevel::Warn, "%s", m.c_str()); });
+    a.brain.SetTrace([](const sv::BrainTrace& t) { WriteTrace(t); });
     a.brain.SetDiag([](const char* tag, const uint8_t* rgba, const sv::BrainRoi& r, int dx, int dy, int fx, int fy) { SaveDiag(tag, rgba, r, dx, dy, fx, fy); });
 }
 
@@ -151,6 +179,11 @@ void Servo_Stop() {
     a.pendingActive = false;
     MouseInject_ReleaseIfHeld();
     a.brain.Reset();
+    if (a.trace) {
+        std::fclose(a.trace);
+        a.trace = nullptr;
+    }
+    a.traceRows = 0;
 }
 
 void Servo_OnSwapchainDestroy() {

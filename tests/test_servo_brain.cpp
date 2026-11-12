@@ -360,17 +360,21 @@ TEST(ServoBrain_fond_clair_avec_etiquettes_blanches_converge_quand_meme) {
 
 TEST(ServoBrain_doigt_hors_de_l_image_le_pointeur_reste_dans_l_image) {
     Sim s;
-    // le doigt est a 70 degres a droite et 60 degres en bas : hors du champ de l'oeil (+40 / -55). Le pointeur doit se coller au bord, pas filer.
-    const Metrics m = Run(s, 800, [](int) {
+    // le doigt part dans l'image puis a 70 degres a droite et 60 degres en bas : hors du champ de l'oeil (+40 / -55). La main n'est plus candidate : plus de commande, le
+    // pointeur reste ou il est (dans l'image), le suivi reprend quand le doigt revient.
+    const Metrics m = Run(s, 1000, [](int k) {
         Frame f;
-        f.finger = {1.22, -1.05};
+        if (k >= 500 && k < 800) f.finger = {1.22, -1.05};
         return f;
     });
-    (void)m;
     const Px p = s.PixelOf(s.PointerWorld());
-    std::printf("      doigt hors image : pointeur final en (%.0f, %.0f) dans l'image 2688x2880, mode %d\n", p.x, p.y, static_cast<int>(s.brain.Mode()));
+    long long sent = 0;
+    for (int k = 600; k < 800; ++k) sent += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+    std::printf("      doigt hors image : pointeur final en (%.0f, %.0f), %lld comptes envoyes pendant l'absence, ecart apres le retour %.1f px\n", p.x, p.y, sent, MaxErr(m, 950, 1000));
     CHECK(p.x > 0 && p.x < 2688 && p.y > 0 && p.y < 2880);
     CHECK(s.brain.Mode() == BrainMode::Track);
+    CHECK(sent < 200);  // gardes de visibilite seulement
+    CHECK(MaxErr(m, 950, 1000) < 8.0);
 }
 
 TEST(ServoBrain_deux_mains_pincees_aucun_clic_dans_le_cockpit) {
@@ -393,13 +397,67 @@ TEST(ServoBrain_tap_bref_donne_un_clic_complet) {
     Sim s;
     const Metrics m = Run(s, 640, [](int k) {
         Frame f;
-        f.pinch = k >= 520 && k < 524;  // 4 images a 90 Hz = 44 ms
+        f.pinch = k >= 520 && k < 527;  // 7 images a 90 Hz = 78 ms : entre 50 et 110 ms
         return f;
     });
     (void)m;
     std::printf("      tap : %d enfoncement(s), %d relachement(s)\n", s.downs, s.ups);
     CHECK_EQ(s.downs, 1);
     CHECK_EQ(s.ups, 1);
+}
+
+TEST(ServoBrain_parasite_de_pincement_tres_court_ne_clique_pas) {
+    Sim s;
+    const Metrics m = Run(s, 700, [](int k) {
+        Frame f;
+        f.pinch = (k >= 520 && k < 524) || (k >= 600 && k < 603);  // 44 ms et 33 ms : le suivi des mains qui « saute »
+        return f;
+    });
+    (void)m;
+    std::printf("      parasites de pincement : %d enfoncement(s)\n", s.downs);
+    CHECK_EQ(s.downs, 0);
+}
+
+TEST(ServoBrain_pincement_qui_saute_une_image_pendant_l_appui_ne_relache_pas) {
+    Sim s;
+    const Metrics m = Run(s, 760, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 640 && !(k >= 560 && k < 564);  // 4 images (44 ms) de trou au milieu de l'appui
+        return f;
+    });
+    (void)m;
+    std::printf("      pincement troue : %d enfoncement(s), %d relachement(s)\n", s.downs, s.ups);
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+}
+
+TEST(ServoBrain_pointeur_qui_ne_peut_pas_atteindre_le_doigt_aucun_clic) {
+    Sim s;
+    s.wallYaw = 0.0;  // mur de MSFS : le pointeur ne va pas plus a droite que le cap 0
+    const Metrics m = Run(s, 900, [](int k) {
+        Frame f;
+        f.finger = {0.45, -0.12};  // dans l'image, mais derriere le mur
+        f.pinch = k >= 700 && k < 800;
+        return f;
+    });
+    (void)m;
+    const Px p = s.PixelOf(s.PointerWorld()), q = s.PixelOf(s.WorldPoint({0.45, -0.12}, 0.45));
+    std::printf("      mur : pointeur (%.0f, %.0f), doigt (%.0f, %.0f), %d enfoncement(s)\n", p.x, p.y, q.x, q.y, s.downs);
+    CHECK_EQ(s.downs, 0);
+}
+
+TEST(ServoBrain_doigt_hors_image_un_pincement_ne_clique_pas_et_ne_prend_pas_la_main) {
+    Sim s;
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        f.finger = k < 600 ? V2{0.05, -0.12} : V2{1.22, -1.05};  // a 70 deg a droite, 60 deg en bas : hors du champ de l'oeil
+        f.pinch = k >= 650 && k < 750;
+        return f;
+    });
+    (void)m;
+    std::printf("      doigt hors image + pincement : %d enfoncement(s), main choisie %d\n", s.downs, s.brain.Hand());
+    CHECK_EQ(s.downs, 0);
+    CHECK_EQ(s.brain.Hand(), -1);
 }
 
 TEST(ServoBrain_reflet_immobile_avec_contour_noir_est_ecarte_apres_la_mesure) {
