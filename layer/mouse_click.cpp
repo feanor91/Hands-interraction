@@ -34,7 +34,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 double g_gain = 3500.0;  // pixels par metre de deplacement de la main (souris de bureau)
 int g_eye = 0;
-double g_wheelStep = 20.0;
+double g_wheelStep = 16.0;
 bool g_wheelInvert = false;
 bool g_loaded = false;
 

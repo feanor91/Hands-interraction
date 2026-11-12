@@ -68,6 +68,8 @@ struct Sim {
     double headSwayHz = 0.4;
     double headTriAmpDeg = 0.0;         // la tete tourne a vitesse CONSTANTE (onde triangulaire) : jamais immobile (essai reel : on regarde partout pendant la mesure)
     double headTriDegS = 30.0;
+    double lJitter = 0.0;               // part des paquets de comptes qui arrivent une image plus tard (la latence reelle fluctue : images de 31 / 47 ms)
+    std::vector<int> delayOf;
     bool headAnchored = false;          // le pointeur est colle a la tete (sinon : fixe dans le monde)
     bool pxPlant = true;                // MSFS deplace son pointeur d'un nombre CONSTANT de PIXELS de l'image par compte (mesure : 1.05 px/compte de -20 a -80 deg de site), pas de radians
     bool decoy = false;                 // une deuxieme fleche IMMOBILE (un « reflet » avec un contour noir : le pire cas pour le detecteur)
@@ -157,6 +159,7 @@ struct Metrics {
 Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
     Metrics m;
     s.cnt.assign(static_cast<size_t>(n) + 8, {0, 0});
+    s.delayOf.assign(static_cast<size_t>(n) + 8, 0);
     struct Inflight {
         bool active = false;
         int at = 0;
@@ -178,8 +181,10 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
             s.view.pose.q = {0.0f, static_cast<float>(std::sin(th / 2)), 0.0f, static_cast<float>(std::cos(th / 2))};
         }
         // le « jeu » applique les comptes envoyes il y a L appels
-        if (k >= s.L) {
-            const auto c = s.cnt[static_cast<size_t>(k - s.L)];
+        for (int dj = 0; dj < 2; ++dj) {
+            const int j = k - s.L - dj;
+            if (j < 0 || s.delayOf[static_cast<size_t>(j)] != dj) continue;
+            const auto c = s.cnt[static_cast<size_t>(j)];
             if (c.first != 0 || c.second != 0) {
                 if (s.pxPlant) {
                     Px q = s.PixelOf(s.PointerWorld());
@@ -232,6 +237,7 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         hl.knuckle = hl.tip + em::Vec3{0.0f, -0.03f, 0.06f};
         const BrainOutput out = s.brain.Frame(in);
         s.cnt[static_cast<size_t>(k)] = {out.dx, out.dy};
+        s.delayOf[static_cast<size_t>(k)] = (s.lJitter > 0.0 && (s.Gauss() + 6.0) / 12.0 < s.lJitter) ? 1 : 0;
         s.wheel += out.wheelSteps;
         if (out.buttonEvent == 1) {
             ++s.downs;
@@ -614,6 +620,70 @@ TEST(ServoBrain_roulis_du_poignet_pendant_un_pincement_fait_tourner_la_molette) 
     CHECK(!s.buttonDown);
 }
 
+TEST(ServoBrain_molette_le_pincement_perdu_en_plein_roulis_ne_coupe_pas_la_molette) {
+    // essai reel du 12 nov. : pendant le roulis la distance pouce - index passe de 10 a 23 mm (le suivi des mains lache le pincement) : la molette s'arretait apres 14 deg et
+    // le pincement suivant repartait de zero
+    Sim s;
+    s.brain.SetWheel(20.0, false);
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 700 && !(k >= 545 && k < 565);  // 20 images a 90 i/s = 220 ms sans pincement, en plein roulis
+        f.rollDeg = k < 520 ? 0.0 : -std::min(94.0, (k - 520) * 1.0);
+        return f;
+    });
+    (void)m;
+    std::printf("      molette avec trou de pincement : %d cran(s) pour 94 deg, %d enfoncement(s) %d relachement(s)\n", s.wheel, s.downs, s.ups);
+    CHECK(s.wheel >= 5 && s.wheel <= 6);
+    CHECK(s.downs <= 2);
+    CHECK(s.downs == s.ups);
+    CHECK(!s.buttonDown);
+}
+
+TEST(ServoBrain_molette_relachement_voulu_puis_poignet_qui_revient_pas_de_cran_inverse) {
+    for (const double openDist : {0.06, -1.0}) {  // pouce clairement ecarte, ou distance inconnue (seule la regle « meme sens » protege alors)
+        Sim s;
+        s.brain.SetWheel(20.0, false);
+        const Metrics m = Run(s, 800, [&](int k) {
+            Frame f;
+            f.pinch = k >= 500 && k < 585;
+            f.pinchDist = k >= 585 ? openDist : 0.012;
+            f.rollDeg = k < 520 ? 0.0 : (k < 580 ? -(k - 520) * 1.0 : std::min(0.0, -60.0 + (k - 585) * 1.5));  // -60 deg puis retour apres le relachement
+            return f;
+        });
+        (void)m;
+        std::printf("      relachement puis retour du poignet (distance %.3f) : %d cran(s)\n", openDist, s.wheel);
+        CHECK(s.wheel >= 3);
+    }
+}
+
+TEST(ServoBrain_molette_premier_cran_tout_de_suite) {
+    Sim s;
+    s.brain.SetWheel(20.0, false);
+    const Metrics m = Run(s, 800, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 700;
+        f.rollDeg = k < 520 ? 0.0 : -std::min(12.0, (k - 520) * 1.0);  // 12 deg seulement
+        return f;
+    });
+    (void)m;
+    std::printf("      molette 12 deg : %d cran(s)\n", s.wheel);
+    CHECK_EQ(s.wheel, 1);
+}
+
+TEST(ServoBrain_deuxieme_clic_trop_vite_au_meme_endroit_est_ignore) {
+    // pincement, relachement, nouveau pincement 110 ms apres (le pouce flotte pres du seuil) : un seul clic. Un pincement 800 ms apres : un deuxieme clic.
+    Sim s;
+    const Metrics m = Run(s, 900, [](int k) {
+        Frame f;
+        f.pinch = (k >= 500 && k < 530) || (k >= 540 && k < 570) || (k >= 640 && k < 670);
+        return f;
+    });
+    (void)m;
+    std::printf("      double clic : %d enfoncement(s), %d relachement(s)\n", s.downs, s.ups);
+    CHECK_EQ(s.downs, 2);
+    CHECK_EQ(s.ups, 2);
+}
+
 TEST(ServoBrain_molette_sens_inverse) {
     Sim s;
     s.brain.SetWheel(20.0, true);
@@ -925,6 +995,106 @@ TEST(ServoBrain_tete_penchee_vers_le_bas_le_gain_en_cap_change_et_le_pointeur_ne
         CHECK(s.brain.Mode() == BrainMode::Track);
         CHECK(RmsErr(m, 800, 1100) < 7.0);
         CHECK(counts < 700);
+    }
+}
+
+// Experience (HANDS_EXPERIMENT=1) : amortissement de la regulation quand la latence reelle fluctue (essai reel du 12 nov. : le pointeur tourne autour du doigt vers -65 deg de site).
+TEST(ServoExperiment_gain_de_regulation) {
+    if (!std::getenv("HANDS_EXPERIMENT")) return;
+    for (double lj : {0.0, 0.3, 0.6})
+        for (double gr : {1.0, 1.3})
+            for (double kc : {0.8, 0.6, 0.5, 0.4, 0.3}) {
+                double worstOver = 0, sumSettle = 0, sumRms = 0;
+                int nrun = 0;
+                for (double pitchDeg : {-68.0}) {
+                    Sim s;
+                    s.fps = 30.0;
+                    s.readJitter = 0.4;
+                    s.lJitter = lj;
+                    s.gainRatio = gr;
+                    s.tipNoiseM = 0.001;
+                    s.brain.SetAutoProbe(false);
+                    s.brain.Reset();
+                    s.brain.SetControlGain(kc);
+                    const double th = pitchDeg * 3.14159265358979 / 180.0;
+                    s.view.pose.q = {static_cast<float>(std::sin(th / 2)), 0.0f, 0.0f, static_cast<float>(std::cos(th / 2))};
+                    s.ptr = {0.30, th + 0.1};
+                    const Metrics m = Run(s, 900, [&](int k) {
+                        Frame f;
+                        const double t = k < 500 ? 0.0 : std::min(1.0, (k - 500) / 6.0);
+                        f.finger = {0.05 - 0.25 * t, th - 0.10 + 0.10 * t};
+                        return f;
+                    });
+                    double over = 0;
+                    int settle = 0;
+                    for (int k = 515; k < 900; ++k)
+                        if (m.err[static_cast<size_t>(k)] > 10.0) settle = k - 515;
+                    for (int k = 530; k < 900; ++k) over = std::max(over, m.err[static_cast<size_t>(k)]);
+                    worstOver = std::max(worstOver, over);
+                    sumSettle += settle;
+                    sumRms += RmsErr(m, 700, 900);
+                    ++nrun;
+                }
+                std::printf("      EXP lJitter %.1f gain x%.1f kControl %.1f : pire erreur apres 0.5 s %.0f px, derniere erreur >10 px a +%.0f images (moy.), RMS au repos %.1f px\n", lj, gr, kc, worstOver, sumSettle / nrun, sumRms / nrun);
+            }
+}
+
+TEST(ServoBrain_doigt_et_pointeur_de_part_et_d_autre_du_pole_pas_d_emballement) {
+    // essai reel du 12 nov. (tete a -28 deg, doigt a y = 2834 sur 2880, soit -77 deg de site) : l'erreur etait prise comme une difference d'angles puis ramenee en comptes par
+    // une matrice presque singuliere (1 px = ~7 fois plus de cap pres du pole) : 6000 px d'« erreur », -150 / +150 comptes par image pendant 3.7 s, le pointeur tape contre le mur.
+    for (double fps : {30.0, 90.0}) {
+        Sim s;
+        s.fps = fps;
+        s.tipNoiseM = 0.001;
+        const double th = -60.0 * 3.14159265358979 / 180.0;
+        s.view.pose.q = {static_cast<float>(std::sin(th / 2)), 0.0f, 0.0f, static_cast<float>(std::cos(th / 2))};
+        // le doigt (-87 deg de site) et le pointeur (-85 deg) sont de part et d'autre du POLE : leurs caps different de ~170 deg alors qu'ils sont a ~300 px l'un de l'autre
+        s.ptr = {3.0, -85.0 * 3.14159265358979 / 180.0};
+        const int n = static_cast<int>(fps * 12.0);
+        const Metrics m = Run(s, n, [&](int) {
+            Frame f;
+            f.finger = {0.05, -87.0 * 3.14159265358979 / 180.0};
+            return f;
+        });
+        int sat = 0;
+        long long counts = 0;
+        for (int k = 0; k < n; ++k) {
+            const auto c = s.cnt[static_cast<size_t>(k)];
+            if (std::max(std::abs(c.first), std::abs(c.second)) >= 100) ++sat;
+            if (k >= n - static_cast<int>(fps * 3.0)) counts += std::abs(c.first) + std::abs(c.second);
+        }
+        const int from = n - static_cast<int>(fps * 3.0);
+        std::printf("      doigt pres du pole, %.0f i/s : mode %d, %d images a >= 100 comptes, ecart RMS final %.1f px (max %.1f), %lld comptes sur 3 s\n", fps, static_cast<int>(s.brain.Mode()), sat,
+                    RmsErr(m, from, n), MaxErr(m, from, n), counts);
+        CHECK(s.brain.Mode() == BrainMode::Track);
+        CHECK(sat < 20);
+        CHECK(MaxErr(m, from, n) < 15.0);
+    }
+}
+
+TEST(ServoBrain_cible_et_pointeur_de_part_et_d_autre_du_cap_180_pas_d_emballement) {
+    // le cap est un angle : pres de +-180 deg (regard vers l'arriere, ou pres du pole), 0.06 rad d'ecart reel font ~6.2 rad de difference de caps
+    for (double fps : {30.0, 90.0}) {
+        Sim s;
+        s.fps = fps;
+        s.view.pose.q = {0.0f, 1.0f, 0.0f, 0.0f};  // la vue regarde vers +z (cap 180 deg)
+        s.ptr = {-3.10, 0.0};
+        const int n = static_cast<int>(fps * 8.0);
+        const Metrics m = Run(s, n, [&](int) {
+            Frame f;
+            f.finger = {3.12, -0.05};
+            return f;
+        });
+        int sat = 0;
+        for (int k = 0; k < n; ++k) {
+            const auto c = s.cnt[static_cast<size_t>(k)];
+            if (std::max(std::abs(c.first), std::abs(c.second)) >= 100) ++sat;
+        }
+        const int from = n - static_cast<int>(fps * 2.0);
+        std::printf("      cap 180, %.0f i/s : mode %d, %d images a >= 100 comptes, ecart final max %.1f px\n", fps, static_cast<int>(s.brain.Mode()), sat, MaxErr(m, from, n));
+        CHECK(s.brain.Mode() == BrainMode::Track);
+        CHECK(sat < 10);
+        CHECK(MaxErr(m, from, n) < 15.0);
     }
 }
 

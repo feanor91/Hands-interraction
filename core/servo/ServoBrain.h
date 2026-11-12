@@ -90,6 +90,7 @@ public:
     // Mesure du gain au demarrage (4 salves, main et tete immobiles). Faux (defaut) : on part des valeurs a priori (gain 1.02 px/compte, latence 2) : le regulateur tient
     // des gains de 0.6 a 1.6 et une latence a +-1 (tests), alors qu'une mesure qui ne trouve jamais un pointeur « stable » (tete qui bouge) retarde le suivi de plusieurs secondes.
     void SetAutoProbe(bool on) { autoProbe_ = on; }
+    void SetControlGain(double k) { params_.kControl = k; ctl_ = ServoController(params_); }  // part de l'erreur predite corrigee a chaque image (tests / reglage)
     void OnPixels(const uint8_t* rgba, const BrainRoi& req);
     BrainOutput Frame(const BrainFrame& inRaw);
 
@@ -127,6 +128,12 @@ private:
     bool autoProbe_ = false;
     EyeView probeView_;       // vue de reference de la mesure du gain : les positions du pointeur y sont projetees (la tete peut bouger pendant la mesure)
     bool probeViewSet_ = false;
+    V2 tgtPrev_;
+    uint64_t wheelPinchMs_ = 0, lastClickUpMs_ = 0;
+    int wheelHand_ = -1, wheelLastDir_ = 1;
+    bool reclickBlocked_ = false;
+    Px lastClickFingerPx_{0, 0};
+    bool tgtPrevValid_ = false;
     int probeFails_ = 0;
     std::vector<V2> bad_;  // directions (cap, site) de decors pris pour le pointeur : ignorees pendant la recherche
     uint64_t switchSinceMs_ = 0;
@@ -157,7 +164,7 @@ private:
     float tipMinHz_ = 1.0f, tipBeta_ = 12.0f;
     bool wheelMode_ = false;             // pincement transforme en molette (roulis du poignet)
     emulation::Vec3 rollAxis_, rollN0_;
-    double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 20.0;
+    double rollAcc_ = 0, rollLast_ = 0, wheelStepDeg_ = 16.0;
     bool wheelInvert_ = false;
     bool down_ = false, tapUp_ = false, prevSelPinch_ = false, prevBoth_ = false;
     bool prevRaw_[2] = {false, false};   // pincement brut de l'image precedente (un front se detecte sur le brut)

@@ -17,16 +17,21 @@ constexpr double kBlacklistRad = 0.03;         // rad (~35 px) : decors (eclats,
 constexpr int kMaxProbeFails = 2;              // apres ce nombre de mesures sans reponse on continue avec les valeurs par defaut
 constexpr uint64_t kHandSwitchMs = 350;        // l'autre main doit pointer seule pendant ce temps avant de reprendre la main (sauf pincement)
 constexpr double kStableRad = 0.004;           // ~5 px : deux detections consecutives « au meme endroit »
+constexpr uint64_t kWheelBridgeMs = 450;       // pendant un roulis, le suivi des mains perd souvent le pincement (le pouce s'ecarte de l'index quand le poignet tourne) : la molette continue ce temps
+constexpr float kWheelOpenM = 0.045f;           // pouce clairement ecarte de l'index (> 45 mm) : relachement voulu, pas un trou du suivi : la molette s'arrete
+constexpr uint64_t kReclickLockoutMs = 450;    // un nouveau pincement a moins de ca du relachement du precedent, au meme endroit, ne clique pas (le pouce flotte pres du seuil : double clic non voulu)
+constexpr double kReclickNearPx = 90.0;        // ... « au meme endroit » = a moins de ca du doigt du clic precedent
+constexpr uint64_t kStaleHoldMs = 700;          // pointeur non detecte depuis ce temps : plus de commandes de suivi (mur de MSFS, hors de la vue)
 constexpr uint64_t kLostToAcquireMs = 4000;    // pointeur introuvable depuis si longtemps : on recommence le balayage
 constexpr uint64_t kKeepAliveMs = 700;         // MSFS masque le curseur apres quelques secondes sans mouvement et ignore les clics tant qu'il est masque
 constexpr uint64_t kPinchLockLookbackMs = 130; // le verrou du pincement reprend la position du doigt d'il y a ~130 ms
-constexpr double kWheelStartDeg = 14.0;        // roulis du poignet pendant un pincement a partir duquel le pincement devient une molette
+constexpr double kWheelStartDeg = 10.0;        // roulis du poignet pendant un pincement a partir duquel le pincement devient une molette
 constexpr uint64_t kClickDebounceMs = 110;     // pincement minimal avant d'enfoncer le bouton
 constexpr uint64_t kTapMinMs = 50;             // un pincement plus court que ca est un parasite du suivi des mains, pas un clic
 constexpr uint64_t kClickPendingMaxMs = 700;   // un pincement qui n'a pas pu cliquer (pointeur pas encore arrive) dans ce delai est abandonne : pas de clic tardif
 constexpr uint64_t kReleaseDebounceMs = 90;    // un pincement qui « saute » moins que ca pendant un appui ne relache pas le bouton (un relachement = un clic pour MSFS)
 constexpr uint64_t kClickFreshMs = 300;        // pour cliquer, le pointeur doit avoir ete VU depuis moins que ca (MSFS ignore les clics tant qu'il est masque)
-constexpr double kClickMaxErrPx = 45.0;        // ... et etre a moins de ca du bout du doigt (sinon le clic tomberait a cote, ou sur une autre commande)
+constexpr double kClickMaxErrPx = 28.0;        // ... et etre a moins de ca du bout du doigt (sinon le clic tomberait a cote, ou sur une autre commande)
 constexpr uint64_t kSwitchStealMs = 800;       // apres un changement de main, l'autre ne la reprend pas par un pincement avant ce delai
 constexpr double kInsideMarginPx = 0.0;        // une main n'est candidate que si son bout de doigt est dans l'image (a cette marge pres)
 constexpr double kClampMarginPx = 40.0;        // la cible du pointeur est bornee a l'image moins cette marge
@@ -35,9 +40,10 @@ constexpr double kStuckShortfallPx = 450.0;    // le pointeur n'a pas suivi ~450
 constexpr double kStuckOkShortfallPx = 150.0;  // ... il suit (a peu pres) tant que le manque reste sous ca
 constexpr double kStuckResetMovePx = 60.0;     // deplacement du pointeur a partir duquel on repart d'une nouvelle reference
 constexpr uint64_t kBlockBaseMs = 2000, kBlockMaxMs = 8000;  // pause des comptes quand le pointeur ne suit plus (doublee a chaque nouvel echec)
-constexpr double kFreeStartDeg = 22.0;         // molette SANS pincement (rotatifs : pas besoin de cliquer) : roulis rapide du poignet, doigt immobile sur la commande
+constexpr double kFreeStartDeg = 16.0;         // molette SANS pincement (rotatifs : pas besoin de cliquer) : roulis rapide du poignet, doigt immobile sur la commande
 constexpr double kFreeCalmPxPerS = 300.0;      // le bout du doigt ne doit pas bouger de plus de ca (px/s) pour que le roulis compte
 constexpr double kFreeRefTauS = 1.0;           // la reference du roulis suit la main avec cette constante de temps : une derive lente ne declenche rien
+constexpr uint64_t kFreeAfterPinchMs = 1200;   // pas de molette libre dans ce temps apres un pincement (le poignet revient en position)
 constexpr uint64_t kFreeIdleMs = 1500;         // la molette s'arrete si le poignet ne bouge plus depuis ce temps
 constexpr float kLockMaxBackM = 0.03f;       // le verrou ne remonte pas a plus de 3 cm du doigt (le geste de pincement en deplace de 1 a 2)
 constexpr float kPrelatchOnM = 0.034f, kPrelatchOffM = 0.038f;  // distance pouce-doigt qui fige le pointeur (le geste de pincement deplace deja le doigt) / le libere
@@ -111,6 +117,8 @@ void ServoBrain::Reset() {
     prevRaw_[0] = prevRaw_[1] = false;
     armed_[0] = armed_[1] = false;
     prevCanClick_ = pinchClicked_ = prevWheelUsed_ = false;
+    wheelPinchMs_ = lastClickUpMs_ = 0;
+    reclickBlocked_ = false;
     prelatched_ = preArmed_ = false;
     deferTap_ = false;
     freeWheel_ = freeRefValid_ = haveFingerPrev_ = false;
@@ -292,7 +300,7 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
     {
         const double rad = mode_ == BrainMode::Track ? 0.012 : kBlacklistRad;  // en suivi : seulement le voisinage immediat du decor
         for (const V2& b : bad_)
-            if (Norm(ang - b) < rad) {  // un decor deja pris pour le pointeur
+            if (Norm(Diff(ang, b)) < rad) {  // un decor deja pris pour le pointeur
                 ++nMiss_;
                 stable_ = 0;
                 return;
@@ -301,7 +309,7 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
     const int missedBefore = missRun_;
     missRun_ = 0;
     sumScore_ += c[0].score;
-    const bool consistent = haveDet_ && Norm(ang - lastDetAng_) < kStableRad;
+    const bool consistent = haveDet_ && Norm(Diff(ang, lastDetAng_)) < kStableRad;
     stable_ = consistent ? stable_ + 1 : 1;
     if (!haveDet_)
         Log(0, "servo : pointeur de MSFS repere en (%.0f, %.0f) dans l'image (score %.2f, %s, %dx%d)", px, py, c[0].score, c[0].hand ? "main" : "fleche", c[0].x1 - c[0].x0 + 1,
@@ -447,6 +455,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     }
     if (hand >= 0 && edge[hand]) armed_[hand] = true;  // seul un pincement commence PENDANT que cette main est la main choisie peut cliquer
     const bool pinch = hand >= 0 && pinchNow[hand] && armed_[hand];
+    // molette en cours : l'etat appartient a UNE main, et un pincement perdu en plein roulis (le suivi lache le pincement quand le poignet tourne) ne l'arrete pas tout de suite
+    if (hand != prevHand) wheelMode_ = false;
+    if (pinch) wheelPinchMs_ = in.nowMs;
+    const bool wheelBridge = wheelMode_ && !pinch && hand >= 0 && hand == wheelHand_ && in.nowMs - wheelPinchMs_ < kWheelBridgeMs && !(in.hand[hand].pinchDist > kWheelOpenM);
     // verrou : position du bout du doigt environ 130 ms avant le debut du geste. Le geste de pincement (le pouce vient a la rencontre du doigt, qui bouge aussi) dure
     // 150 a 300 ms : des que le pouce s'approche (pre-verrou, comme le mode rayon) on fige la position ; sinon, au front du pincement.
     auto lockFromHistory = [&](int h) {
@@ -477,7 +489,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         if (edge[hand] && !prelatched_) lockFromHistory(hand);
         if (edge[hand] && prelatched_) prelatched_ = false;  // le pincement prend le relais (le verrou garde sa position)
     }
-    if (!pinch && !prelatched_ && !freeWheel_) locked_ = false;
+    if (!pinch && !prelatched_ && !freeWheel_ && !wheelBridge) locked_ = false;
     if (deferTap_ && (in.nowMs > deferUntilMs_ || hand != deferHand_ || pinch || in.menuOpen)) deferTap_ = false;
     haveFinger_ = false;
     if (hand < 0) haveFingerJump_ = false;
@@ -485,7 +497,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     if (hand >= 0) {
         const BrainHand& hd = in.hand[hand];
         // clic differe : le pointeur n'etait pas encore arrive quand le pincement s'est termine ; la cible reste a l'endroit ou le doigt etait pendant le pincement
-        const emulation::Vec3 tipW = ((pinch || prelatched_ || freeWheel_) && locked_) ? lockTip_ + (hd.knuckle - lockKnuckle_) : (deferTap_ ? deferTipW_ : hd.tip);
+        const emulation::Vec3 tipW = ((pinch || prelatched_ || freeWheel_ || wheelBridge) && locked_) ? lockTip_ + (hd.knuckle - lockKnuckle_) : (deferTap_ ? deferTipW_ : hd.tip);
         if ((pinch || prelatched_) && locked_) lastLockedTipW_ = tipW;
         const emulation::Vec3 d = tipW - in.view.pose.p;
         Px px;
@@ -502,7 +514,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 target = {a.yaw, a.pitch};
             }
             // saut de la cible (changement de main, verrou qui se pose ou se leve) : pas de pic d'anticipation (la vitesse de la cible serait enorme)
-            const bool lockedNow = ((pinch || prelatched_ || freeWheel_) && locked_) || deferTap_;
+            const bool lockedNow = ((pinch || prelatched_ || freeWheel_ || wheelBridge) && locked_) || deferTap_;
             if (hand != prevTargetHand_ || lockedNow != prevTargetLocked_ || (haveFingerJump_ && std::hypot(px.x - jumpPrevPx_.x, px.y - jumpPrevPx_.y) > 150.0)) ctl_.ResetTarget();
             prevTargetHand_ = hand;
             prevTargetLocked_ = lockedNow;
@@ -580,9 +592,41 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             ResetStuck();
             if (haveDet_ && in.nowMs - lastDetMs_ < 400) ctl_.Reanchor(lastDetSeq_, lastDetAng_);
         }
+        // pointeur introuvable depuis un moment : le modele n'est plus fiable (le pointeur est peut-etre contre un mur de MSFS, hors de la vue) et le piloter a l'aveugle
+        // l'envoie taper contre le mur (essai du 12 nov. : 150 comptes par image pendant 3.7 s). On ne commande plus que le reveil du curseur ; la recherche continue.
+        const bool staleDet = haveDet_ && in.nowMs - lastDetMs_ > kStaleHoldMs;
         Jac jac;
         const bool haveJ = ctl_.HaveModel() && ComputeJac(in.view, ctl_.PredictedNow(), &jac);
-        const ServoController::Out o = ctl_.Step(seq_, hand >= 0 && haveFinger_ && !blocked, target, jx, jy, haveJ ? &jac : nullptr);
+        const bool drive = hand >= 0 && haveFinger_ && !blocked && !staleDet;
+        if (haveJ && drive) {
+            // erreur et vitesse de la cible dans le plan de l'IMAGE courante (exact, sans pole) : voir Jac::pxValid
+            const V2 xh = ctl_.PredictedNow();
+            const emulation::Vec3 org = in.view.pose.p;
+            Px pxh, ptg;
+            if (Project(in.view, org + DirOf({xh.a, xh.b}), &pxh) && Project(in.view, org + DirOf({target.a, target.b}), &ptg)) {
+                jac.pxValid = true;
+                jac.ex = ptg.x - pxh.x;
+                jac.ey = ptg.y - pxh.y;
+                Px pp;
+                if (tgtPrevValid_ && Project(in.view, org + DirOf({tgtPrev_.a, tgtPrev_.b}), &pp)) {
+                    jac.vx = ptg.x - pp.x;
+                    jac.vy = ptg.y - pp.y;
+                }
+                const double gx = jac.gx, gy = jac.gy;
+                const EyeView view = in.view;
+                jac.inc = [=](double dx, double dy) {
+                    const Px q{pxh.x + gx * dx, pxh.y + gy * dy};
+                    const Ang a1 = AnglesOf(RayDir(view, q));
+                    double dyaw = a1.yaw - xh.a;
+                    while (dyaw > 3.14159265358979) dyaw -= 6.28318530717959;
+                    while (dyaw < -3.14159265358979) dyaw += 6.28318530717959;
+                    return V2{dyaw, a1.pitch - xh.b};
+                };
+            }
+        }
+        tgtPrev_ = target;
+        tgtPrevValid_ = hand >= 0 && haveFinger_;
+        const ServoController::Out o = ctl_.Step(seq_, drive, target, jx, jy, haveJ ? &jac : nullptr);
         // cumul des comptes envoyes (hors garde) par numero d'image : sert a savoir ce qui a DEJA pu atterrir dans l'image d'ou vient la derniere detection
         cumX_[seq_ % 64] = cumX_[(seq_ + 63) % 64] + (blocked ? 0 : o.dx - jx);
         cumY_[seq_ % 64] = cumY_[(seq_ + 63) % 64] + (blocked ? 0 : o.dy - jy);
@@ -636,10 +680,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
 
     // 2b) molette : pendant un pincement, un roulis du poignet (comme pour les rotatifs des zones) fait tourner la molette de la souris : un cran tous les
     //     wheelStepDeg_ degres. Le pincement devient alors une molette : le bouton est relache et ne redescend pas.
-    if (hand >= 0 && pinch && in.hand[hand].wristAxis.x * in.hand[hand].wristAxis.x + in.hand[hand].wristAxis.y * in.hand[hand].wristAxis.y + in.hand[hand].wristAxis.z * in.hand[hand].wristAxis.z > 0.5f) {
+    if (hand >= 0 && (pinch || wheelBridge) && in.hand[hand].wristAxis.x * in.hand[hand].wristAxis.x + in.hand[hand].wristAxis.y * in.hand[hand].wristAxis.y + in.hand[hand].wristAxis.z * in.hand[hand].wristAxis.z > 0.5f) {
         const BrainHand& hd = in.hand[hand];
         const emulation::Vec3 n1 = emulation::Normalized(hd.palmUp - hd.wristAxis * emulation::Dot(hd.palmUp, hd.wristAxis));
-        if (edge[hand]) {
+        if (edge[hand] && !wheelMode_) {
             rollAxis_ = hd.wristAxis;
             rollN0_ = n1;
             rollAcc_ = 0;
@@ -654,7 +698,9 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             rollAcc_ += d;
             if (!wheelMode_ && std::fabs(rollAcc_) >= kWheelStartDeg) {
                 wheelMode_ = true;
-                rollAcc_ -= rollAcc_ > 0 ? kWheelStartDeg : -kWheelStartDeg;
+                wheelHand_ = hand;
+                wheelLastDir_ = rollAcc_ > 0 ? 1 : -1;
+                rollAcc_ = rollAcc_ > 0 ? wheelStepDeg_ : -wheelStepDeg_;  // le premier cran part tout de suite (la zone morte de depart n'est pas comptee dans les crans)
                 Log(0, "servo : molette (roulis du poignet)");
             }
             if (wheelMode_) {
@@ -667,11 +713,15 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                     rollAcc_ += wheelStepDeg_;
                     --steps;
                 }
+                if (steps != 0) {
+                    if (wheelBridge && (steps > 0 ? 1 : -1) != wheelLastDir_) steps = 0;  // pincement perdu : on ne rembobine pas (poignet qui revient apres un relachement)
+                    else wheelLastDir_ = steps > 0 ? 1 : -1;
+                }
                 out.wheelSteps = wheelInvert_ ? -steps : steps;
             }
         }
     }
-    if (!pinch) wheelMode_ = false;
+    if (!pinch && !wheelBridge) wheelMode_ = false;
 
     // 2c) molette SANS pincement : pour les rotatifs il n'y a pas besoin de cliquer. Le doigt pointe la commande (pointeur arrive, doigt quasi immobile) et le poignet fait un
     //     roulis rapide d'au moins 22 deg par rapport a sa position « lissee » : un cran tous les wheelStepDeg_ degres, le pointeur reste verrouille sur la commande.
@@ -688,7 +738,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             freeWheel_ = false;
             if (!pinch && !prelatched_) locked_ = false;
         }
-        if (axisOk && !pinch && !in.menuOpen && mode_ == BrainMode::Track) {
+        if (axisOk && !pinch && !wheelBridge && !in.menuOpen && mode_ == BrainMode::Track) {
             const BrainHand& hd = in.hand[hand];
             const emulation::Vec3 n1 = emulation::Normalized(hd.palmUp - hd.wristAxis * emulation::Dot(hd.palmUp, hd.wristAxis));
             if (!freeRefValid_ || freeRefHand_ != hand || hand != prevHand) {
@@ -703,13 +753,14 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 const double ang = rollOf(hd.wristAxis, freeRef_, n1);
                 const bool calm = fpSpeed_ < kFreeCalmPxPerS;
                 const bool ready = hd.extended && calm && haveFinger_ && errNowPx_ <= 60.0 && in.nowMs - lastDetMs_ < kClickFreshMs && blockUntilMs_ <= in.nowMs && !down_ &&
-                                   in.nowMs - lastSwitchMs_ > 600;
+                                   in.nowMs - lastSwitchMs_ > 600 && in.nowMs - wheelPinchMs_ > kFreeAfterPinchMs;  // le poignet qui revient apres un pincement n'est pas un nouveau roulis
                 if (ready && std::fabs(ang) >= kFreeStartDeg) {
                     freeWheel_ = true;
                     freeHand_ = hand;
                     rollAxis_ = hd.wristAxis;
                     rollN0_ = freeRef_;
-                    rollAcc_ = ang - (ang > 0 ? kFreeStartDeg : -kFreeStartDeg);
+                    rollAcc_ = 0;
+                    out.wheelSteps += (ang > 0) != wheelInvert_ ? 1 : -1;  // premier cran tout de suite (cette image), puis un cran tous les wheelStepDeg_ degres de plus
                     rollLast_ = ang;
                     freeLastMoveMs_ = in.nowMs;
                     lockFromHistory(hand);
@@ -766,6 +817,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         pinchStartMs_ = in.nowMs;
         pinchClicked_ = false;
         skipWhy_.clear();
+        // double clic non voulu : le pouce flotte pres du seuil de pincement (il se repose a 23-28 mm, on pince a < 20 mm) : relacher puis pincer de nouveau en moins de 450 ms au
+        // meme endroit n'est presque jamais voulu (essai du 12 nov. : 11 clics sur 115 dans ce cas, le deuxieme remet le bouton comme avant)
+        reclickBlocked_ = lastClickUpMs_ != 0 && in.nowMs - lastClickUpMs_ < kReclickLockoutMs && haveFinger_ && std::hypot(fingerPx_.x - lastClickFingerPx_.x, fingerPx_.y - lastClickFingerPx_.y) < kReclickNearPx;
+        if (reclickBlocked_) skipWhy_ = "deuxieme clic trop proche du precedent";
     }
     bool wheelUsed = false;
     if (tapUp_) {
@@ -775,7 +830,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     } else {
         bool want = false;
         const uint64_t held = pinch ? in.nowMs - pinchStartMs_ : 0;
-        if (hand >= 0 && pinch && !both && !wheelMode_) {
+        if (hand >= 0 && pinch && !both && !wheelMode_ && !reclickBlocked_) {
             if (down_) {
                 want = true;
             } else if (held >= kClickDebounceMs && held <= kClickPendingMaxMs) {
@@ -799,7 +854,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         } else if (!want && down_) {
             out.buttonEvent = 0;
             down_ = false;
-        } else if (!want && !down_ && prevSelPinch_ && !pinch && !prevBoth_ && heldMs_ >= kTapMinMs && heldMs_ < kClickDebounceMs && prevCanClick_ && hand >= 0) {  // tap
+        } else if (!want && !down_ && prevSelPinch_ && !pinch && !prevBoth_ && heldMs_ >= kTapMinMs && heldMs_ < kClickDebounceMs && prevCanClick_ && hand >= 0 && !reclickBlocked_) {  // tap
             out.buttonEvent = 1;
             down_ = true;
             tapUp_ = true;
@@ -807,6 +862,8 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             lastSendMs_ = in.nowMs;
         }
     }
+    if (out.buttonEvent == 1 && haveFinger_) lastClickFingerPx_ = fingerPx_;
+    if (out.buttonEvent == 0) lastClickUpMs_ = in.nowMs;
     if (out.buttonEvent >= 0) Log(0, "servo : bouton %s (pointeur (%.0f,%.0f), doigt (%.0f,%.0f))", out.buttonEvent == 1 ? "ENFONCE" : "relache", lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0);
     // clic differe : des que le pointeur arrive sous le doigt (verrouille), le clic que le pincement voulait faire part
     if (deferTap_ && out.buttonEvent < 0 && !down_ && !pinch && hand == deferHand_ && canClick) {
@@ -822,7 +879,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         const bool far = (skipWhy_.empty() ? heldMs_ < kClickDebounceMs : skipWhy_ != "deux mains pincees") && heldMs_ <= kClickPendingMaxMs;
         Log(0, "servo : pincement de %.0f ms sans clic (%s)%s", static_cast<double>(heldMs_),
             !skipWhy_.empty() ? skipWhy_.c_str() : (heldMs_ < kClickDebounceMs ? "pointeur trop loin du doigt au relachement ou pas vu" : "?"), far && !prevBoth_ && hand >= 0 ? " : clic differe" : "");
-        if (far && !prevBoth_ && hand >= 0 && mode_ == BrainMode::Track) {
+        if (far && !prevBoth_ && hand >= 0 && mode_ == BrainMode::Track && !reclickBlocked_) {
             deferTap_ = true;
             deferHand_ = hand;
             deferUntilMs_ = in.nowMs + 600;

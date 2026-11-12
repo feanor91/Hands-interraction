@@ -2,6 +2,24 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.37] - 2026-11-12
+
+### Corrige
+- **Le pointeur qui « tourne autour du doigt » en bas a droite et les emballements** (essai de 18:46, 16 000 images de trace). Deux causes dans la regulation :
+  (1) **l'erreur etait calculee en angles (cap, site)** puis ramenee en comptes par une matrice locale. Un cap est un angle : pres de +-180 deg (regard vers l'arriere ou tete tres penchee, le doigt
+  et le pointeur de part et d'autre du pole) deux directions a 0.06 rad l'une de l'autre different de ~6.2 rad en cap. Resultat dans la trace : « erreur » de 6208 px, -150 / +150 comptes par image pendant
+  3.7 s (le pointeur file contre le mur de MSFS) alors que le modele disait le pointeur a 10 px du doigt. Maintenant l'erreur et la vitesse du doigt sont calculees dans le plan de l'IMAGE courante
+  (position du doigt projetee - position du modele projetee, en pixels : le gain de MSFS est constant en pixels), l'incrementation du modele par les comptes envoyes est exacte (plus de linearisation :
+  l'erreur de linearisation atteignait ~40 px pour un deplacement de 70 px a -68 deg de site, d'ou les orbites), et toutes les differences de cap sont ramenees dans (-pi, pi].
+  (2) **plus de commandes a l'aveugle** : pointeur non detecte depuis 0.7 s = plus de comptes de suivi (seul le reveil du curseur continue, la recherche aussi).
+  Tests : doigt et pointeur de part et d'autre du cap 180 (l'ancien code : 6103 px d'erreur), du pole.
+- **Clics en double** (trace : 16 couples « relache puis renfonce » en moins de 800 ms, dont 11 en moins de 450 ms, sur 115 clics ; le pouce se repose a 23-28 mm de l'index alors que le pincement se declenche
+  a < 20 mm et se relache a > 23 mm : il flotte autour du seuil). Un nouveau pincement a moins de 450 ms du relachement precedent, a moins de 90 px du meme endroit, ne clique plus (journal : « deuxieme clic trop proche
+  du precedent »). Le clic n'est aussi accepte que si le pointeur est a moins de 28 px du doigt (45 avant : 18 % des clics tombaient a plus de 30 px, sur la commande voisine).
+- **Molette (twist du poignet)** : (1) pendant le roulis le suivi des mains lache le pincement (la distance pouce-index passe de 10 a 23 mm : seuil de relachement) : la molette s'arretait apres 14 deg et le pincement suivant
+  repartait de zero. La molette continue maintenant 450 ms apres la perte du pincement (et un pincement qui revient ne la remet pas a zero), sans cran inverse, tant que le pouce n'est pas a plus de 45 mm de l'index, avec le pointeur reste verrouille sur la commande, et liee a la main qui a commence ; pas de molette libre dans les 1,2 s qui suivent un pincement (le poignet qui revient ne fait pas tourner le rotatif a l'envers). Revue independante (15 agents) : 5 defauts trouves et corriges avant publication. (2) Le premier cran part tout de suite (plus de zone morte avant le
+  premier cran) : depart a 10 deg avec pincement, 16 deg sans pincement (22 avant), puis un cran tous les 16 deg (20 avant ; `wheel_step_deg` dans mouse.ini). Dans la trace, 15 molettes demarrees pour 2 crans en tout.
+
 ## [0.0.36] - 2026-11-12
 
 ### Corrige

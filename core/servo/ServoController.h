@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 
 namespace hands::servo {
 
@@ -25,6 +26,14 @@ inline V2 operator+(V2 x, V2 y) { return {x.a + y.a, x.b + y.b}; }
 inline V2 operator-(V2 x, V2 y) { return {x.a - y.a, x.b - y.b}; }
 inline V2 operator*(V2 x, double s) { return {x.a * s, x.b * s}; }
 inline double Norm(V2 x) { return std::sqrt(x.a * x.a + x.b * x.b); }
+// Difference of two (yaw, pitch) directions with the yaw difference wrapped to (-pi, pi]: yaw is an angle, so near +-180 deg (looking backwards, or next to the pole) two directions
+// 0.06 rad apart differ by ~6.2 rad (the 6000 px "error" and the -150 / +150 counts for 3.7 s of the 12 Nov. trace).
+inline V2 Diff(V2 x, V2 y) {
+    V2 d{x.a - y.a, x.b - y.b};
+    while (d.a > 3.14159265358979) d.a -= 6.28318530717959;
+    while (d.a < -3.14159265358979) d.a += 6.28318530717959;
+    return d;
+}
 
 // Local geometry of the plant, given by the caller each frame: MSFS moves its pointer by a constant number of IMAGE pixels per mouse count (measured 1.05 px/count from
 // 20 to 80 deg below the horizon), so the angle (yaw, pitch) change per count depends on where the pointer is and where the head looks (1/cos(pitch) in yaw: x2.8 at -69 deg,
@@ -33,6 +42,13 @@ struct Jac {
     double a = 0, b = 0, c = 0, d = 0;
     double gx = 1, gy = 1, pxPerRad = 1215.0;
     bool valid = false;
+    // EXACT image-plane quantities (the linear J above is only a fallback): near the pole (finger at -75 deg of site) one pixel is many degrees of yaw, so an error taken as a
+    // difference of angles and mapped back through J blows up (essai du 12 nov. : 150 counts / frame en sens inverse pendant 3.7 s). The caller projects the fingertip and the
+    // model pointer into the CURRENT image and gives their pixel difference; the plant is linear in those pixels (constant px per count).
+    bool pxValid = false;
+    double ex = 0, ey = 0;                   // fingertip - model pointer, pixels (y down)
+    double vx = 0, vy = 0;                   // fingertip displacement since the previous call, pixels, measured in the same view (head motion cancels)
+    std::function<V2(double, double)> inc;   // exact (yaw, pitch) increment of the model pointer for (dx, dy) counts sent now
 };
 
 struct ServoParams {
@@ -75,7 +91,7 @@ public:
     explicit ServoController(const ServoParams& p = ServoParams()) : p_(p) {}
     void SetParams(const ServoParams& p) { p_ = p; }
     void SetMaxCounts(int n) { p_.maxCounts = n; }
-    void ResetTarget() { haveT_ = false; }  // the target jumped (hand switch, lock / unlock): forget its velocity, no feed-forward spike
+    void ResetTarget() { haveT_ = false; haveVpx_ = false; }  // the target jumped (hand switch, lock / unlock): forget its velocity, no feed-forward spike
     const ServoParams& Params() const { return p_; }
     void Reset() { *this = ServoController(p_); }
 
@@ -93,7 +109,7 @@ public:
             lastPtr_ = ptr;
             return;
         }
-        const V2 nu = ptr - (x0_ + bias_ + gv);
+        const V2 nu = Diff(ptr, x0_ + bias_ + gv);
         lastInnov_ = nu;
         ++nMeas_;
         const double dgv = Norm(gv - lastGv_);  // how much the model itself moved since the previous measurement
@@ -120,7 +136,7 @@ public:
         for (int ax = 0; ax < 2; ++ax) {
             const double n = nus[ax];
             const int sgn = n > p_.satInnov ? 1 : (n < -p_.satInnov ? -1 : 0);
-            const bool stuck = std::fabs(pt[ax] - lp[ax]) < kStuckEps;  // a wall = the model says "moving", the pointer does not move
+            const bool stuck = std::fabs(ax == 0 ? Diff(ptr, lastPtr_).a : pt[ax] - lp[ax]) < kStuckEps;  // a wall = the model says "moving", the pointer does not move
             if (sgn != 0 && stuck) streak_[ax] = (sgn == lastSign_[ax]) ? streak_[ax] + 1 : 1;
             else streak_[ax] = 0;
             lastSign_[ax] = (sgn != 0 && stuck) ? sgn : 0;
@@ -187,10 +203,22 @@ public:
                     vT_ = {};
                     haveT_ = true;
                 }
-                vT_ = vT_ * (1.0 - p_.velSmooth) + (target - tPrev_) * p_.velSmooth;
+                vT_ = vT_ * (1.0 - p_.velSmooth) + Diff(target, tPrev_) * p_.velSmooth;
                 tPrev_ = target;
+                const bool pxPath = J.pxValid && J.gx > 1e-9 && J.gy > 1e-9;
+                if (pxPath) {
+                    if (!haveVpx_) {
+                        vPxX_ = vPxY_ = 0;
+                        haveVpx_ = true;
+                    } else {
+                        vPxX_ = vPxX_ * (1.0 - p_.velSmooth) + J.vx * p_.velSmooth;
+                        vPxY_ = vPxY_ * (1.0 - p_.velSmooth) + J.vy * p_.velSmooth;
+                    }
+                } else {
+                    haveVpx_ = false;
+                }
                 // everything below happens in COUNTS space (and in pixels through gx, gy): the same pixel error must give the same correction wherever the pointer is
-                const V2 vc = toCounts(vT_);  // fingertip velocity in counts per frame
+                const V2 vc = pxPath ? V2{vPxX_ / J.gx, vPxY_ / J.gy} : toCounts(vT_);  // fingertip velocity in counts per frame
                 const double spd = std::hypot(vc.a * J.gx, vc.b * J.gy) / J.pxPerRad;
                 // feed-forward only once the fingertip is really moving : at rest the velocity estimate is mostly hand-tracking noise
                 const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
@@ -200,7 +228,7 @@ public:
                     const double sc = std::max(std::fabs(kx), std::fabs(ky)) > p_.leadClip ? p_.leadClip / std::max(std::fabs(kx), std::fabs(ky)) : 1.0;
                     fc = fc * sc;
                 }
-                V2 ec = toCounts(target - xh) + fc;  // error in counts (feed-forward included)
+                V2 ec = pxPath ? V2{J.ex / J.gx, J.ey / J.gy} + fc : toCounts(Diff(target, xh)) + fc;  // error in counts (feed-forward included)
                 o.error = V2{J.a * ec.a + J.b * ec.b, J.c * ec.a + J.d * ec.b};
                 o.errUnits = std::hypot(ec.a * J.gx, ec.b * J.gy);
                 {
@@ -218,7 +246,7 @@ public:
                 }
                 const double tg[2] = {target.a, target.b};
                 for (int ax = 0; ax < 2; ++ax)
-                    if (blockUntil_[ax] > sq && std::fabs(tg[ax] - blockTarget_[ax]) > p_.satReleaseRad) blockUntil_[ax] = 0;
+                    if (blockUntil_[ax] > sq && std::fabs(ax == 0 ? Diff({tg[0], 0}, {blockTarget_[0], 0}).a : tg[ax] - blockTarget_[ax]) > p_.satReleaseRad) blockUntil_[ax] = 0;
                 const double want[2] = {p_.kControl * ec.a, p_.kControl * ec.b};
                 int out[2] = {0, 0};
                 for (int ax = 0; ax < 2; ++ax) {
@@ -237,12 +265,19 @@ public:
                 dy = out[1];
             } else {
                 haveT_ = false;  // hand lost: no velocity memory, no command
+                haveVpx_ = false;
             }
         }
         dx += extraDx;
         dy += extraDy;
-        cumA_[Slot(sq)] = prev.a + J.a * dx + J.b * dy;  // angle increments caused by this frame's counts (incl. the caller's extra counts)
-        cumB_[Slot(sq)] = prev.b + J.c * dx + J.d * dy;
+        if (J.pxValid && J.inc && (dx != 0 || dy != 0)) {  // exact increment (near the pole the linear J is off by a lot for a 100-count step)
+            const V2 d = J.inc(dx, dy);
+            cumA_[Slot(sq)] = prev.a + d.a;
+            cumB_[Slot(sq)] = prev.b + d.b;
+        } else {
+            cumA_[Slot(sq)] = prev.a + J.a * dx + J.b * dy;  // angle increments caused by this frame's counts (incl. the caller's extra counts)
+            cumB_[Slot(sq)] = prev.b + J.c * dx + J.d * dy;
+        }
         o.dx = dx;
         o.dy = dy;
         return o;
@@ -296,7 +331,8 @@ private:
     }
 
     ServoParams p_;
-    bool started_ = false, haveX0_ = false, haveT_ = false, satFlag_ = false;
+    bool started_ = false, haveX0_ = false, haveT_ = false, satFlag_ = false, haveVpx_ = false;
+    double vPxX_ = 0, vPxY_ = 0;
     int64_t firstSeq_ = 0, lastSeq_ = -1;
     double cumA_[kHist] = {}, cumB_[kHist] = {};
     V2 x0_, bias_, lastInnov_, tPrev_, vT_, lastPtr_;
