@@ -88,6 +88,14 @@ struct Sim {
     double Gauss() { double a = 0; for (int i = 0; i < 12; ++i) { nrng ^= nrng >> 12; nrng ^= nrng << 25; nrng ^= nrng >> 27; a += static_cast<double>((nrng * 2685821657736338717ull) >> 11) / 9007199254740992.0; } return a - 6.0; }
     bool buttonDown = false;
     std::vector<std::string> logs;
+    double plantRotDeg = 0.0;           // la reponse de MSFS aux comptes est tournee de cet angle dans le plan de l'image (essai reel : -50 deg avec la tete penchee de 73 deg)
+    double plantGainY = 1.0;            // gain en y relatif au gain en x (essai reel : x1.1 en x pour x1.3 en y)
+    bool grabOnPress = false;           // MSFS « saisit » la commande sous le pointeur a l'appui : bouton enfonce, les comptes deplacent le levier et le pointeur reste fige
+    long long leverX = 0, leverY = 0;   // comptes cumules recus par le levier saisi
+    long long countsWhileDown = 0;      // somme des |dx| + |dy| envoyes aux appels ou le bouton est enfonce (apres l'evenement de l'appel)
+    double maxPtrMoveWhileDown = 0.0;   // distance maximale (px) du pointeur a sa position a l'appui, bouton enfonce
+    Px pressPx;                         // position du pointeur (px) a l'appui
+    std::vector<double> pressErr;       // ecart reel (px) pointeur - bout du doigt a chaque appui
 
     Sim() {
         view.fov = {-0.94f, 0.70f, 0.77f, -0.96f};
@@ -186,10 +194,16 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
             if (j < 0 || s.delayOf[static_cast<size_t>(j)] != dj) continue;
             const auto c = s.cnt[static_cast<size_t>(j)];
             if (c.first != 0 || c.second != 0) {
-                if (s.pxPlant) {
+                if (s.grabOnPress && s.buttonDown) {
+                    s.leverX += c.first;  // le levier saisi suit la souris, le pointeur reste fige
+                    s.leverY += c.second;
+                } else if (s.pxPlant) {
                     Px q = s.PixelOf(s.PointerWorld());
-                    q.x += s.TrueGain() * kPxPerRad * c.first;
-                    q.y += s.TrueGain() * kPxPerRad * c.second;
+                    const double g = s.TrueGain() * kPxPerRad;
+                    const double u = g * c.first, v = g * s.plantGainY * c.second;
+                    const double rr = s.plantRotDeg * 3.14159265358979 / 180.0, cr = std::cos(rr), sr = std::sin(rr);
+                    q.x += u * cr - v * sr;
+                    q.y += u * sr + v * cr;
                     const Ang an = AnglesOf(RayDir(s.view, q));
                     s.ptr = {an.yaw, an.pitch};
                 } else {
@@ -255,6 +269,14 @@ Metrics Run(Sim& s, int n, const std::function<Frame(int)>& script) {
         }
         const Px pp = s.PixelOf(s.PointerWorld()), fp = s.PixelOf(trueTip);
         m.err.push_back(std::hypot(pp.x - fp.x, pp.y - fp.y));
+        if (out.buttonEvent == 1) {
+            s.pressPx = pp;
+            s.pressErr.push_back(m.err.back());
+        }
+        if (s.buttonDown) {
+            s.countsWhileDown += std::abs(out.dx) + std::abs(out.dy);
+            s.maxPtrMoveWhileDown = std::max(s.maxPtrMoveWhileDown, std::hypot(pp.x - s.pressPx.x, pp.y - s.pressPx.y));
+        }
     }
     return m;
 }
@@ -1125,4 +1147,181 @@ TEST(ServoBrain_saut_de_la_cible_changement_de_main_pas_de_depassement) {
         CHECK(over < 40.0);
         CHECK(settled / fps < 1.2);
     }
+}
+
+// ---- plant tourne / anisotrope, clic tenu, levier saisi, clic pres du pointeur detecte ----
+
+namespace {
+
+double Smooth(double t) {
+    t = std::min(1.0, std::max(0.0, t));
+    return 10 * t * t * t - 15 * t * t * t * t + 6 * t * t * t * t * t;
+}
+
+// Brain en suivi, regle comme en production (pas de mesure du gain).
+void SetupProd(Sim& s) {
+    s.brain.SetAutoProbe(false);
+    s.brain.Recalibrate();  // (le constructeur du Sim a active la mesure) : puis on la desactive proprement
+    s.brain.SetAutoProbe(false);
+    s.brain.Reset();
+}
+
+// Doigt au repos, trois gestes doux de ~0.1 rad dans des directions differentes separes de 1.5 s de repos, puis repos.
+void RunRotatedPlant(const char* label, double rotDeg, double ratio, double gainY, double pitchDeg) {
+    Sim s;
+    SetupProd(s);
+    s.plantRotDeg = rotDeg;
+    s.gainRatio = ratio;
+    s.plantGainY = gainY;
+    s.tipNoiseM = 0.001;
+    const double th = pitchDeg * 3.14159265358979 / 180.0;
+    s.view.pose.q = {static_cast<float>(std::sin(th / 2)), 0.0f, 0.0f, static_cast<float>(std::cos(th / 2))};
+    s.ptr = {0.30, th + 0.1};
+    const V2 base{0.05, th - 0.05};
+    const int starts[3] = {450, 630, 810};
+    const V2 deltas[3] = {{-0.10, 0.0}, {0.0, -0.08}, {0.08, 0.06}};
+    const Metrics m = Run(s, 1100, [&](int k) {
+        Frame f;
+        V2 p = base;
+        for (int i = 0; i < 3; ++i) {
+            const double e = Smooth((k - starts[i]) / 45.0);
+            p.a += deltas[i].a * e;
+            p.b += deltas[i].b * e;
+        }
+        f.finger = p;
+        return f;
+    });
+    const double r1 = MaxErr(m, 570, 630), r2 = MaxErr(m, 750, 810), r3 = MaxErr(m, 1040, 1100);
+    long long counts = 0;
+    for (int k = 1000; k < 1100; ++k) counts += std::abs(s.cnt[static_cast<size_t>(k)].first) + std::abs(s.cnt[static_cast<size_t>(k)].second);
+    std::printf("      %s : repos max %.1f / %.1f / %.1f px, %lld comptes sur les 100 dernieres images, mode %d\n", label, r1, r2, r3, counts, static_cast<int>(s.brain.Mode()));
+    CHECK(r1 < 10.0);
+    CHECK(r2 < 10.0);
+    CHECK(r3 < 10.0);
+    CHECK(counts < 60);
+}
+
+// Pincement a l'appel 400, immobile jusqu'a 415, doigt de +0.08 rad en x en 40 images, tenue jusqu'a 475, relache ; arret a 560.
+struct DragResult {
+    double fingerDx = 0.0, errDragEnd = 0.0, errFinal = 0.0;
+    bool lost = false;
+};
+
+DragResult RunDrag(Sim& s) {
+    SetupProd(s);
+    const V2 f0{0.05, -0.12}, f1{0.13, -0.12};
+    const Px p0 = s.PixelOf(s.WorldPoint(f0, 0.45)), p1 = s.PixelOf(s.WorldPoint(f1, 0.45));
+    const Metrics m = Run(s, 560, [&](int k) {
+        Frame f;
+        f.pinch = k >= 400 && k < 475;
+        const double e = Smooth((k - 415) / 40.0);
+        f.finger = {f0.a + (f1.a - f0.a) * e, f0.b};
+        return f;
+    });
+    DragResult r;
+    r.fingerDx = p1.x - p0.x;
+    r.errDragEnd = m.err[470];
+    r.errFinal = MaxErr(m, 550, 560);
+    for (const std::string& l : s.logs) r.lost = r.lost || l.find("ne suit plus les comptes") != std::string::npos;
+    return r;
+}
+
+}  // namespace
+
+TEST(ServoBrain_plant_tourne_de_50_deg_le_pointeur_ne_tourne_pas_autour_du_doigt) {
+    RunRotatedPlant("plant -50 deg, gain x1.1 / y x1.2", -50.0, 1.1, 1.2, 0.0);
+}
+
+TEST(ServoBrain_plant_tourne_de_60_deg_dans_l_autre_sens_le_pointeur_ne_tourne_pas_autour_du_doigt) {
+    RunRotatedPlant("plant +60 deg, gain x0.9 / y x1.2", 60.0, 0.9, 1.2, 0.0);
+}
+
+TEST(ServoBrain_tete_penchee_de_70_deg_et_plant_tourne_de_50_deg) {
+    RunRotatedPlant("tete -70 deg, plant -50 deg, gain x1.1 / y x1.2", -50.0, 1.1, 1.2, -70.0);
+}
+
+TEST(ServoBrain_clic_tenu_le_pointeur_ne_bouge_pas) {
+    Sim s;
+    SetupProd(s);
+    s.plantRotDeg = -40.0;
+    s.tipNoiseM = 0.0015;
+    const Metrics m = Run(s, 640, [](int k) {
+        Frame f;
+        f.pinch = k >= 450 && k < 490;
+        const double drift = 0.008 * Smooth((k - 450) / 40.0);  // ~10 px sur la tenue
+        f.finger = {0.05 + drift, -0.12};
+        return f;
+    });
+    std::printf("      clic tenu : %d/%d, %lld comptes bouton enfonce, pointeur deplace au plus de %.1f px, ecart final %.1f px\n", s.downs, s.ups, s.countsWhileDown, s.maxPtrMoveWhileDown, MaxErr(m, 600, 640));
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+    CHECK(s.countsWhileDown <= 2);
+    CHECK(s.maxPtrMoveWhileDown < 4.0);
+}
+
+TEST(ServoBrain_pincement_qui_glisse_un_peu_ne_tire_pas_le_bouton) {
+    Sim s;
+    SetupProd(s);
+    s.plantRotDeg = -40.0;
+    s.tipNoiseM = 0.0015;
+    const Metrics m = Run(s, 640, [](int k) {
+        Frame f;
+        f.pinch = k >= 450 && k < 490;
+        const double drift = 0.012 * Smooth((k - 460) / 25.0);  // ~15 px pendant la tenue
+        f.finger = {0.05 + drift, -0.12};
+        return f;
+    });
+    std::printf("      pincement qui glisse : %d/%d, %lld comptes bouton enfonce, pointeur deplace au plus de %.1f px, ecart final %.1f px\n", s.downs, s.ups, s.countsWhileDown, s.maxPtrMoveWhileDown, MaxErr(m, 600, 640));
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+    CHECK(s.countsWhileDown <= 2);
+}
+
+TEST(ServoBrain_glisser_un_levier_saisi_le_levier_suit_le_doigt) {
+    Sim s;
+    s.grabOnPress = true;
+    const DragResult r = RunDrag(s);
+    const double expected = r.fingerDx / (s.TrueGain() * kPxPerRad);
+    std::printf("      levier saisi : %d/%d, levier (%lld, %lld) comptes pour %.0f attendus (doigt %.0f px), pointeur fige a %.1f px max, ecart final %.1f px, \"ne suit plus\" %d\n", s.downs, s.ups, s.leverX, s.leverY, expected,
+                r.fingerDx, s.maxPtrMoveWhileDown, r.errFinal, r.lost);
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+    CHECK(expected * s.leverX > 0);
+    CHECK(std::fabs(s.leverX - expected) < 0.35 * std::fabs(expected));
+    CHECK(std::fabs(static_cast<double>(s.leverY)) < 0.2 * std::fabs(expected));
+    CHECK(!r.lost);
+    CHECK(r.errFinal < 10.0);
+}
+
+TEST(ServoBrain_glisser_sans_saisie_le_pointeur_suit_le_doigt) {
+    Sim s;
+    s.grabOnPress = false;
+    const DragResult r = RunDrag(s);
+    std::printf("      glisser sans saisie : %d/%d, ecart en fin de glisser %.1f px, ecart final %.1f px\n", s.downs, s.ups, r.errDragEnd, r.errFinal);
+    CHECK_EQ(s.downs, 1);
+    CHECK_EQ(s.ups, 1);
+    CHECK(r.errDragEnd < 40.0);
+    CHECK(r.errFinal < 8.0);
+}
+
+TEST(ServoBrain_pointeur_teleporte_juste_avant_un_pincement_le_clic_se_fait_pres_du_doigt) {
+    Sim s;
+    SetupProd(s);
+    s.teleportAt = 498;
+    s.teleportBy = {0.3, 0.05};
+    const Metrics m = Run(s, 760, [](int k) {
+        Frame f;
+        f.pinch = k >= 500 && k < 560;
+        return f;
+    });
+    double worst = 0;
+    for (const double e : s.pressErr) worst = std::max(worst, e);
+    std::printf("      teleportation avant pincement : %d appui(s), pire ecart reel a l'appui %.1f px, ecart final %.1f px%s\n", s.downs, worst, MaxErr(m, 700, 760), s.downs == 0 ? " (aucun clic)" : "");
+    CHECK(s.downs <= 1);
+    CHECK_EQ(s.downs, s.ups);
+    CHECK(worst < 40.0);
+}
+
+TEST(ServoBrain_plant_tourne_de_75_deg_le_pointeur_ne_tourne_pas_autour_du_doigt) {
+    RunRotatedPlant("plant -75 deg, gain x1.1 / y x1.3", -75.0, 1.1, 1.3, -70.0);
 }

@@ -2,6 +2,24 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.39] - 2026-11-13
+
+### Corrige
+- **Le pointeur qui tourne autour du doigt quand on regarde vers le bas** (essai du 13 nov., 5'40 de la video, tete a -73 deg) : en analysant 760 couples « comptes envoyes / deplacement vu » de la trace,
+  la reponse de MSFS n'est PAS toujours alignee sur les axes de l'image : tete a -70/-75 deg, un compte vers la droite deplacait le pointeur de biais, la reponse etait **tournee d'environ -50 deg**
+  (et le gain etait de 1.1 px/compte en x, 1.3 en y). La regulation supposait des axes alignes : le pointeur partait en spirale autour du doigt. Maintenant la couche **mesure en continu cette
+  reponse** (matrice 2x2 en pixels par compte, estimee sur les paires de detections, en ecartant les paires douteuses : pointeur fige, saut, latence ambigue) et commande avec elle.
+  Simulation : reponse tournee de -75 deg, tete a -70 deg : pointeur tenu a 4.5 px du doigt (l'ancien code perdait le pointeur). Le journal donne la reponse estimee chaque seconde
+  (« reponse [..] px/compte (rotation .. deg) ») et `servo_trace.csv` a 5 colonnes de plus (roulis de la tete, matrice).
+- **Les boutons qui s'activent puis se desactivent dans la foulee** (4'20 de la video) : pendant un clic tenu, la regulation continuait de corriger le pointeur (jusqu'a 50 px de deplacement
+  pour 5 px de doigt), et MSFS prenait ce deplacement bouton enfonce pour un glisser (l'interrupteur revenait). Maintenant **bouton enfonce = pointeur fige** tant que le doigt n'a pas
+  vraiment bouge (28 px) ; le clic n'est envoye que lorsque le pointeur est pose (aucun compte en vol) et que la derniere image l'a vu. Le pincement suit la base de l'index lissee (moins de tremblement).
+- **Le cliquer-glisser qui ne poussait pas les leviers / interrupteurs** (1'24-2'00) : sur une commande saisie par MSFS, le pointeur reste fige pendant le glisser ; la regulation, qui ne le
+  voyait pas bouger, envoyait des centaines de comptes puis se mettait en pause 2 s (« le pointeur ne suit plus les comptes »). Maintenant, une fois le doigt parti, les comptes **recopient
+  le deplacement du doigt** (comme une vraie souris), sans pause ; au relachement, le modele repart du pointeur vu. Journal : « glisser (le doigt a quitte le point d'appui) » / « fin du glisser ».
+- **Clic tombe loin du doigt** (un clic est parti avec le pointeur a 330 px du doigt) : le pointeur VU doit maintenant etre a moins de 40 px du doigt, pas seulement le modele.
+- Tests : 167 (reponse tournee de -50, +60, -75 deg, clic tenu avec un doigt qui tremble, levier saisi, glisser libre, pointeur deplace par MSFS juste avant un pincement). Simulation etendue par un agent.
+
 ## [0.0.38] - 2026-11-12
 
 ### Corrige

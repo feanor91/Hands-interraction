@@ -47,6 +47,21 @@ constexpr uint64_t kFreeAfterPinchMs = 1200;   // pas de molette libre dans ce t
 constexpr uint64_t kFreeIdleMs = 1500;         // la molette s'arrete si le poignet ne bouge plus depuis ce temps
 constexpr float kLockMaxBackM = 0.03f;       // le verrou ne remonte pas a plus de 3 cm du doigt (le geste de pincement en deplace de 1 a 2)
 constexpr float kPrelatchOnM = 0.034f, kPrelatchOffM = 0.038f;  // distance pouce-doigt qui fige le pointeur (le geste de pincement deplace deja le doigt) / le libere
+// Appui et glisser (essai du 13 nov.) : pendant un clic tenu, la boucle continuait de corriger le pointeur (jusqu'a 50 px pour 5 px de doigt) et MSFS le prenait pour un
+// glisser (interrupteur qui revient aussitot) ; sur un levier SAISI par MSFS le pointeur reste fige pendant le glisser, la boucle envoyait des centaines de comptes puis se
+// mettait en pause 2 s (« ne suit plus les comptes »). Maintenant : bouton enfonce = aucun compte tant que le doigt n'a pas bouge de kDragStartPx ; au-dela, les comptes
+// recopient le deplacement du doigt (boucle ouverte, comme une vraie souris) ; au relachement le modele est re-ancre sur le prochain pointeur vu.
+constexpr double kDragStartPx = 28.0;
+constexpr uint64_t kReanchorWaitMs = 500;      // apres un glisser : pas de commande de suivi tant que le pointeur n'a pas ete revu (au plus ce temps)
+constexpr double kClickMaxDetPx = 40.0;        // pour cliquer, le pointeur VU (pas seulement le modele) doit etre a moins de ca du bout du doigt
+// Estimation en ligne de la reponse de MSFS (pixels par compte, matrice 2x2) a partir des paires de detections : essai du 13 nov., tete a -73 deg, la reponse etait tournee de
+// -50 deg (gain 1.1 en x, 1.3 en y) et la boucle faisait tourner le pointeur autour du doigt.
+constexpr double kPlantMinCounts = 10.0;       // comptes atterris entre deux detections en dessous desquels la paire n'apprend rien (bruit de detection)
+constexpr double kPlantLambda = 0.92;          // oubli par paire retenue (~12 paires de memoire)
+constexpr double kPlantP0 = 0.25;              // confiance initiale (regresseur normalise) : ~4 paires
+constexpr double kPlantPMax = 1.0;
+constexpr double kPlantMinGain = 0.4, kPlantMaxGain = 2.6;  // px / compte (valeurs singulieres)
+constexpr double kPlantMaxRotDeg = 100.0;
 }  // namespace
 
 void ServoBrain::Log(int level, const char* fmt, ...) {
@@ -73,23 +88,89 @@ bool ServoBrain::ComputeJac(const EyeView& view, V2 ang, Jac* out) const {
         while (d < -3.14159265358979) d += 6.28318530717959;
         return d;
     };
-    const double gx = std::fabs(params_.radPerCountX) * pxPerRad_, gy = std::fabs(params_.radPerCountY) * pxPerRad_;  // pixels per count
-    out->a = wrap(ax.a - a0.a) * gx;
-    out->c = (ax.b - a0.b) * gx;
-    out->b = wrap(ay.a - a0.a) * gy;
-    out->d = (ay.b - a0.b) * gy;  // dy > 0 moves the pointer DOWN: pitch decreases
-    out->gx = gx;
-    out->gy = gy;
+    // angle per image pixel at the pointer, times the plant (pixels per count; dy > 0 moves the pointer DOWN: pitch decreases)
+    const double yx = wrap(ax.a - a0.a), yy = wrap(ay.a - a0.a), px_ = ax.b - a0.b, py_ = ay.b - a0.b;
+    out->a = yx * M_[0] + yy * M_[2];
+    out->b = yx * M_[1] + yy * M_[3];
+    out->c = px_ * M_[0] + py_ * M_[2];
+    out->d = px_ * M_[1] + py_ * M_[3];
+    out->gx = std::hypot(M_[0], M_[2]);
+    out->gy = std::hypot(M_[1], M_[3]);
+    out->haveM = true;
+    out->m11 = M_[0];
+    out->m12 = M_[1];
+    out->m21 = M_[2];
+    out->m22 = M_[3];
     out->pxPerRad = pxPerRad_;
     out->valid = true;
     return true;
 }
 
-long long ServoBrain::CumAt(const long long* arr, uint64_t imageSeq) const {
-    const int64_t k = static_cast<int64_t>(imageSeq) - params_.latencyFrames;
+long long ServoBrain::CumAt(const long long* arr, uint64_t imageSeq, int lat) const {
+    const int64_t k = static_cast<int64_t>(imageSeq) - (lat < 0 ? params_.latencyFrames : lat);
     if (k > static_cast<int64_t>(seq_)) return arr[seq_ % 64];
     if (k + 62 < static_cast<int64_t>(seq_)) return arr[(seq_ + 1) % 64];  // trop vieux : la plus ancienne valeur connue
     return arr[static_cast<uint64_t>(k) % 64];
+}
+
+void ServoBrain::PlantInit() {
+    const double gx = std::fabs(params_.radPerCountX) * pxPerRad_, gy = std::fabs(params_.radPerCountY) * pxPerRad_;
+    M_[0] = gx;
+    M_[1] = 0;
+    M_[2] = 0;
+    M_[3] = gy;
+    P_[0] = P_[3] = kPlantP0;
+    P_[1] = P_[2] = 0;
+    haveM_ = true;
+}
+
+double ServoBrain::PlantRotDeg() const { return std::atan2(M_[2] - M_[1], M_[0] + M_[3]) * 57.29577951; }
+
+// Moindres carres recursifs (avec oubli) sur [ox; oy] = M [cx; cy] : les deux lignes de M partagent le regresseur (les comptes), donc une seule covariance P (2x2).
+// Paires ecartees : pointeur qui ne bouge pas alors que des comptes ont atterri (mur, levier saisi, curseur fige), saut (re-ancrage par MSFS, fausse detection).
+void ServoBrain::PlantFit(double cx, double cy, double ox, double oy) {
+    if (!haveM_) PlantInit();
+    if (std::hypot(cx, cy) < kPlantMinCounts) return;
+    const double prx = M_[0] * cx + M_[1] * cy, pry = M_[2] * cx + M_[3] * cy;
+    const double pn = std::hypot(prx, pry), on = std::hypot(ox, oy);
+    const double ang = std::atan2(prx * oy - pry * ox, prx * ox + pry * oy) * 57.29577951;
+    if (on < 0.35 * pn || on > 2.0 * pn + 25.0 || std::fabs(ang) > 100.0) {
+        ++plantRejects_;
+        return;
+    }
+    if (std::fabs(ang) > 25.0) {  // la reponse a change (MSFS re-ancre son ecran virtuel quand la tete a tourne) : on rouvre l'estimation
+        for (double& v : P_) v *= 4.0;
+    }
+    // regresseur normalise : chaque paire compte pour une mesure de DIRECTION et de gain, quelle que soit sa taille (une erreur systematique grandit avec les comptes)
+    const double cn = std::hypot(cx, cy);
+    cx /= cn;
+    cy /= cn;
+    ox /= cn;
+    oy /= cn;
+    const double prxN = prx / cn, pryN = pry / cn;
+    double Pc0 = P_[0] * cx + P_[1] * cy, Pc1 = P_[2] * cx + P_[3] * cy;
+    const double den = kPlantLambda + cx * Pc0 + cy * Pc1;
+    const double k0 = Pc0 / den, k1 = Pc1 / den;
+    const double ex = ox - prxN, ey = oy - pryN;
+    double Mn[4] = {M_[0] + ex * k0, M_[1] + ex * k1, M_[2] + ey * k0, M_[3] + ey * k1};
+    double Pn[4] = {(P_[0] - Pc0 * Pc0 / den) / kPlantLambda, (P_[1] - Pc0 * Pc1 / den) / kPlantLambda, (P_[2] - Pc1 * Pc0 / den) / kPlantLambda,
+                    (P_[3] - Pc1 * Pc1 / den) / kPlantLambda};
+    const double tr = Pn[0] + Pn[3];
+    if (tr > kPlantPMax)
+        for (double& v : Pn) v *= kPlantPMax / tr;
+    for (int i = 0; i < 4; ++i) P_[i] = Pn[i];
+    // M plausible : pas de miroir, gains (valeurs singulieres) bornes, rotation bornee ; sinon on garde l'ancienne
+    const double det = Mn[0] * Mn[3] - Mn[1] * Mn[2];
+    const double fro2 = Mn[0] * Mn[0] + Mn[1] * Mn[1] + Mn[2] * Mn[2] + Mn[3] * Mn[3];
+    const double disc = std::sqrt(std::max(0.0, fro2 * fro2 - 4.0 * det * det));
+    const double sMax = std::sqrt((fro2 + disc) * 0.5), sMin = std::sqrt(std::max(0.0, (fro2 - disc) * 0.5));
+    const double rot = std::atan2(Mn[2] - Mn[1], Mn[0] + Mn[3]) * 57.29577951;
+    if (det <= 0.0 || sMin < kPlantMinGain || sMax > kPlantMaxGain || std::fabs(rot) > kPlantMaxRotDeg) {
+        ++plantRejects_;
+        return;
+    }
+    for (int i = 0; i < 4; ++i) M_[i] = Mn[i];
+    ++plantFits_;
 }
 
 void ServoBrain::ResetStuck() {
@@ -128,9 +209,15 @@ void ServoBrain::Reset() {
     lastJumps_ = 0;
     std::fill(std::begin(cumX_), std::end(cumX_), 0LL);
     std::fill(std::begin(cumY_), std::end(cumY_), 0LL);
+    std::fill(std::begin(absCum_), std::end(absCum_), 0LL);
     stuckBaseX_ = stuckBaseY_ = 0;
     prevDist_[0] = prevDist_[1] = 1.0f;
     errNowPx_ = 1e9;
+    fitPrevValid_ = false;
+    noFitBeforeSeq_ = 0;
+    pressTgtValid_ = dragActive_ = dragSent_ = false;
+    dragRemX_ = dragRemY_ = 0;
+    reanchorPending_ = false;
     tilePos_ = 0;
     badSince_ = 0;
     tracking_ = false;
@@ -140,6 +227,7 @@ void ServoBrain::Reset() {
 
 void ServoBrain::Recalibrate() {
     params_ = ServoParams();
+    haveM_ = false;
     Reset();
     probeDone_ = false;  // apres Reset() (qui le remet selon autoProbe_)
     Log(0, "servo : nouvelle mesure du gain demandee");
@@ -333,9 +421,38 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
         if (ok) probe_.OnMeasurement(r.imageSeq, chart);
     }
     if (mode_ == BrainMode::Track) {
-        // apres une perte d'au moins ~6 mesures, le modele n'est plus fiable : une detection nette (score >= 0.6) le remet d'aplomb d'un coup
-        if (missedBefore >= 6 && c[0].score >= 0.6) ctl_.Reanchor(r.imageSeq, ang);
-        else ctl_.OnMeasurement(r.imageSeq, ang);
+        // reponse de MSFS : deplacement vu entre deux detections rapprochees (les deux projetees dans la vue de la plus recente : la tete peut bouger, le pointeur est fixe dans le
+        // monde) contre les comptes qui ont pu atterrir entre les deux images. Pas pendant un appui (glisser, levier saisi) ni juste apres.
+        if (fitPrevValid_ && r.imageSeq > fitPrevSeq_ && r.imageSeq - fitPrevSeq_ <= 8 && fitPrevSeq_ >= noFitBeforeSeq_ && !down_ && !reanchorPending_) {
+            Px p0, p1;
+            if (Project(r.view, r.view.pose.p + DirOf({fitPrevAng_.a, fitPrevAng_.b}), &p0) && Project(r.view, r.view.pose.p + DirOf({ang.a, ang.b}), &p1)) {
+                const int L0 = params_.latencyFrames;
+                const auto landed = [&](int lat, double* cx, double* cy) {
+                    *cx = static_cast<double>(CumAt(cumX_, r.imageSeq, lat) - CumAt(cumX_, fitPrevSeq_, lat));
+                    *cy = static_cast<double>(CumAt(cumY_, r.imageSeq, lat) - CumAt(cumY_, fitPrevSeq_, lat));
+                };
+                double cx, cy, ax, ay, bx, by;
+                landed(L0, &cx, &cy);
+                landed(std::max(0, L0 - 1), &ax, &ay);
+                landed(L0 + 1, &bx, &by);
+                // paire ambigue : les comptes atterris dependent beaucoup de la latence exacte (debut / fin d'un grand deplacement) ; une latence fausse d'une image fausserait M
+                if (std::hypot(bx - ax, by - ay) <= 0.3 * std::hypot(cx, cy)) PlantFit(cx, cy, p1.x - p0.x, p1.y - p0.y);
+            }
+        }
+        fitPrevValid_ = true;
+        fitPrevSeq_ = r.imageSeq;
+        fitPrevAng_ = ang;
+        // apres un glisser (levier saisi : le pointeur est reste fige pendant que les comptes partaient dans le levier) : on repart du pointeur vu
+        if (reanchorPending_ && r.imageSeq >= reanchorAfterSeq_ + static_cast<uint64_t>(std::max(0, params_.latencyFrames))) {
+            ctl_.Reanchor(r.imageSeq, ang);
+            reanchorPending_ = false;
+            ResetStuck();
+        } else if (missedBefore >= 6 && c[0].score >= 0.6) {
+            // apres une perte d'au moins ~6 mesures, le modele n'est plus fiable : une detection nette (score >= 0.6) le remet d'aplomb d'un coup
+            ctl_.Reanchor(r.imageSeq, ang);
+        } else {
+            ctl_.OnMeasurement(r.imageSeq, ang);
+        }
     }
     if (mode_ == BrainMode::Acquire && stable_ >= 4) {
         if (!probeDone_) {
@@ -380,6 +497,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     ++seq_;
     cumX_[seq_ % 64] = cumX_[(seq_ + 63) % 64];
     cumY_[seq_ % 64] = cumY_[(seq_ + 63) % 64];
+    absCum_[seq_ % 64] = absCum_[(seq_ + 63) % 64];
     if (mode_ == BrainMode::Acquire) {
         if (!acquireSinceMs_) acquireSinceMs_ = in.nowMs;
     } else {
@@ -387,6 +505,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     }
     const double tl = std::tan(static_cast<double>(in.view.fov.left)), tr = std::tan(static_cast<double>(in.view.fov.right));
     pxPerRad_ = (in.view.rect.w > 0 && tr > tl) ? in.view.rect.w / (tr - tl) : 1215.0;
+    if (!haveM_) PlantInit();
 
     // 0) bout du doigt lisse (One Euro) : le suivi des mains tremble de 1 a 3 mm, soit 3 a 8 px a 40 cm, et le pointeur « dansait » ; lisse a l'arret, reactif en mouvement
     {
@@ -399,9 +518,11 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         for (int k = 0; k < 2; ++k) {
             if (!in.hand[k].usable) {
                 tipFilter_[k].Reset();
+                knFilter_[k].Reset();
                 continue;
             }
             in.hand[k].tip = tipFilter_[k].Filter(in.hand[k].tip, dt, tipMinHz_, tipBeta_);
+            in.hand[k].knuckle = knFilter_[k].Filter(in.hand[k].knuckle, dt, tipMinHz_, tipBeta_);  // la cible d'un pincement suit la base de l'index : meme lissage
         }
     }
 
@@ -575,6 +696,8 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 stable_ = 0;
             } else {
                 probeDone_ = true;
+                haveM_ = false;  // repart du gain mesure
+                PlantInit();
                 mode_ = BrainMode::Track;
                 ctl_ = ServoController(params_);
                 haveDet_ = haveDet_ && in.nowMs - lastDetMs_ < 1000;
@@ -595,42 +718,88 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         // pointeur introuvable depuis un moment : le modele n'est plus fiable (le pointeur est peut-etre contre un mur de MSFS, hors de la vue) et le piloter a l'aveugle
         // l'envoie taper contre le mur (essai du 12 nov. : 150 comptes par image pendant 3.7 s). On ne commande plus que le reveil du curseur ; la recherche continue.
         const bool staleDet = haveDet_ && in.nowMs - lastDetMs_ > kStaleHoldMs;
+        if (reanchorPending_ && in.nowMs > reanchorUntilMs_) {  // pointeur pas revu apres le glisser : on reprend quand meme
+            reanchorPending_ = false;
+            ResetStuck();
+        }
         Jac jac;
         const bool haveJ = ctl_.HaveModel() && ComputeJac(in.view, ctl_.PredictedNow(), &jac);
-        const bool drive = hand >= 0 && haveFinger_ && !blocked && !staleDet;
-        if (haveJ && drive) {
-            // erreur et vitesse de la cible dans le plan de l'IMAGE courante (exact, sans pole) : voir Jac::pxValid
+        // bouton enfonce : pas de suivi en boucle fermee (voir kDragStartPx) ; apres un glisser : pas de suivi tant que le modele n'est pas re-ancre
+        const bool holding = down_;
+        const bool drive = hand >= 0 && haveFinger_ && !blocked && !staleDet && !holding && !reanchorPending_;
+        const emulation::Vec3 org = in.view.pose.p;
+        if (haveJ) {
             const V2 xh = ctl_.PredictedNow();
-            const emulation::Vec3 org = in.view.pose.p;
-            Px pxh, ptg;
-            if (Project(in.view, org + DirOf({xh.a, xh.b}), &pxh) && Project(in.view, org + DirOf({target.a, target.b}), &ptg)) {
-                jac.pxValid = true;
-                jac.ex = ptg.x - pxh.x;
-                jac.ey = ptg.y - pxh.y;
-                Px pp;
-                if (tgtPrevValid_ && Project(in.view, org + DirOf({tgtPrev_.a, tgtPrev_.b}), &pp)) {
-                    jac.vx = ptg.x - pp.x;
-                    jac.vy = ptg.y - pp.y;
-                }
-                const double gx = jac.gx, gy = jac.gy;
+            Px pxh;
+            if (Project(in.view, org + DirOf({xh.a, xh.b}), &pxh)) {
+                // increment EXACT du modele pour des comptes envoyes maintenant (plan de l'image courante, reponse estimee M)
+                const double m0 = M_[0], m1 = M_[1], m2 = M_[2], m3 = M_[3];
                 const EyeView view = in.view;
                 jac.inc = [=](double dx, double dy) {
-                    const Px q{pxh.x + gx * dx, pxh.y + gy * dy};
+                    const Px q{pxh.x + m0 * dx + m1 * dy, pxh.y + m2 * dx + m3 * dy};
                     const Ang a1 = AnglesOf(RayDir(view, q));
                     double dyaw = a1.yaw - xh.a;
                     while (dyaw > 3.14159265358979) dyaw -= 6.28318530717959;
                     while (dyaw < -3.14159265358979) dyaw += 6.28318530717959;
                     return V2{dyaw, a1.pitch - xh.b};
                 };
+                Px ptg;
+                if (drive && Project(in.view, org + DirOf({target.a, target.b}), &ptg)) {
+                    // erreur et vitesse de la cible dans le plan de l'IMAGE courante (exact, sans pole) : voir Jac::pxValid
+                    jac.pxValid = true;
+                    jac.ex = ptg.x - pxh.x;
+                    jac.ey = ptg.y - pxh.y;
+                    Px pp;
+                    if (tgtPrevValid_ && Project(in.view, org + DirOf({tgtPrev_.a, tgtPrev_.b}), &pp)) {
+                        jac.vx = ptg.x - pp.x;
+                        jac.vy = ptg.y - pp.y;
+                    }
+                }
             }
         }
+        // appui : glisser seulement si le doigt est vraiment parti (plus de kDragStartPx depuis l'appui, mesure dans la vue courante : la tete peut bouger) ; les comptes
+        // recopient alors son deplacement (boucle ouverte : un levier saisi par MSFS ne deplace pas le pointeur, la boucle fermee s'emballerait)
+        int ddx = 0, ddy = 0;
+        if (holding && hand >= 0 && haveFinger_) {
+            Px pt, p0;
+            if (!pressTgtValid_) {
+                pressTgt_ = target;
+                pressTgtValid_ = true;
+            }
+            if (Project(in.view, org + DirOf({target.a, target.b}), &pt)) {
+                if (!dragActive_ && Project(in.view, org + DirOf({pressTgt_.a, pressTgt_.b}), &p0) && std::hypot(pt.x - p0.x, pt.y - p0.y) > kDragStartPx) {
+                    dragActive_ = true;
+                    dragPrevTgt_ = target;
+                    dragRemX_ = dragRemY_ = 0;
+                    Log(0, "servo : glisser (le doigt a quitte le point d'appui)");
+                }
+                Px pv;
+                if (dragActive_ && Project(in.view, org + DirOf({dragPrevTgt_.a, dragPrevTgt_.b}), &pv)) {
+                    const double vx = pt.x - pv.x, vy = pt.y - pv.y;
+                    const double det = M_[0] * M_[3] - M_[1] * M_[2];
+                    if (std::fabs(det) > 1e-9) {
+                        const double cx = (M_[3] * vx - M_[1] * vy) / det + dragRemX_, cy = (-M_[2] * vx + M_[0] * vy) / det + dragRemY_;
+                        const int lim = std::max(60, std::min(150, static_cast<int>(5400.0 * frameMsEma_ / 1000.0)));
+                        ddx = std::max(-lim, std::min(lim, static_cast<int>(std::lround(cx))));
+                        ddy = std::max(-lim, std::min(lim, static_cast<int>(std::lround(cy))));
+                        dragRemX_ = std::fabs(cx) > lim ? 0.0 : cx - ddx;
+                        dragRemY_ = std::fabs(cy) > lim ? 0.0 : cy - ddy;
+                    }
+                    dragPrevTgt_ = target;
+                }
+            }
+        }
+        if (ddx != 0 || ddy != 0) dragSent_ = true;
         tgtPrev_ = target;
         tgtPrevValid_ = hand >= 0 && haveFinger_;
-        const ServoController::Out o = ctl_.Step(seq_, drive, target, jx, jy, haveJ ? &jac : nullptr);
+        const ServoController::Out o = ctl_.Step(seq_, drive, target, jx + ddx, jy + ddy, haveJ ? &jac : nullptr);
         // cumul des comptes envoyes (hors garde) par numero d'image : sert a savoir ce qui a DEJA pu atterrir dans l'image d'ou vient la derniere detection
         cumX_[seq_ % 64] = cumX_[(seq_ + 63) % 64] + (blocked ? 0 : o.dx - jx);
         cumY_[seq_ % 64] = cumY_[(seq_ + 63) % 64] + (blocked ? 0 : o.dy - jy);
-        if (!blocked) {
+        absCum_[seq_ % 64] = absCum_[(seq_ + 63) % 64] + std::abs(o.dx - jx) + std::abs(o.dy - jy);
+        if (holding || reanchorPending_) {
+            ResetStuck();  // bouton enfonce (levier saisi : le pointeur ne suit pas, c'est voulu) : pas de detection de « pointeur fige »
+        } else if (!blocked) {
             // le pointeur suit-il les comptes ? deplacement commande ATTERRI (comptes envoyes jusqu'a l'image de la detection - latence) contre deplacement vu depuis la reference
             if (ctl_.Jumps() != lastJumps_) {  // le pointeur a saute (re-ancrage par MSFS) : nouvelle reference
                 lastJumps_ = ctl_.Jumps();
@@ -638,7 +807,7 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             }
             if (haveDet_ && in.nowMs - lastDetMs_ < 120) {  // detection FRAICHE seulement : un pointeur non detecte (hors de la vue, ROI a cote) n'est pas un pointeur fige
                 const long long sx = CumAt(cumX_, lastDetSeq_) - stuckBaseX_, sy = CumAt(cumY_, lastDetSeq_) - stuckBaseY_;
-                const double ex = sx * params_.radPerCountX * pxPerRad_, ey = -sy * params_.radPerCountY * pxPerRad_;
+                const double ex = M_[0] * sx + M_[1] * sy, ey = M_[2] * sx + M_[3] * sy;
                 const double mx = lastDetPx_.x - stuckRef_.x, my = lastDetPx_.y - stuckRef_.y;
                 const double en = std::hypot(ex, ey);
                 const double along = en > 1e-6 ? (mx * ex + my * ey) / en : 0.0;
@@ -816,7 +985,19 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     //    le clic tombe a cote), le pincement est arme (commence dans l'image, main choisie), dure au moins 110 ms (pas un parasite du suivi des mains) et n'est pas le geste
     //    d'ouverture du menu (deux mains). Un pincement qui n'a pas pu cliquer dans les 700 ms est abandonne (pas de clic tardif). Un pincement plus court que 110 ms mais
     //    d'au moins 50 ms est un « tap » (clic bref). Pendant un appui, rien de tout cela ne retient plus le bouton (glisser).
-    const bool canClick = mode_ == BrainMode::Track && ctl_.HaveModel() && haveFinger_ && (in.nowMs - lastDetMs_ < kClickFreshMs) && errNowPx_ <= kClickMaxErrPx && blockUntilMs_ <= in.nowMs;
+    // le pointeur VU doit aussi etre pres du doigt : le modele peut se tromper (essai du 13 nov. : un clic parti avec le pointeur a 330 px du doigt, le modele le disait dessous)
+    double detFingerPx = 1e9;
+    if (haveDet_ && haveFinger_) {
+        Px dp;
+        if (Project(in.view, in.view.pose.p + DirOf({lastDetAng_.a, lastDetAng_.b}), &dp)) detFingerPx = std::hypot(dp.x - fingerPx_.x, dp.y - fingerPx_.y);
+    }
+    // ... la derniere lecture l'a trouve (une detection plus ancienne peut dater d'avant un saut du pointeur), et la boucle est posee : les comptes encore en vol
+    // deplaceraient le pointeur sous le bouton enfonce (MSFS le prendrait pour un glisser)
+    const uint64_t back = static_cast<uint64_t>(std::max(0, params_.latencyFrames)) + 1;
+    const long long inFlight = seq_ > back ? absCum_[seq_ % 64] - absCum_[(seq_ - back) % 64] : 0;
+    const bool settled = inFlight <= 2;
+    const bool canClick = mode_ == BrainMode::Track && ctl_.HaveModel() && haveFinger_ && (in.nowMs - lastDetMs_ < kClickFreshMs) && missRun_ <= 1 && errNowPx_ <= kClickMaxErrPx &&
+                          detFingerPx <= kClickMaxDetPx && settled && blockUntilMs_ <= in.nowMs && !reanchorPending_;
     const bool both = bothRaw;
     if (hand >= 0 && edge[hand]) {
         pinchStartMs_ = in.nowMs;
@@ -842,8 +1023,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
                 want = canClick;
                 if (!canClick) {
                     char b[96];
-                    if (mode_ != BrainMode::Track || !ctl_.HaveModel() || in.nowMs - lastDetMs_ >= kClickFreshMs) std::snprintf(b, sizeof b, "pointeur MSFS non detecte");
+                    if (mode_ != BrainMode::Track || !ctl_.HaveModel() || in.nowMs - lastDetMs_ >= kClickFreshMs || missRun_ > 1) std::snprintf(b, sizeof b, "pointeur MSFS non detecte");
                     else if (!haveFinger_) std::snprintf(b, sizeof b, "doigt hors image");
+                    else if (detFingerPx > kClickMaxDetPx && errNowPx_ <= kClickMaxErrPx) std::snprintf(b, sizeof b, "pointeur vu a %.0f px du doigt", detFingerPx);
+                    else if (errNowPx_ <= kClickMaxErrPx && !settled) std::snprintf(b, sizeof b, "pointeur encore en mouvement");
                     else std::snprintf(b, sizeof b, "pointeur a %.0f px du doigt", errNowPx_);
                     skipWhy_ = b;
                 }
@@ -868,7 +1051,22 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         }
     }
     if (out.buttonEvent == 1 && haveFinger_) lastClickFingerPx_ = fingerPx_;
-    if (out.buttonEvent == 0) lastClickUpMs_ = in.nowMs;
+    if (out.buttonEvent == 1) {  // appui : le pointeur est fige a partir d'ici (voir kDragStartPx)
+        pressTgtValid_ = haveFinger_;
+        pressTgt_ = target;
+        dragActive_ = dragSent_ = false;
+    }
+    if (out.buttonEvent == 0) {
+        lastClickUpMs_ = in.nowMs;
+        if (dragSent_) {  // des comptes sont partis bouton enfonce : le pointeur n'est peut-etre plus ou le modele le croit (levier saisi) ; on le re-ancre sur le prochain vu
+            reanchorPending_ = true;
+            reanchorAfterSeq_ = seq_;
+            reanchorUntilMs_ = in.nowMs + kReanchorWaitMs;
+            noFitBeforeSeq_ = seq_ + static_cast<uint64_t>(std::max(0, params_.latencyFrames)) + 1;
+            Log(0, "servo : fin du glisser");
+        }
+        pressTgtValid_ = dragActive_ = dragSent_ = false;
+    }
     if (out.buttonEvent >= 0) Log(0, "servo : bouton %s (pointeur (%.0f,%.0f), doigt (%.0f,%.0f))", out.buttonEvent == 1 ? "ENFONCE" : "relache", lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0);
     // clic differe : des que le pointeur arrive sous le doigt (verrouille), le clic que le pincement voulait faire part
     if (deferTap_ && out.buttonEvent < 0 && !down_ && !pinch && hand == deferHand_ && canClick) {
@@ -936,14 +1134,23 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
             }
         }
         trc.errPx = errNowPx_ < 1e8 ? errNowPx_ : -1.0;
-        trc.insideBits = (inside[0] ? 1 : 0) | (inside[1] ? 2 : 0) | (in.hand[0].usable ? 4 : 0) | (in.hand[1].usable ? 8 : 0) | (prelatched_ ? 16 : 0) | (blockUntilMs_ > in.nowMs ? 32 : 0) | (freeWheel_ ? 64 : 0) | (deferTap_ ? 128 : 0);
+        trc.insideBits = (inside[0] ? 1 : 0) | (inside[1] ? 2 : 0) | (in.hand[0].usable ? 4 : 0) | (in.hand[1].usable ? 8 : 0) | (prelatched_ ? 16 : 0) | (blockUntilMs_ > in.nowMs ? 32 : 0) | (freeWheel_ ? 64 : 0) | (deferTap_ ? 128 : 0) | (dragActive_ ? 256 : 0) |
+                         (reanchorPending_ ? 512 : 0);
         trc.pinchDist = hand >= 0 ? in.hand[hand].pinchDist * 1000.0f : -1.0f;
         {
             const emulation::Vec3 fwd = emulation::Rotate(in.view.pose.q, emulation::Vec3{0.0f, 0.0f, -1.0f});
             const Ang ha = AnglesOf(fwd);
             trc.headYawDeg = ha.yaw * 57.29577951;
             trc.headPitchDeg = ha.pitch * 57.29577951;
+            const emulation::Vec3 rv = emulation::Rotate(in.view.pose.q, emulation::Vec3{1.0f, 0.0f, 0.0f});
+            const emulation::Vec3 up{0.0f, 1.0f, 0.0f};
+            const emulation::Vec3 hr = emulation::Cross(fwd, up);
+            if (emulation::Length(hr) > 1e-4f) {
+                const emulation::Vec3 hrn = emulation::Normalized(hr), hu = emulation::Cross(hrn, fwd);
+                trc.headRollDeg = std::atan2(static_cast<double>(emulation::Dot(rv, hu)), static_cast<double>(emulation::Dot(rv, hrn))) * 57.29577951;
+            }
         }
+        for (int i = 0; i < 4; ++i) trc.plant[i] = M_[i];
         if (haveDet_) {
             trc.detYawDeg = lastDetAng_.a * 57.29577951;
             trc.detPitchDeg = lastDetAng_.b * 57.29577951;
@@ -965,10 +1172,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         const double dt = logT_ ? static_cast<double>(in.nowMs - logT_) / 1000.0 : 1.0;
         const double meanScore = nDet_ ? sumScore_ / nDet_ : 0.0;
         sumScore_ = 0;
-        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), score moyen %.2f, ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, gain %.2f/%.2f px/compte%s%s",
+        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), score moyen %.2f, ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, reponse [%.2f %.2f; %.2f %.2f] px/compte (rotation %.0f deg, %d paires, %d ecartees)%s%s",
             mode_ == BrainMode::Acquire ? "recherche" : (mode_ == BrainMode::Probe ? "mesure" : "suivi"), hand == 1 ? "droite" : (hand == 0 ? "gauche" : "aucune"), nDet_ / dt, nReq_,
             nMiss_, meanScore, errPx_, lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0, nSent_, params_.latencyFrames,
-            params_.radPerCountX * pxPerRad_, -params_.radPerCountY * pxPerRad_, down_ ? ", bouton enfonce" : "", ctl_.Jumps() ? ", sauts du pointeur" : "");
+            M_[0], M_[1], M_[2], M_[3], PlantRotDeg(), plantFits_, plantRejects_, down_ ? (dragActive_ ? ", glisser" : ", bouton enfonce") : "", ctl_.Jumps() ? ", sauts du pointeur" : "");
         nDet_ = nReq_ = nMiss_ = nSent_ = 0;
         logT_ = in.nowMs;
     }

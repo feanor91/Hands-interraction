@@ -67,9 +67,12 @@ struct BrainTrace {
     double detX = -1, detY = -1, detAgeMs = -1;  // derniere detection du pointeur
     double predX = -1, predY = -1;       // position du pointeur selon le modele
     double errPx = -1;                   // ecart cible / modele
-    int insideBits = 0;                  // 1/2 : doigt gauche/droit dans l'image, 4/8 : main gauche/droite exploitable, 16 : pre-verrou, 32 : pause des comptes
+    int insideBits = 0;                  // 1/2 : doigt gauche/droit dans l'image, 4/8 : main gauche/droite exploitable, 16 : pre-verrou, 32 : pause des comptes,
+                                         // 64 : molette libre, 128 : clic differe, 256 : glisser (bouton enfonce, doigt parti), 512 : re-ancrage attendu apres un glisser
     float pinchDist = -1.0f;             // mm
     double headYawDeg = 0, headPitchDeg = 0, detYawDeg = 0, detPitchDeg = 0;  // direction de la tete et du pointeur vu (cap / site, degres, repere du jeu)
+    double headRollDeg = 0;              // roulis de la tete (degres)
+    double plant[4] = {0, 0, 0, 0};      // reponse estimee de MSFS (pixels par compte, [m11 m12 m21 m22])
     int dx = 0, dy = 0, wheel = 0;
 };
 
@@ -100,6 +103,9 @@ public:
     int Hand() const { return hand_; }
     bool ButtonDown() const { return down_; }
     const ServoParams& Params() const { return params_; }
+    // reponse estimee de MSFS dans le plan de l'image (pixels par compte) ; rotation en degres
+    void Plant(double m[4]) const { for (int i = 0; i < 4; ++i) m[i] = M_[i]; }
+    double PlantRotDeg() const;
     bool Tracking() const { return tracking_; }
 
 private:
@@ -113,8 +119,10 @@ private:
     void Log(int level, const char* fmt, ...);
     void SetStatus(const BrainFrame& in, bool tracking);
     bool ComputeJac(const EyeView& view, V2 ang, Jac* out) const;
-    long long CumAt(const long long* arr, uint64_t imageSeq) const;
+    long long CumAt(const long long* arr, uint64_t imageSeq, int lat = -1) const;  // lat < 0 : latence du modele
     void ResetStuck();
+    void PlantInit();                    // M = diag(gain a priori ou mesure)
+    void PlantFit(double cx, double cy, double ox, double oy);  // une paire (comptes atterris, deplacement vu en pixels)
 
     LogFn log_;
     DiagFn diag_;
@@ -155,7 +163,7 @@ private:
     int histN_[2] = {0, 0}, histHead_[2] = {0, 0};
     bool locked_ = false;
     emulation::Vec3 lockTip_, lockKnuckle_;
-    emulation::OneEuro tipFilter_[2];
+    emulation::OneEuro tipFilter_[2], knFilter_[2];
     uint64_t lastFrameMs_ = 0;
     double frameMsEma_ = 11.1;
     int prevTargetHand_ = -2;
@@ -172,7 +180,7 @@ private:
     uint64_t lastPinchSeenMs_[2] = {0, 0}, lastSwitchMs_ = 0, pinchEdgeMs_[2] = {0, 0};
     bool prelatched_ = false, preArmed_ = false, deferTap_ = false;
     bool freeWheel_ = false, freeRefValid_ = false, haveFingerPrev_ = false;   // molette sans pincement
-    uint64_t freeDiagMs_ = 0;                                                  // dernier diagnostic « molette libre refusee »
+    uint64_t freeDiagMs_ = 0;                                                  // dernier diagnostic Â« molette libre refusee Â»
     int freeHand_ = -1, freeRefHand_ = -1;
     emulation::Vec3 freeRef_;
     uint64_t freeLastMoveMs_ = 0;
@@ -184,6 +192,7 @@ private:
     uint64_t prelatchMs_ = 0, lastDetSeq_ = 0, blockUntilMs_ = 0;
     float prevDist_[2] = {1.0f, 1.0f};
     long long cumX_[64] = {}, cumY_[64] = {}, stuckBaseX_ = 0, stuckBaseY_ = 0;
+    long long absCum_[64] = {};          // cumul des |comptes| envoyes (la boucle est-elle posee ?)
     int blockN_ = 0, lastJumps_ = 0;
     Px stuckRef_;
     bool prevCanClick_ = false, pinchClicked_ = false, prevWheelUsed_ = false;
@@ -191,6 +200,19 @@ private:
     std::string skipWhy_;                // pourquoi le pincement en cours ne clique pas (journal)
     uint64_t lastSendMs_ = 0, lastWakeMs_ = 0, pinchStartMs_ = 0, heldMs_ = 0;
     int jiggle_ = 1;
+    // reponse de MSFS estimee en ligne (moindres carres recursifs) : pixels de l'image par compte. Voir Jac::m11.
+    double M_[4] = {1, 0, 0, 1}, P_[4] = {0, 0, 0, 0};
+    bool haveM_ = false;
+    int plantFits_ = 0, plantRejects_ = 0;
+    bool fitPrevValid_ = false;
+    uint64_t fitPrevSeq_ = 0, noFitBeforeSeq_ = 0;
+    V2 fitPrevAng_;
+    // appui : le pointeur reste fige (MSFS prend tout deplacement bouton enfonce pour un glisser) ; au-dela d'un vrai deplacement du doigt, glisser en boucle ouverte
+    bool pressTgtValid_ = false, dragActive_ = false, dragSent_ = false;
+    V2 pressTgt_, dragPrevTgt_;
+    double dragRemX_ = 0, dragRemY_ = 0;
+    bool reanchorPending_ = false;       // apres un glisser : le prochain pointeur vu re-ancre le modele (un levier saisi par MSFS fige le pointeur)
+    uint64_t reanchorAfterSeq_ = 0, reanchorUntilMs_ = 0;
     // etat de la derniere image (pour l'annotation des diagnostics et le journal)
     Px fingerPx_;
     bool haveFinger_ = false;

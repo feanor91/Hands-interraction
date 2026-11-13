@@ -137,11 +137,11 @@ void WriteTrace(const sv::BrainTrace& t) {
             return;
         }
         a.traceT0 = t.t;
-        std::fputs("t_ms,mode,hand,pinch_raw,pinch,down,can_click,finger_x,finger_y,det_x,det_y,det_age_ms,pred_x,pred_y,err_px,dx,dy,wheel,bits,pinch_mm,head_yaw,head_pitch,det_yaw,det_pitch\n", a.trace);
+        std::fputs("t_ms,mode,hand,pinch_raw,pinch,down,can_click,finger_x,finger_y,det_x,det_y,det_age_ms,pred_x,pred_y,err_px,dx,dy,wheel,bits,pinch_mm,head_yaw,head_pitch,det_yaw,det_pitch,head_roll,m11,m12,m21,m22\n", a.trace);
     }
-    std::fprintf(a.trace, "%llu,%d,%d,%d,%d,%d,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.1f,%.1f\n", static_cast<unsigned long long>(t.t - a.traceT0), t.mode, t.hand,
+    std::fprintf(a.trace, "%llu,%d,%d,%d,%d,%d,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%d,%d,%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%.3f\n", static_cast<unsigned long long>(t.t - a.traceT0), t.mode, t.hand,
                  t.pinchRaw ? 1 : 0, t.pinch ? 1 : 0, t.down ? 1 : 0, t.canClick ? 1 : 0, t.fingerX, t.fingerY, t.detX, t.detY, t.detAgeMs, t.predX, t.predY, t.errPx, t.dx, t.dy, t.wheel,
-                 t.insideBits, static_cast<double>(t.pinchDist), t.headYawDeg, t.headPitchDeg, t.detYawDeg, t.detPitchDeg);
+                 t.insideBits, static_cast<double>(t.pinchDist), t.headYawDeg, t.headPitchDeg, t.detYawDeg, t.detPitchDeg, t.headRollDeg, t.plant[0], t.plant[1], t.plant[2], t.plant[3]);
     if (++a.traceRows % 30 == 0) std::fflush(a.trace);
 }
 

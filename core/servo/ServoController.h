@@ -49,6 +49,11 @@ struct Jac {
     double ex = 0, ey = 0;                   // fingertip - model pointer, pixels (y down)
     double vx = 0, vy = 0;                   // fingertip displacement since the previous call, pixels, measured in the same view (head motion cancels)
     std::function<V2(double, double)> inc;   // exact (yaw, pitch) increment of the model pointer for (dx, dy) counts sent now
+    // Image-plane response of MSFS, pixels per count: [dpx_x; dpx_y] = [m11 m12; m21 m22] * [dx; dy] (y down). Estimated online by the caller (essai du 13 nov. : tete a -73 deg
+    // de site, la reponse etait TOURNEE de -50 deg par rapport aux axes de l'image, gain 1.1 en x et 1.3 en y : la boucle qui supposait diag(g, g) faisait tourner le pointeur
+    // autour du doigt). haveM false : diag(gx, gy).
+    bool haveM = false;
+    double m11 = 1, m12 = 0, m21 = 0, m22 = 1;
 };
 
 struct ServoParams {
@@ -217,20 +222,38 @@ public:
                 } else {
                     haveVpx_ = false;
                 }
-                // everything below happens in COUNTS space (and in pixels through gx, gy): the same pixel error must give the same correction wherever the pointer is
-                const V2 vc = pxPath ? V2{vPxX_ / J.gx, vPxY_ / J.gy} : toCounts(vT_);  // fingertip velocity in counts per frame
-                const double spd = std::hypot(vc.a * J.gx, vc.b * J.gy) / J.pxPerRad;
-                // feed-forward only once the fingertip is really moving : at rest the velocity estimate is mostly hand-tracking noise
-                const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
-                V2 fc = vc * (p_.lead * p_.latencyFrames * ffGate);
-                {
-                    const double kx = fc.a * J.gx / J.pxPerRad, ky = fc.b * J.gy / J.pxPerRad;
-                    const double sc = std::max(std::fabs(kx), std::fabs(ky)) > p_.leadClip ? p_.leadClip / std::max(std::fabs(kx), std::fabs(ky)) : 1.0;
-                    fc = fc * sc;
+                // everything below happens in COUNTS space (and in pixels through the plant matrix M): the same pixel error must give the same correction wherever the pointer is
+                const double M11 = J.haveM ? J.m11 : J.gx, M12 = J.haveM ? J.m12 : 0.0, M21 = J.haveM ? J.m21 : 0.0, M22 = J.haveM ? J.m22 : J.gy;
+                const double detM = M11 * M22 - M12 * M21;
+                const bool mOk = std::fabs(detM) > 1e-9;
+                const auto pxToCounts = [&](double px, double py) { return V2{(M22 * px - M12 * py) / detM, (-M21 * px + M11 * py) / detM}; };
+                V2 ec;
+                if (pxPath && mOk) {
+                    // feed-forward only once the fingertip is really moving : at rest the velocity estimate is mostly hand-tracking noise
+                    const double spd = std::hypot(vPxX_, vPxY_) / J.pxPerRad;
+                    const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
+                    double fx = vPxX_ * (p_.lead * p_.latencyFrames * ffGate), fy = vPxY_ * (p_.lead * p_.latencyFrames * ffGate);  // pixels
+                    const double mx = std::max(std::fabs(fx), std::fabs(fy)) / J.pxPerRad;
+                    if (mx > p_.leadClip) {
+                        fx *= p_.leadClip / mx;
+                        fy *= p_.leadClip / mx;
+                    }
+                    ec = pxToCounts(J.ex + fx, J.ey + fy);  // error in counts (feed-forward included)
+                    o.errUnits = std::hypot(J.ex + fx, J.ey + fy);
+                } else {
+                    const V2 vc = toCounts(vT_);  // fingertip velocity in counts per frame
+                    const double spd = std::hypot(vc.a * J.gx, vc.b * J.gy) / J.pxPerRad;
+                    const double ffGate = std::max(0.0, std::min(1.0, (spd - p_.ffSpeedLo) / (p_.ffSpeedHi - p_.ffSpeedLo)));
+                    V2 fc = vc * (p_.lead * p_.latencyFrames * ffGate);
+                    {
+                        const double kx = fc.a * J.gx / J.pxPerRad, ky = fc.b * J.gy / J.pxPerRad;
+                        const double sc = std::max(std::fabs(kx), std::fabs(ky)) > p_.leadClip ? p_.leadClip / std::max(std::fabs(kx), std::fabs(ky)) : 1.0;
+                        fc = fc * sc;
+                    }
+                    ec = toCounts(Diff(target, xh)) + fc;
+                    o.errUnits = std::hypot(ec.a * J.gx, ec.b * J.gy);
                 }
-                V2 ec = pxPath ? V2{J.ex / J.gx, J.ey / J.gy} + fc : toCounts(Diff(target, xh)) + fc;  // error in counts (feed-forward included)
                 o.error = V2{J.a * ec.a + J.b * ec.b, J.c * ec.a + J.d * ec.b};
-                o.errUnits = std::hypot(ec.a * J.gx, ec.b * J.gy);
                 {
                     double* e[2] = {&ec.a, &ec.b};
                     const double gq[2] = {J.gx, J.gy};
