@@ -49,7 +49,7 @@ constexpr float kPanelWidthTouch = 0.40f, kPanelDistTouch = 0.45f;
 constexpr ULONGLONG kPokeDwellMs = 300;  // temps de contact du doigt avant le choix
 constexpr size_t kMenuRows = 12;       // nombre de lignes du panneau, fixe
 bool g_fine = false;                   // page des réglages fins affichée
-enum class Page { Main, Zones, Commands, Zone, Display, Pointer, Mouse };
+enum class Page { Main, Zones, Commands, Zone, Display, Pointer, Mouse, Reach };
 Page g_page = Page::Main;
 std::string g_zoneId;  // zone ouverte dans la page de detail
 bool g_reopenAfterTeach = false;  // l'apprentissage en cours vient du menu : le rouvrir une fois la zone apprise
@@ -114,6 +114,13 @@ std::wstring Wide(const std::string& s) {
     std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
     return w;
+}
+
+void LogChoice(const std::wstring& text) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string u(static_cast<size_t>(std::max(0, n)), ' ');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), u.data(), n, nullptr, nullptr);
+    Logger::Get().Log(LogLevel::Info, "menu : choix « %s »", u.c_str());
 }
 
 // Lignes de remplissage (vides, non selectionnables) : le panneau n'affiche que les lignes utiles, la texture garde la hauteur fixe.
@@ -391,6 +398,12 @@ std::vector<Row> BuildMainRows() {
     rows.push_back({L"Affichage : mains et boîtes des zones  ▸", true, [] { g_page = Page::Display; }});
     rows.push_back({L"Rayon et clic (mode rayon aux mains)  ▸", true, [] { g_page = Page::Pointer; }});
     rows.push_back({L"Souris : mains = souris de MSFS  ▸", true, [] { g_page = Page::Mouse; }});
+    {
+        const int t = static_cast<int>(std::lround(CurrentConfig()->reachScale * 10.0));
+        wchar_t b[96];
+        swprintf(b, 96, L"Portée des mains (bureau, accoudoirs) : ×%d.%d  ▸", t / 10, t % 10);
+        rows.push_back({b, true, [] { g_page = Page::Reach; }});
+    }
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;
@@ -427,6 +440,16 @@ std::vector<Row> BuildDisplayRows() {
                             Set("zones", "box_faces", face ? "full" : "face", face ? L"Boîtes complètes" : L"Faces avant seules");
                         }});
     }
+    while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
+    rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
+    return rows;
+}
+
+// Portée des mains : les mains virtuelles vont k fois plus loin que les vraies (bureau devant, accoudoirs sur les côtés).
+std::vector<Row> BuildReachRows() {
+    const auto cfg = CurrentConfig();
+    std::vector<Row> rows;
+    rows.push_back({L"◂  Retour", true, [] { g_page = Page::Main; }});
     {
         // Portée des mains : les mains virtuelles vont k fois plus loin que les vraies (voir core/emulation/Reach.h).
         const double cur = cfg->reachScale;
@@ -451,6 +474,7 @@ std::vector<Row> BuildDisplayRows() {
                             g.dirty = true;
                         }});
     }
+    rows.push_back({L"Au-dessus de 1 : les mains virtuelles vont plus loin que les vraies (gardez les vraies au-dessus du bureau).", false, nullptr});
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});
     rows.push_back({L"Fermer le menu", true, [] { CloseMenu(); }});
     return rows;
@@ -464,6 +488,7 @@ std::vector<Row> BuildRows() {
         case Page::Display: return BuildDisplayRows();
         case Page::Pointer: return BuildPointerRows();
         case Page::Mouse: return BuildMouseRows();
+        case Page::Reach: return BuildReachRows();
         default: return BuildMainRows();
     }
 }
@@ -733,6 +758,7 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
                 if (in) { hoverOfHand = static_cast<int>(i); inAny = true; }
                 if (fired && !activated && rows[i].action) {
                     activated = true;
+                    LogChoice(rows[i].text);
                     rows[i].action();
                     g.dirty = true;
                 }
@@ -774,6 +800,7 @@ bool VrMenu_Frame(XrSession session, ID3D12Device* device, ID3D12CommandQueue* q
             if (p[h] && !prev[h] && rowOfHand[h] >= 0) {
                 Row& r = rows[static_cast<size_t>(rowOfHand[h])];
                 if (r.selectable && r.action) {
+                    LogChoice(r.text);
                     r.action();  // peut fermer le menu ou changer la configuration (déjà relue)
                     g.dirty = true;
                     break;

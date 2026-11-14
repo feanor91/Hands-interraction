@@ -2,10 +2,17 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.41] - 2026-11-14
+
+### Change
+- **Portee des mains** : elle a maintenant sa propre entree sur la page d'accueil du menu en VR, « Portee des mains (bureau, accoudoirs) : x1.0 » (elle etait
+  rangee dans Affichage, ou on ne la trouvait pas). La page donne la valeur, plus loin / moins loin / normale, et le recalage du centre.
+- Le journal note chaque choix fait dans le menu (« menu : choix ... »).
+
 ## [0.0.40] - 2026-11-14
 
 ### Ajoute
-- **Portee des mains** (menu en VR > Affichage, ou `[hands] reach_scale` dans hands.ini) : la main virtuelle se deplace k fois plus (ou moins) que la vraie, a partir de
+- **Portee des mains** (menu en VR > Portee des mains, ou `[hands] reach_scale` dans hands.ini) : la main virtuelle se deplace k fois plus (ou moins) que la vraie, a partir de
   l'epaule estimee. 1 = normale ; au-dessus de 1, les vraies mains restent plus pres du corps, au-dessus du bureau et des bras du fauteuil, la ou le casque les suit, et
   les mains virtuelles atteignent quand meme les commandes basses ou eloignees ; en dessous de 1, elles vont moins loin. Plage 0.5 a 2.5, par pas de 0.1 dans le menu.
   La main est deplacee d'un bloc (forme, pincement, roulis du poignet inchanges) ; tout suit la main virtuelle : dessin, zones, souris collee au doigt, menu.
