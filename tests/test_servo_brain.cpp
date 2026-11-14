@@ -1325,3 +1325,41 @@ TEST(ServoBrain_pointeur_teleporte_juste_avant_un_pincement_le_clic_se_fait_pres
 TEST(ServoBrain_plant_tourne_de_75_deg_le_pointeur_ne_tourne_pas_autour_du_doigt) {
     RunRotatedPlant("plant -75 deg, gain x1.1 / y x1.3", -75.0, 1.1, 1.3, -70.0);
 }
+
+namespace {
+// La tete penche (roulis) : MSFS garde son ecran virtuel horizontal, sa reponse tourne avec le roulis (essai du 14 nov. : roulis -35 deg -> rotation -32).
+// Le roulis passe de 0 a 35 deg en 0.7 s, puis le doigt bouge : avec la compensation du roulis le pointeur suit sans avoir a reapprendre.
+struct RollResult {
+    double moveRms = 0, moveMax = 0, rest = 0, residualDeg = 0;
+};
+RollResult RunRoll(bool comp) {
+    Sim s;
+    SetupProd(s);
+    s.brain.SetRollCompensation(comp);
+    s.tipNoiseM = 0.001;
+    const double maxRoll = 35.0;
+    const Metrics m = Run(s, 1000, [&](int k) {
+        const double rd = maxRoll * Smooth((k - 640) / 60.0), th = rd * 3.14159265358979 / 180.0;
+        s.view.pose.q = {0.0f, 0.0f, static_cast<float>(std::sin(th / 2)), static_cast<float>(std::cos(th / 2))};
+        s.plantRotDeg = rd;
+        Frame f;
+        f.finger = {0.05 - 0.10 * Smooth((k - 760) / 45.0), -0.12 + 0.07 * Smooth((k - 760) / 45.0)};
+        return f;
+    });
+    RollResult r;
+    r.moveRms = RmsErr(m, 760, 830);
+    r.moveMax = MaxErr(m, 760, 830);
+    r.rest = MaxErr(m, 940, 1000);
+    r.residualDeg = s.brain.PlantResidualRotDeg();
+    return r;
+}
+}  // namespace
+
+TEST(ServoBrain_tete_qui_penche_la_reponse_tourne_avec_le_roulis) {
+    const RollResult on = RunRoll(true), off = RunRoll(false);
+    std::printf("      roulis 35 deg, compensation : geste RMS %.1f px (max %.1f), repos %.1f px, rotation apprise %.0f deg\n", on.moveRms, on.moveMax, on.rest, on.residualDeg);
+    std::printf("      roulis 35 deg, sans compensation : geste RMS %.1f px (max %.1f), repos %.1f px, rotation apprise %.0f deg\n", off.moveRms, off.moveMax, off.rest, off.residualDeg);
+    CHECK(on.rest < 8.0);
+    CHECK(std::fabs(on.residualDeg) < 8.0);  // rien a apprendre : le roulis explique la rotation
+    CHECK(on.moveMax <= off.moveMax + 2.0);
+}

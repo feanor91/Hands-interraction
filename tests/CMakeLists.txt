@@ -10,6 +10,7 @@ add_executable(core_tests
   test_handpresence.cpp
   test_simnames.cpp
   test_posemath.cpp
+  test_reach.cpp
   test_servo_math.cpp
   test_servo_controller.cpp
   test_pointer_detect.cpp

@@ -146,6 +146,10 @@ Config Config::FromIni(const IniFile& ini) {
     c.handsEnabled = ini.GetBool("hands", "enabled", c.handsEnabled);
     c.handsStyle = ini.GetString("hands", "style", c.handsStyle);
     if (c.handsStyle != "glove" && c.handsStyle != "bare" && c.handsStyle != "ghost") c.handsStyle = "skeleton";
+    c.reachScale = std::max(0.5, std::min(2.5, ini.GetDouble("hands", "reach_scale", c.reachScale)));
+    c.reachScaleForward = std::max(0.5, std::min(2.0, ini.GetDouble("hands", "reach_scale_forward", c.reachScaleForward)));
+    c.reachScaleSide = std::max(0.5, std::min(2.0, ini.GetDouble("hands", "reach_scale_side", c.reachScaleSide)));
+    c.reachScaleUp = std::max(0.5, std::min(2.0, ini.GetDouble("hands", "reach_scale_up", c.reachScaleUp)));
     c.handsGhostAlpha = std::max(0.05, std::min(1.0, ini.GetDouble("hands", "ghost_alpha", c.handsGhostAlpha)));
     c.handsRenderScale = ini.GetDouble("hands", "render_scale", c.handsRenderScale);
     c.handsJointScale = ini.GetDouble("hands", "joint_scale", c.handsJointScale);

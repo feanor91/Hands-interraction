@@ -190,6 +190,10 @@ struct Config {
     std::string handsStyle = "skeleton";  // skeleton (cubes), glove (gant), bare (main nue), ghost (main translucide)
     double handsGhostAlpha = 0.35;        // opacité du mode ghost (0,05 à 1)
     bool handsEnabled = true;
+    double reachScale = 1.0;         // portée des mains (0,5 à 2,5) : 1 = mains virtuelles = mains réelles
+    double reachScaleForward = 1.0;  // facteurs par axe (0,5 à 2), multipliés avec reachScale
+    double reachScaleSide = 1.0;
+    double reachScaleUp = 1.0;
     double handsRenderScale = 0.75;  // résolution de la surimpression par rapport à celle du jeu
     double handsJointScale = 0.5;    // taille des articulations
     double handsBoneMm = 8.0;        // épaisseur des os (millimètres)

@@ -12,6 +12,9 @@ void Overlay_OnGraphicsBinding(void* device, void* queue);
 // Détruit swapchains et ressources GPU (avant la destruction de la session ou de l'instance).
 void Overlay_Stop();
 
+// Demande de recaler le centre de la portee des mains sur la position et le regard actuels (prise en compte a la prochaine image).
+void Overlay_RecenterReach();
+
 // Hooks fournis par ce module (xrEndFrame) ; nullptr si le nom est inconnu.
 PFN_xrVoidFunction FindOverlayHook(const char* name);
 

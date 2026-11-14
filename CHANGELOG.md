@@ -2,6 +2,22 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.40] - 2026-11-14
+
+### Ajoute
+- **Portee des mains** (menu en VR > Affichage, ou `[hands] reach_scale` dans hands.ini) : la main virtuelle se deplace k fois plus (ou moins) que la vraie, a partir de
+  l'epaule estimee. 1 = normale ; au-dessus de 1, les vraies mains restent plus pres du corps, au-dessus du bureau et des bras du fauteuil, la ou le casque les suit, et
+  les mains virtuelles atteignent quand meme les commandes basses ou eloignees ; en dessous de 1, elles vont moins loin. Plage 0.5 a 2.5, par pas de 0.1 dans le menu.
+  La main est deplacee d'un bloc (forme, pincement, roulis du poignet inchanges) ; tout suit la main virtuelle : dessin, zones, souris collee au doigt, menu.
+  Le centre (les epaules) est fige sur la position de la tete, pour que baisser les yeux ne bouge pas les mains ; il se recale tout seul apres un recentrage de MSFS
+  ou si vous changez de place plus de 4 s, et sur demande (menu « Recaler le centre de la portee », assis normalement, regard devant).
+  Reglages avances : `reach_scale_forward`, `reach_scale_side`, `reach_scale_up` (facteur en plus par axe : avant, cote, haut). Code : `core/emulation/Reach.h` (10 tests).
+
+### Corrige
+- **Souris collee au doigt, tete penchee sur le cote** : la trace de l'essai du 14 nov. montre que la rotation de la reponse de MSFS est le ROULIS de la tete (tete penchee
+  de -35 deg : rotation -32 ; +15 deg : +14) : l'ecran virtuel de MSFS reste horizontal. La couche applique maintenant le roulis de la tete tout de suite au lieu de le
+  reapprendre a chaque inclinaison ; l'estimation en ligne n'apprend plus que le reste. Le journal donne « rotation .. deg dont roulis de la tete .. ».
+
 ## [0.0.39] - 2026-11-13
 
 ### Corrige

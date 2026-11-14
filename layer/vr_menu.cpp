@@ -24,6 +24,7 @@
 
 #include "JoyPoll.h"
 #include "emulate.h"
+#include "hands_overlay.h"
 #include "emulation/ZoneBox.h"
 #include "emulation/ZoneTracker.h"
 #include "util/KeyNames.h"
@@ -424,6 +425,30 @@ std::vector<Row> BuildDisplayRows() {
         const bool face = cfg->zoneBoxFaces == "face";
         rows.push_back({std::wstring(L"Forme des boîtes : ") + (face ? L"face avant seule (carré)" : L"boîte complète"), true, [face] {
                             Set("zones", "box_faces", face ? "full" : "face", face ? L"Boîtes complètes" : L"Faces avant seules");
+                        }});
+    }
+    {
+        // Portée des mains : les mains virtuelles vont k fois plus loin que les vraies (voir core/emulation/Reach.h).
+        const double cur = cfg->reachScale;
+        wchar_t val[16];
+        swprintf(val, 16, L"%.1f", cur);
+        rows.push_back({std::wstring(L"Portée des mains : ×") + val + L" (1 = normale)", false, nullptr});
+        auto setReach = [](double v) {
+            v = std::max(0.5, std::min(2.5, std::round(v * 10.0) / 10.0));
+            char s[16];
+            const int t = static_cast<int>(std::lround(v * 10.0));  // pas de %.1f : la virgule decimale de la locale du jeu ecrirait « 1,3 »
+            snprintf(s, sizeof(s), "%d.%d", t / 10, t % 10);
+            wchar_t w[16];
+            swprintf(w, 16, L"%.1f", v);
+            Set("hands", "reach_scale", s, std::wstring(L"Portée des mains : ×") + w);
+        };
+        rows.push_back({L"Portée des mains : plus loin (+0.1)", true, [cur, setReach] { setReach(cur + 0.1); }});
+        rows.push_back({L"Portée des mains : moins loin (−0.1)", true, [cur, setReach] { setReach(cur - 0.1); }});
+        rows.push_back({L"Portée des mains : normale (×1)", true, [setReach] { setReach(1.0); }});
+        rows.push_back({L"Recaler le centre de la portée (assis normalement, regard devant)", true, [] {
+                            Overlay_RecenterReach();
+                            g.status = L"Centre de la portée recalé";
+                            g.dirty = true;
                         }});
     }
     while (rows.size() + 1 < kMenuRows) rows.push_back({L"", false, nullptr});

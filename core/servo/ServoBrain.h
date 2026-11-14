@@ -105,7 +105,9 @@ public:
     const ServoParams& Params() const { return params_; }
     // reponse estimee de MSFS dans le plan de l'image (pixels par compte) ; rotation en degres
     void Plant(double m[4]) const { for (int i = 0; i < 4; ++i) m[i] = M_[i]; }
-    double PlantRotDeg() const;
+    double PlantRotDeg() const;          // rotation de la reponse effective (roulis de la tete compris)
+    double PlantResidualRotDeg() const;  // rotation apprise en plus du roulis de la tete
+    void SetRollCompensation(bool on) { rollComp_ = on; }  // la reponse de MSFS tourne avec le roulis de la tete (defaut : oui)
     bool Tracking() const { return tracking_; }
 
 private:
@@ -122,7 +124,9 @@ private:
     long long CumAt(const long long* arr, uint64_t imageSeq, int lat = -1) const;  // lat < 0 : latence du modele
     void ResetStuck();
     void PlantInit();                    // M = diag(gain a priori ou mesure)
-    void PlantFit(double cx, double cy, double ox, double oy);  // une paire (comptes atterris, deplacement vu en pixels)
+    void PlantFit(double cx, double cy, double ox, double oy, double roll);  // une paire (comptes atterris, deplacement vu en pixels, roulis de la vue)
+    static double ViewRoll(const EyeView& v);
+    void ApplyRoll(double roll);         // M = R(roulis) * M0
 
     LogFn log_;
     DiagFn diag_;
@@ -201,7 +205,10 @@ private:
     uint64_t lastSendMs_ = 0, lastWakeMs_ = 0, pinchStartMs_ = 0, heldMs_ = 0;
     int jiggle_ = 1;
     // reponse de MSFS estimee en ligne (moindres carres recursifs) : pixels de l'image par compte. Voir Jac::m11.
-    double M_[4] = {1, 0, 0, 1}, P_[4] = {0, 0, 0, 0};
+    double M_[4] = {1, 0, 0, 1}, P_[4] = {0, 0, 0, 0};   // M_ : reponse effective (roulis compris) ; P_ : covariance de M0_
+    double M0_[4] = {1, 0, 0, 1};        // reponse apprise, sans le roulis de la tete
+    double rollNow_ = 0.0;
+    bool rollComp_ = true;
     bool haveM_ = false;
     int plantFits_ = 0, plantRejects_ = 0;
     bool fitPrevValid_ = false;

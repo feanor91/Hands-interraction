@@ -50,6 +50,15 @@ TEST(Config_mains_defauts_et_bornes) {
     CHECK(c.handsJointScale == 5.0);
 }
 
+TEST(Config_portee_des_mains_defauts_et_bornes) {
+    Config d = Config::FromIni(IniFile::Parse(""));
+    CHECK(d.reachScale == 1.0 && d.reachScaleForward == 1.0 && d.reachScaleSide == 1.0 && d.reachScaleUp == 1.0);
+    Config c = Config::FromIni(IniFile::Parse("[hands]\nreach_scale = 1.3\nreach_scale_forward = 9\nreach_scale_side = 0.1\nreach_scale_up = 1.5\n"));
+    CHECK(c.reachScale == 1.3 && c.reachScaleForward == 2.0 && c.reachScaleSide == 0.5 && c.reachScaleUp == 1.5);
+    CHECK(Config::FromIni(IniFile::Parse("[hands]\nreach_scale = 9\n")).reachScale == 2.5);
+    CHECK(Config::FromIni(IniFile::Parse("[hands]\nreach_scale = 0\n")).reachScale == 0.5);
+}
+
 TEST(Config_MatchesProcess_insensible_casse_et_chemin) {
     std::vector<std::string> l{"FlightSimulator2024.exe"};
     CHECK(MatchesProcess(l, "C:\\X\\flightsimulator2024.EXE"));

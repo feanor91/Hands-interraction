@@ -22,6 +22,7 @@
 #define XR_USE_GRAPHICS_API_D3D12
 #include <openxr/openxr_platform.h>
 
+#include <atomic>
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
@@ -35,6 +36,7 @@
 
 #include "depth_reader.h"
 #include "emulation/Pinch.h"
+#include "emulation/Reach.h"
 #include "emulate.h"
 #include "hand_renderer.h"
 #include "hands_overlay.h"
@@ -222,6 +224,43 @@ bool PinchFromJoints(int hand, const XrHandJointLocationEXT* joints) {
     return det[hand].Update(d, static_cast<float>(cfg->clickOnMm / 1000.0), static_cast<float>(cfg->clickOffMm / 1000.0));
 }
 
+// Portee des mains : centre fige (ancre de tete) et demande de recalage venant du menu.
+hands::emulation::ReachCenter g_reachCenter;
+std::atomic<bool> g_reachRequest{false};
+hands::emulation::ReachScale g_reachLogged;  // dernier reglage journalise
+
+// Translate RIGIDEMENT toutes les articulations de chaque main : la main virtuelle va k fois plus loin que la vraie, a partir de l'epaule estimee.
+// Forme, taille, pincement, roulis du poignet : inchanges. k = 1 : on ne touche a rien.
+void ApplyReach(HandsFrame* frame) {
+    namespace em = hands::emulation;
+    const auto cfg = CurrentConfig();
+    em::ReachScale s;
+    s.k = static_cast<float>(cfg->reachScale);
+    s.kForward = static_cast<float>(cfg->reachScaleForward);
+    s.kSide = static_cast<float>(cfg->reachScaleSide);
+    s.kUp = static_cast<float>(cfg->reachScaleUp);
+    if (g_reachRequest.exchange(false)) g_reachCenter.RequestRecapture();
+    if (frame->headValid) g_reachCenter.Update(frame->head, GetTickCount64());
+    const bool changed = s.k != g_reachLogged.k || s.kForward != g_reachLogged.kForward || s.kSide != g_reachLogged.kSide || s.kUp != g_reachLogged.kUp;
+    if (changed) {
+        Logger::Get().Log(LogLevel::Info, "mains : portee x%.2f (avant x%.2f, cote x%.2f, haut x%.2f)", s.k, s.kForward, s.kSide, s.kUp);
+        g_reachLogged = s;
+    }
+    const char* why = g_reachCenter.TakeCaptureReason();
+    if (why && !s.IsIdentity()) Logger::Get().Log(LogLevel::Info, "mains : centre de la portee recale (raison : %s)", why);
+    if (s.IsIdentity() || !g_reachCenter.Valid()) return;
+    const float side = static_cast<float>(cfg->shoulderSideMm / 1000.0), drop = static_cast<float>(cfg->shoulderDropMm / 1000.0),
+                back = static_cast<float>(cfg->shoulderBackMm / 1000.0);
+    for (int h = 0; h < 2; ++h) {
+        HandPoseData& hd = frame->hand[h];
+        if (!hd.valid) continue;
+        const int ref = hd.jointValid[XR_HAND_JOINT_PALM_EXT] ? XR_HAND_JOINT_PALM_EXT : (hd.jointValid[XR_HAND_JOINT_WRIST_EXT] ? XR_HAND_JOINT_WRIST_EXT : -1);
+        if (ref < 0) continue;
+        const em::Vec3 off = em::ReachOffset(hd.joint[ref].p, g_reachCenter.Shoulder(h == 1, side, drop, back), g_reachCenter.AnchorYaw(), s);
+        for (int j = 0; j < kHandJointCount; ++j) hd.joint[j].p = hd.joint[j].p + off;
+    }
+}
+
 void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFrame* frame, bool* anyHand) {
     *anyHand = false;
     {
@@ -252,6 +291,7 @@ void ToHandsFrame(const XrCompositionLayerProjection* game, XrTime time, HandsFr
         hd.clickJoint = clickJoint;
         if (hd.valid) *anyHand = true;
     }
+    ApplyReach(frame);  // les mains virtuelles (portee) : tout ce qui suit lit ces positions
 }
 
 // --- Diagnostics (étape « contact ») : que fournit le jeu en profondeur ? -------------------------
@@ -952,6 +992,8 @@ bool Overlay_GetEyeImage(const XrCompositionLayerProjection* game, int eye, EyeI
     out->state = ColorStateFromName(CurrentConfig()->colorState);
     return true;
 }
+
+void Overlay_RecenterReach() { g_reachRequest = true; }
 
 void Overlay_Stop() {
     Safe("Overlay_Stop", [&] {

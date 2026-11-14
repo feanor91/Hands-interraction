@@ -113,25 +113,53 @@ long long ServoBrain::CumAt(const long long* arr, uint64_t imageSeq, int lat) co
     return arr[static_cast<uint64_t>(k) % 64];
 }
 
+// Roulis de la tete (radians, positif quand la droite de la vue monte). Essai du 14 nov. : la rotation de la reponse de MSFS suit le roulis de la tete
+// (roulis -35 deg -> rotation -32 ; +15 -> +14) : l'ecran virtuel de MSFS reste horizontal. On applique donc le roulis courant tout de suite et l'estimation
+// en ligne n'apprend que le reste (M0, « sans roulis »).
+double ServoBrain::ViewRoll(const EyeView& v) {
+    const emulation::Vec3 fwd = emulation::Rotate(v.pose.q, emulation::Vec3{0.0f, 0.0f, -1.0f});
+    const emulation::Vec3 rv = emulation::Rotate(v.pose.q, emulation::Vec3{1.0f, 0.0f, 0.0f});
+    const emulation::Vec3 hr = emulation::Cross(fwd, emulation::Vec3{0.0f, 1.0f, 0.0f});
+    if (emulation::Length(hr) < 1e-4f) return 0.0;  // regard vertical : roulis indefini
+    const emulation::Vec3 hrn = emulation::Normalized(hr), hu = emulation::Cross(hrn, fwd);
+    return std::atan2(static_cast<double>(emulation::Dot(rv, hu)), static_cast<double>(emulation::Dot(rv, hrn)));
+}
+
+void ServoBrain::ApplyRoll(double roll) {
+    rollNow_ = roll;
+    const double c = rollComp_ ? std::cos(roll) : 1.0, s = rollComp_ ? std::sin(roll) : 0.0;
+    M_[0] = c * M0_[0] - s * M0_[2];
+    M_[1] = c * M0_[1] - s * M0_[3];
+    M_[2] = s * M0_[0] + c * M0_[2];
+    M_[3] = s * M0_[1] + c * M0_[3];
+}
+
 void ServoBrain::PlantInit() {
     const double gx = std::fabs(params_.radPerCountX) * pxPerRad_, gy = std::fabs(params_.radPerCountY) * pxPerRad_;
-    M_[0] = gx;
-    M_[1] = 0;
-    M_[2] = 0;
-    M_[3] = gy;
+    M0_[0] = gx;
+    M0_[1] = 0;
+    M0_[2] = 0;
+    M0_[3] = gy;
     P_[0] = P_[3] = kPlantP0;
     P_[1] = P_[2] = 0;
     haveM_ = true;
+    ApplyRoll(rollNow_);
 }
 
 double ServoBrain::PlantRotDeg() const { return std::atan2(M_[2] - M_[1], M_[0] + M_[3]) * 57.29577951; }
+double ServoBrain::PlantResidualRotDeg() const { return std::atan2(M0_[2] - M0_[1], M0_[0] + M0_[3]) * 57.29577951; }
 
 // Moindres carres recursifs (avec oubli) sur [ox; oy] = M [cx; cy] : les deux lignes de M partagent le regresseur (les comptes), donc une seule covariance P (2x2).
 // Paires ecartees : pointeur qui ne bouge pas alors que des comptes ont atterri (mur, levier saisi, curseur fige), saut (re-ancrage par MSFS, fausse detection).
-void ServoBrain::PlantFit(double cx, double cy, double ox, double oy) {
+void ServoBrain::PlantFit(double cx, double cy, double ox, double oy, double roll) {
     if (!haveM_) PlantInit();
     if (std::hypot(cx, cy) < kPlantMinCounts) return;
-    const double prx = M_[0] * cx + M_[1] * cy, pry = M_[2] * cx + M_[3] * cy;
+    if (rollComp_) {  // observation ramenee dans le repere « sans roulis » de M0
+        const double c = std::cos(roll), s = std::sin(roll), x = ox, y = oy;
+        ox = c * x + s * y;
+        oy = -s * x + c * y;
+    }
+    const double prx = M0_[0] * cx + M0_[1] * cy, pry = M0_[2] * cx + M0_[3] * cy;
     const double pn = std::hypot(prx, pry), on = std::hypot(ox, oy);
     const double ang = std::atan2(prx * oy - pry * ox, prx * ox + pry * oy) * 57.29577951;
     if (on < 0.35 * pn || on > 2.0 * pn + 25.0 || std::fabs(ang) > 100.0) {
@@ -152,7 +180,7 @@ void ServoBrain::PlantFit(double cx, double cy, double ox, double oy) {
     const double den = kPlantLambda + cx * Pc0 + cy * Pc1;
     const double k0 = Pc0 / den, k1 = Pc1 / den;
     const double ex = ox - prxN, ey = oy - pryN;
-    double Mn[4] = {M_[0] + ex * k0, M_[1] + ex * k1, M_[2] + ey * k0, M_[3] + ey * k1};
+    double Mn[4] = {M0_[0] + ex * k0, M0_[1] + ex * k1, M0_[2] + ey * k0, M0_[3] + ey * k1};
     double Pn[4] = {(P_[0] - Pc0 * Pc0 / den) / kPlantLambda, (P_[1] - Pc0 * Pc1 / den) / kPlantLambda, (P_[2] - Pc1 * Pc0 / den) / kPlantLambda,
                     (P_[3] - Pc1 * Pc1 / den) / kPlantLambda};
     const double tr = Pn[0] + Pn[3];
@@ -169,7 +197,8 @@ void ServoBrain::PlantFit(double cx, double cy, double ox, double oy) {
         ++plantRejects_;
         return;
     }
-    for (int i = 0; i < 4; ++i) M_[i] = Mn[i];
+    for (int i = 0; i < 4; ++i) M0_[i] = Mn[i];
+    ApplyRoll(rollNow_);
     ++plantFits_;
 }
 
@@ -436,7 +465,7 @@ void ServoBrain::OnPixels(const uint8_t* rgba, const BrainRoi& r) {
                 landed(std::max(0, L0 - 1), &ax, &ay);
                 landed(L0 + 1, &bx, &by);
                 // paire ambigue : les comptes atterris dependent beaucoup de la latence exacte (debut / fin d'un grand deplacement) ; une latence fausse d'une image fausserait M
-                if (std::hypot(bx - ax, by - ay) <= 0.3 * std::hypot(cx, cy)) PlantFit(cx, cy, p1.x - p0.x, p1.y - p0.y);
+                if (std::hypot(bx - ax, by - ay) <= 0.3 * std::hypot(cx, cy)) PlantFit(cx, cy, p1.x - p0.x, p1.y - p0.y, ViewRoll(r.view));
             }
         }
         fitPrevValid_ = true;
@@ -505,7 +534,9 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
     }
     const double tl = std::tan(static_cast<double>(in.view.fov.left)), tr = std::tan(static_cast<double>(in.view.fov.right));
     pxPerRad_ = (in.view.rect.w > 0 && tr > tl) ? in.view.rect.w / (tr - tl) : 1215.0;
+    rollNow_ = ViewRoll(in.view);
     if (!haveM_) PlantInit();
+    else ApplyRoll(rollNow_);
 
     // 0) bout du doigt lisse (One Euro) : le suivi des mains tremble de 1 a 3 mm, soit 3 a 8 px a 40 cm, et le pointeur « dansait » ; lisse a l'arret, reactif en mouvement
     {
@@ -1172,10 +1203,10 @@ BrainOutput ServoBrain::Frame(const BrainFrame& inRaw) {
         const double dt = logT_ ? static_cast<double>(in.nowMs - logT_) / 1000.0 : 1.0;
         const double meanScore = nDet_ ? sumScore_ / nDet_ : 0.0;
         sumScore_ = 0;
-        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), score moyen %.2f, ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, reponse [%.2f %.2f; %.2f %.2f] px/compte (rotation %.0f deg, %d paires, %d ecartees)%s%s",
+        Log(0, "servo : %s, main %s, %.0f detections/s (%d requetes, %d manques), score moyen %.2f, ecart estime %.0f px, pointeur (%.0f,%.0f), doigt (%.0f,%.0f), %d envois, L=%d, reponse [%.2f %.2f; %.2f %.2f] px/compte (rotation %.0f deg dont roulis de la tete %.0f, %d paires, %d ecartees)%s%s",
             mode_ == BrainMode::Acquire ? "recherche" : (mode_ == BrainMode::Probe ? "mesure" : "suivi"), hand == 1 ? "droite" : (hand == 0 ? "gauche" : "aucune"), nDet_ / dt, nReq_,
             nMiss_, meanScore, errPx_, lastDetPx_.x, lastDetPx_.y, haveFinger_ ? fingerPx_.x : -1.0, haveFinger_ ? fingerPx_.y : -1.0, nSent_, params_.latencyFrames,
-            M_[0], M_[1], M_[2], M_[3], PlantRotDeg(), plantFits_, plantRejects_, down_ ? (dragActive_ ? ", glisser" : ", bouton enfonce") : "", ctl_.Jumps() ? ", sauts du pointeur" : "");
+            M_[0], M_[1], M_[2], M_[3], PlantRotDeg(), rollComp_ ? rollNow_ * 57.29577951 : 0.0, plantFits_, plantRejects_, down_ ? (dragActive_ ? ", glisser" : ", bouton enfonce") : "", ctl_.Jumps() ? ", sauts du pointeur" : "");
         nDet_ = nReq_ = nMiss_ = nSent_ = 0;
         logT_ = in.nowMs;
     }
