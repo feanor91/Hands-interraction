@@ -19,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "ZoneEditor.h"
 #include "config/IniEdit.h"
@@ -891,9 +892,55 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// Installateur : `HandsTray.exe --merge-ini <hands.ini livre> <hands.ini de l'utilisateur>` ajoute les cles nouvelles a la config
+// existante (valeurs de l'utilisateur jamais modifiees) puis quitte. Le resultat est note dans logs\install.log a cote de la config.
+int MergeIniCommand(const std::wstring& tmplPath, const std::wstring& userPath) {
+    auto readAll = [](const std::wstring& path, std::string* out) {
+        std::ifstream f(std::filesystem::path(path), std::ios::binary);
+        if (!f) return false;
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        *out = ss.str();
+        return true;
+    };
+    std::string tmpl, user;
+    if (!readAll(tmplPath, &tmpl) || !readAll(userPath, &user)) return 2;
+    std::vector<std::string> added;
+    const std::string merged = hands::config::IniMergeMissing(user, tmpl, &added);
+    if (merged != user) {
+        const std::filesystem::path tmp = std::filesystem::path(userPath).wstring() + L".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f) return 3;
+            f << merged;
+            if (!f) return 3;
+        }
+        if (!MoveFileExW(tmp.c_str(), userPath.c_str(), MOVEFILE_REPLACE_EXISTING)) return 3;
+    }
+    std::ofstream log(std::filesystem::path(userPath).parent_path() / L"logs" / L"install.log", std::ios::app);
+    if (log) {
+        log << "hands.ini : " << added.size() << " cle(s) ajoutee(s)";
+        for (const auto& k : added) log << " " << k;
+        log << "\n";
+    }
+    return 0;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    if (cmdLine && wcsstr(cmdLine, L"--merge-ini")) {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        int rc = 1;
+        for (int i = 1; argv && i + 2 < argc; ++i)
+            if (wcscmp(argv[i], L"--merge-ini") == 0) {
+                rc = MergeIniCommand(argv[i + 1], argv[i + 2]);
+                break;
+            }
+        if (argv) LocalFree(argv);
+        return rc;
+    }
     // `--replace` : lancée par l'ancienne version qui se ferme ; on attend (jusqu'à 10 s) qu'elle libère l'instance unique.
     const bool replace = cmdLine && wcsstr(cmdLine, L"--replace") != nullptr;
     HANDLE mutex = nullptr;

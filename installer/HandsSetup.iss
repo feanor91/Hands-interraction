@@ -86,6 +86,8 @@ Name: "{autoprograms}\Hands Interaction - dossier de configuration"; Filename: "
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX *S-1-15-2-1:(OI)(CI)RX *S-1-15-2-2:(OI)(CI)RX"; Flags: runhidden; StatusMsg: "Reglage des droits d'acces..."
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\logs"" /grant *S-1-5-32-545:(OI)(CI)M *S-1-15-2-1:(OI)(CI)M"; Flags: runhidden
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\data"" /grant *S-1-5-32-545:(OI)(CI)M *S-1-15-2-1:(OI)(CI)M"; Flags: runhidden
+; Mise a jour : ajoute a hands.ini les reglages apparus depuis (valeurs existantes conservees ; resultat dans logs\install.log).
+Filename: "{app}\HandsTray.exe"; Parameters: "--merge-ini ""{app}\hands.ini"" ""{#DataDir}\hands.ini"""; Flags: runhidden waituntilterminated; StatusMsg: "Mise a jour de hands.ini..."
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\hands.ini"" /grant *S-1-5-32-545:M"; Flags: runhidden
 Filename: "{app}\HandsTray.exe"; Description: "Lancer Hands Interaction maintenant"; Flags: nowait postinstall skipifsilent runasoriginaluser
 

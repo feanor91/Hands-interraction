@@ -85,7 +85,14 @@ if ((-not (Test-Path $iniDest)) -or $ResetConfig) {
     Copy-Item -Force (Join-Path $SourceDir 'hands.ini') $iniDest
     Write-Host "hands.ini     : cree"
 } else {
-    Write-Host "hands.ini     : existant conserve (utilisez -ResetConfig pour le remplacer)"
+    # Ajoute les reglages apparus depuis (valeurs existantes conservees), via HandsTray.exe s'il est a cote.
+    $tray = @((Join-Path $SourceDir 'HandsTray.exe'), (Join-Path (Split-Path $SourceDir -Parent) 'HandsTray.exe')) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($tray) {
+        $p = Start-Process -FilePath $tray -ArgumentList @('--merge-ini', "`"$(Join-Path $SourceDir 'hands.ini')`"", "`"$iniDest`"") -Wait -PassThru
+        Write-Host "hands.ini     : existant conserve, nouveaux reglages ajoutes (code $($p.ExitCode), detail dans logs\install.log)"
+    } else {
+        Write-Host "hands.ini     : existant conserve (utilisez -ResetConfig pour le remplacer)"
+    }
 }
 
 # --- Droits d'acces ---------------------------------------------------------------

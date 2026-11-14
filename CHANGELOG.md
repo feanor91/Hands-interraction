@@ -2,6 +2,15 @@
 
 Format : [Semantic Versioning](https://semver.org/lang/fr/). La version courante est dans le fichier `VERSION`.
 
+## [0.0.42] - 2026-11-14
+
+### Corrige
+- **Mise a jour de hands.ini** : l'installateur gardait le hands.ini existant tel quel, si bien que les reglages apparus depuis (par ex. `reach_scale`)
+  n'y figuraient jamais. Il ajoute maintenant les cles manquantes, avec leurs commentaires, en fin de leur section ; les valeurs existantes ne sont jamais
+  modifiees, et une cle que vous avez mise en commentaire n'est pas rajoutee. Les cles ajoutees ont la valeur par defaut du code : rien ne change de
+  comportement. Le detail est note dans `logs\install.log`. Meme chose pour le bouton Installer / Mettre a jour de la tray (`install.ps1`).
+  Code : `IniMergeMissing` dans `core/config/IniEdit` (5 tests), lance par `HandsTray.exe --merge-ini`.
+
 ## [0.0.41] - 2026-11-14
 
 ### Change
